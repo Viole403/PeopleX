@@ -1,22 +1,30 @@
-import { Link, Outlet, useRouterState } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   Bell01,
   ChevronLeft,
   Command,
   Database01,
   Home01,
+  List,
   LogOut01,
   Menu01,
   Moon01,
   SearchSm,
+  Settings01,
   Sun,
+  Users01,
 } from "@untitledui/icons";
+import { useEffect } from "react";
+import { can, useLogout, useSession } from "../lib/session";
 import { useTheme } from "../lib/theme";
 import { useUi } from "../lib/ui";
 
-const NAV = [
-  { to: "/", label: "Dasbor", icon: Home01 },
-  { to: "/status", label: "Status Basis Data", icon: Database01 },
+const NAV_MAIN = [{ to: "/", label: "Dasbor", icon: Home01 }];
+const NAV_ADMIN = [
+  { to: "/users", label: "Pengguna", icon: Users01, perm: "system.manage" },
+  { to: "/roles", label: "Peran", icon: Settings01, perm: "system.manage" },
+  { to: "/audit", label: "Audit Log", icon: List, perm: "audit.view" },
+  { to: "/status", label: "Status Basis Data", icon: Database01, perm: null },
 ];
 
 function IconButton({
@@ -44,7 +52,57 @@ function IconButton({
 export function Shell() {
   const { sidebarOpen, toggleSidebar, setPaletteOpen } = useUi();
   const { effective, toggle } = useTheme();
+  const { data: session, isPending } = useSession();
+  const logout = useLogout();
+  const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+
+  const bare = pathname === "/login" || pathname === "/change-password";
+
+  useEffect(() => {
+    if (isPending || bare) return;
+    if (!session) {
+      void navigate({ to: "/login" });
+    } else if (session.must_change_password) {
+      void navigate({ to: "/change-password" });
+    }
+  }, [isPending, session, bare, navigate]);
+
+  if (isPending) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-bg-secondary">
+        <p className="text-sm text-text-tertiary">Memuat sesi…</p>
+      </div>
+    );
+  }
+
+  if (bare || !session) {
+    return <Outlet />;
+  }
+
+  const adminNav = NAV_ADMIN.filter((item) =>
+    item.perm === null ? true : can(session, item.perm, "system.manage"),
+  );
+
+  const navLink = (item: { to: string; label: string; icon: typeof Home01 }) => {
+    const active = pathname === item.to;
+    const Icon = item.icon;
+    return (
+      <Link
+        key={item.to}
+        to={item.to}
+        title={item.label}
+        className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition ${
+          active
+            ? "bg-bg-brand-primary font-semibold text-text-brand-primary"
+            : "text-text-secondary hover:bg-bg-primary_hover"
+        }`}
+      >
+        <Icon size={20} className="shrink-0" />
+        {sidebarOpen && <span className="truncate">{item.label}</span>}
+      </Link>
+    );
+  };
 
   return (
     <div className="flex h-screen overflow-hidden bg-bg-secondary text-text-primary">
@@ -65,27 +123,26 @@ export function Shell() {
           )}
         </div>
         <nav className="flex-1 space-y-1 overflow-y-auto p-2">
-          {NAV.map((item) => {
-            const active = pathname === item.to;
-            const Icon = item.icon;
-            return (
-              <Link
-                key={item.to}
-                to={item.to}
-                title={item.label}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition ${
-                  active
-                    ? "bg-bg-brand-primary font-semibold text-text-brand-primary"
-                    : "text-text-secondary hover:bg-bg-primary_hover"
-                }`}
-              >
-                <Icon size={20} className="shrink-0" />
-                {sidebarOpen && <span className="truncate">{item.label}</span>}
-              </Link>
-            );
-          })}
+          {NAV_MAIN.map(navLink)}
+          {adminNav.length > 0 && sidebarOpen && (
+            <p className="px-3 pb-1 pt-3 text-xs font-semibold uppercase text-text-tertiary">
+              Administrasi
+            </p>
+          )}
+          {adminNav.map(navLink)}
         </nav>
-        <div className="border-t border-border-secondary p-2">
+        <div className="space-y-1 border-t border-border-secondary p-2">
+          <div
+            title={session.username}
+            className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm"
+          >
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-bg-brand-primary text-xs font-bold text-text-brand-primary">
+              {session.username.slice(0, 1).toUpperCase()}
+            </span>
+            {sidebarOpen && (
+              <span className="min-w-0 flex-1 truncate font-medium">{session.username}</span>
+            )}
+          </div>
           <button
             type="button"
             onClick={toggleSidebar}
@@ -120,7 +177,7 @@ export function Shell() {
           >
             {effective === "dark" ? <Sun size={20} /> : <Moon01 size={20} />}
           </IconButton>
-          <IconButton label="Keluar (segera hadir)" onClick={() => {}}>
+          <IconButton label="Keluar" onClick={() => logout.mutate()}>
             <LogOut01 size={20} />
           </IconButton>
         </header>
@@ -133,3 +190,4 @@ export function Shell() {
     </div>
   );
 }
+

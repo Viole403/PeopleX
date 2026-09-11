@@ -5,7 +5,11 @@ import { useUi } from "../lib/ui";
 
 const ITEMS = [
   { label: "Dasbor", to: "/" },
+  { label: "Pengguna", to: "/users" },
+  { label: "Peran", to: "/roles" },
+  { label: "Audit Log", to: "/audit" },
   { label: "Status Basis Data", to: "/status" },
+  { label: "Ganti Password", to: "/change-password" },
 ];
 
 export function Palette() {
