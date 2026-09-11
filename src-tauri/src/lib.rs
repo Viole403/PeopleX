@@ -329,6 +329,173 @@ fn audit_list(
     require(&state, &conn, &["audit.view", "system.manage"])?;
     services::audit::list(&conn, module.as_deref(), limit.unwrap_or(100) as i64)
 }
+
+#[tauri::command]
+#[specta::specta]
+fn get_settings(state: tauri::State<AppState>) -> Result<Vec<services::settings::Setting>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["system.manage"])?;
+    services::settings::all_settings(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn save_settings(
+    state: tauri::State<AppState>,
+    items: Vec<(String, String)>,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    services::settings::save_settings(&conn, uid, &items)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn get_company(
+    state: tauri::State<AppState>,
+) -> Result<Option<services::settings::Company>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["system.manage"])?;
+    services::settings::get_company(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn save_company(
+    state: tauri::State<AppState>,
+    input: services::settings::CompanyInput,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    services::settings::save_company(&conn, uid, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn org_entities(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::organization::EntityMeta>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["organization.view", "system.manage"])?;
+    Ok(services::organization::entities())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn org_list(
+    state: tauri::State<AppState>,
+    slug: String,
+    search: String,
+    page: i32,
+    per_page: i32,
+) -> Result<services::organization::OrgPage, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["organization.view", "system.manage"])?;
+    services::organization::list(&conn, &slug, &search, page, per_page)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn org_get(
+    state: tauri::State<AppState>,
+    slug: String,
+    id: i32,
+) -> Result<Option<std::collections::BTreeMap<String, String>>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["organization.view", "system.manage"])?;
+    services::organization::get(&conn, &slug, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn org_options(
+    state: tauri::State<AppState>,
+    slug: String,
+    field: String,
+) -> Result<Vec<services::organization::Opt>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["organization.view", "system.manage"])?;
+    services::organization::options(&conn, &slug, &field)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn org_save(
+    state: tauri::State<AppState>,
+    slug: String,
+    id: Option<i32>,
+    values: std::collections::BTreeMap<String, String>,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &[
+            "organization.create",
+            "organization.update",
+            "system.manage",
+        ],
+    )?;
+    services::organization::save(&conn, uid, &slug, id.map(|v| v as i64), &values)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn org_delete(state: tauri::State<AppState>, slug: String, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["organization.delete", "system.manage"])?;
+    services::organization::delete(&conn, uid, &slug, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn org_chart(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::organization::CompanyNode>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["organization.view", "system.manage"])?;
+    services::organization::org_chart(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn list_workflows(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::workflows::Workflow>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["system.manage"])?;
+    services::workflows::list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn add_workflow_step(
+    state: tauri::State<AppState>,
+    workflow_id: i32,
+    approver_type: String,
+    role_id: Option<i32>,
+    user_id: Option<i32>,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    services::workflows::add_step(
+        &conn,
+        uid,
+        workflow_id as i64,
+        &approver_type,
+        role_id.map(|v| v as i64),
+        user_id.map(|v| v as i64),
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+fn remove_workflow_step(state: tauri::State<AppState>, step_id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    services::workflows::remove_step(&conn, uid, step_id as i64)
+}
+
 fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("gagal membuat direktori data: {e}"))?;
     let pool = db::init_pool(&data_dir.join("peoplex.db"))?;
@@ -368,7 +535,21 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         sync_user_roles,
         toggle_user_status,
         admin_reset_password,
-        audit_list
+        audit_list,
+        get_settings,
+        save_settings,
+        get_company,
+        save_company,
+        org_entities,
+        org_list,
+        org_get,
+        org_options,
+        org_save,
+        org_delete,
+        org_chart,
+        list_workflows,
+        add_workflow_step,
+        remove_workflow_step
     ])
 }
 
