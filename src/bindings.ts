@@ -58,9 +58,107 @@ export const commands = {
 	listWorkflows: () => typedError<Workflow[], string>(__TAURI_INVOKE("list_workflows")),
 	addWorkflowStep: (workflowId: number, approverType: string, roleId: number | null, userId: number | null) => typedError<number, string>(__TAURI_INVOKE("add_workflow_step", { workflowId, approverType, roleId, userId })),
 	removeWorkflowStep: (stepId: number) => typedError<null, string>(__TAURI_INVOKE("remove_workflow_step", { stepId })),
+	employeeList: (search: string, filters: EmployeeFilter, page: number, perPage: number) => typedError<EmployeePage, string>(__TAURI_INVOKE("employee_list", { search, filters, page, perPage })),
+	employeeDetail: (id: number) => typedError<{
+	id: number,
+	employee_number: string,
+	nik: string | null,
+	first_name: string,
+	last_name: string | null,
+	photo: string | null,
+	birth_place: string | null,
+	birth_date: string | null,
+	gender: string,
+	religion: string | null,
+	marital_status: string,
+	phone: string | null,
+	personal_email: string | null,
+	company_id: number,
+	branch_id: number | null,
+	department_id: number | null,
+	division_id: number | null,
+	section_id: number | null,
+	position_id: number | null,
+	job_level_id: number | null,
+	job_grade_id: number | null,
+	work_location_id: number | null,
+	cost_center_id: number | null,
+	supervisor_id: number | null,
+	manager_id: number | null,
+	join_date: string,
+	appointment_date: string | null,
+	resign_date: string | null,
+	employment_status: string,
+	employment_type: string,
+	bank_name: string | null,
+	bank_account_number: string | null,
+	bank_account_holder: string | null,
+	npwp: string | null,
+	ptkp_status: string | null,
+	bpjs_health_number: string | null,
+	bpjs_employment_number: string | null,
+	company_name: string | null,
+	branch_name: string | null,
+	department_name: string | null,
+	division_name: string | null,
+	section_name: string | null,
+	position_name: string | null,
+	job_level_name: string | null,
+	job_grade_name: string | null,
+	work_location_name: string | null,
+	cost_center_name: string | null,
+	supervisor_name: string | null,
+	manager_name: string | null,
+} | null, string>(__TAURI_INVOKE("employee_detail", { id })),
+	employeeDropdowns: () => typedError<Dropdowns, string>(__TAURI_INVOKE("employee_dropdowns")),
+	employeeCreate: (input: EmployeeInput, photo: {
+	name: string,
+	mime: string,
+	bytes: number[],
+} | null) => typedError<number, string>(__TAURI_INVOKE("employee_create", { input, photo })),
+	employeeUpdate: (id: number, input: EmployeeInput, resignDate: string | null, photo: {
+	name: string,
+	mime: string,
+	bytes: number[],
+} | null) => typedError<null, string>(__TAURI_INVOKE("employee_update", { id, input, resignDate, photo })),
+	employeeDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("employee_delete", { id })),
+	employeeChildTypes: () => typedError<ChildMeta[], string>(__TAURI_INVOKE("employee_child_types")),
+	employeeChildList: (child: string, employeeId: number) => typedError<{ [key in string]: string }[], string>(__TAURI_INVOKE("employee_child_list", { child, employeeId })),
+	employeeChildSave: (child: string, employeeId: number, id: number | null, values: { [key in string]: string }) => typedError<number, string>(__TAURI_INVOKE("employee_child_save", { child, employeeId, id, values })),
+	employeeChildDelete: (child: string, employeeId: number, id: number) => typedError<null, string>(__TAURI_INVOKE("employee_child_delete", { child, employeeId, id })),
+	employeeAddresses: (employeeId: number) => typedError<Addresses, string>(__TAURI_INVOKE("employee_addresses", { employeeId })),
+	employeeAddressSave: (employeeId: number, addressType: string, values: { [key in string]: string }) => typedError<null, string>(__TAURI_INVOKE("employee_address_save", { employeeId, addressType, values })),
+	employeeDocuments: (employeeId: number) => typedError<Document[], string>(__TAURI_INVOKE("employee_documents", { employeeId })),
+	employeeDocumentUpload: (employeeId: number, category: string, name: string, expiryDate: string | null, file: FileUpload) => typedError<number, string>(__TAURI_INVOKE("employee_document_upload", { employeeId, category, name, expiryDate, file })),
+	employeeDocumentBytes: (employeeId: number, id: number) => typedError<DocumentBytes, string>(__TAURI_INVOKE("employee_document_bytes", { employeeId, id })),
+	employeeDocumentDelete: (employeeId: number, id: number) => typedError<null, string>(__TAURI_INVOKE("employee_document_delete", { employeeId, id })),
+	employeeSalaryCurrent: (employeeId: number) => typedError<{
+	id: number,
+	basic_salary: number | null,
+	effective_date: string,
+	is_active: boolean,
+} | null, string>(__TAURI_INVOKE("employee_salary_current", { employeeId })),
+	employeeSalaryHistory: (employeeId: number) => typedError<SalaryRow[], string>(__TAURI_INVOKE("employee_salary_history", { employeeId })),
+	employeeSalaryComponents: (salaryId: number) => typedError<SalaryComponentRow[], string>(__TAURI_INVOKE("employee_salary_components", { salaryId })),
+	employeeAvailableComponents: () => typedError<SalaryComponentRow[], string>(__TAURI_INVOKE("employee_available_components")),
+	employeeSetSalary: (employeeId: number, basicSalary: number | null, effectiveDate: string, components: ([number, number | null])[]) => typedError<number, string>(__TAURI_INVOKE("employee_set_salary", { employeeId, basicSalary, effectiveDate, components })),
 };
 
 /* Types */
+/**  Satu baris alamat. */
+export type AddressRow = {
+	address: string | null,
+	city: string | null,
+	province: string | null,
+	postal_code: string | null,
+};
+
+/**  Pasangan alamat KTP dan domisili. */
+export type Addresses = {
+	ktp: AddressRow | null,
+	domicile: AddressRow | null,
+};
+
 /**  Baris audit untuk daftar. */
 export type AuditEntry = {
 	id: number,
@@ -76,6 +174,20 @@ export type BranchNode = {
 	id: number,
 	name: string,
 	departments: DepartmentNode[],
+};
+
+export type ChildField = {
+	name: string,
+	label: string,
+	field_type: string,
+	required: boolean,
+	options: StaticOpt[] | null,
+};
+
+export type ChildMeta = {
+	slug: string,
+	title: string,
+	fields: ChildField[],
 };
 
 /**  Profil perusahaan (baris pertama). */
@@ -137,6 +249,158 @@ export type DivisionNode = {
 	name: string,
 };
 
+/**  Dokumen karyawan. */
+export type Document = {
+	id: number,
+	category: string,
+	name: string,
+	file_path: string,
+	file_size: number | null,
+	mime_type: string | null,
+	expiry_date: string | null,
+	created_at: string,
+};
+
+/**  Isi berkas untuk unduh/pratinjau. */
+export type DocumentBytes = {
+	mime: string,
+	name: string,
+	bytes: number[],
+};
+
+export type Dropdowns = {
+	companies: NamedOpt[],
+	branches: NamedOpt[],
+	departments: NamedOpt[],
+	divisions: NamedOpt[],
+	sections: NamedOpt[],
+	positions: NamedOpt[],
+	job_levels: NamedOpt[],
+	job_grades: NamedOpt[],
+	work_locations: NamedOpt[],
+	cost_centers: NamedOpt[],
+	employees: NamedOpt[],
+};
+
+/**  Detail penuh + label relasi. */
+export type EmployeeDetail = {
+	id: number,
+	employee_number: string,
+	nik: string | null,
+	first_name: string,
+	last_name: string | null,
+	photo: string | null,
+	birth_place: string | null,
+	birth_date: string | null,
+	gender: string,
+	religion: string | null,
+	marital_status: string,
+	phone: string | null,
+	personal_email: string | null,
+	company_id: number,
+	branch_id: number | null,
+	department_id: number | null,
+	division_id: number | null,
+	section_id: number | null,
+	position_id: number | null,
+	job_level_id: number | null,
+	job_grade_id: number | null,
+	work_location_id: number | null,
+	cost_center_id: number | null,
+	supervisor_id: number | null,
+	manager_id: number | null,
+	join_date: string,
+	appointment_date: string | null,
+	resign_date: string | null,
+	employment_status: string,
+	employment_type: string,
+	bank_name: string | null,
+	bank_account_number: string | null,
+	bank_account_holder: string | null,
+	npwp: string | null,
+	ptkp_status: string | null,
+	bpjs_health_number: string | null,
+	bpjs_employment_number: string | null,
+	company_name: string | null,
+	branch_name: string | null,
+	department_name: string | null,
+	division_name: string | null,
+	section_name: string | null,
+	position_name: string | null,
+	job_level_name: string | null,
+	job_grade_name: string | null,
+	work_location_name: string | null,
+	cost_center_name: string | null,
+	supervisor_name: string | null,
+	manager_name: string | null,
+};
+
+/**  Filter daftar. */
+export type EmployeeFilter = {
+	department_id: number | null,
+	position_id: number | null,
+	branch_id: number | null,
+	employment_status: string | null,
+	gender: string | null,
+	employment_type: string | null,
+};
+
+/**  Input form karyawan. */
+export type EmployeeInput = {
+	nik: string | null,
+	first_name: string,
+	last_name: string | null,
+	gender: string,
+	birth_place: string | null,
+	birth_date: string | null,
+	religion: string | null,
+	marital_status: string,
+	phone: string | null,
+	personal_email: string | null,
+	company_id: number,
+	branch_id: number | null,
+	department_id: number | null,
+	division_id: number | null,
+	section_id: number | null,
+	position_id: number | null,
+	job_level_id: number | null,
+	job_grade_id: number | null,
+	work_location_id: number | null,
+	cost_center_id: number | null,
+	supervisor_id: number | null,
+	manager_id: number | null,
+	join_date: string,
+	appointment_date: string | null,
+	employment_status: string,
+	employment_type: string,
+	bank_name: string | null,
+	bank_account_number: string | null,
+	bank_account_holder: string | null,
+	npwp: string | null,
+	ptkp_status: string | null,
+	bpjs_health_number: string | null,
+	bpjs_employment_number: string | null,
+};
+
+export type EmployeePage = {
+	rows: EmployeeRow[],
+	total: number,
+};
+
+/**  Baris daftar karyawan. */
+export type EmployeeRow = {
+	id: number,
+	employee_number: string,
+	first_name: string,
+	last_name: string | null,
+	photo: string | null,
+	join_date: string,
+	employment_status: string,
+	employment_type: string,
+	department_name: string | null,
+	position_name: string | null,
+};
+
 /**  Metadata entitas untuk tab dan tabel. */
 export type EntityMeta = {
 	slug: string,
@@ -154,10 +418,23 @@ export type FieldMeta = {
 	options: Opt[] | null,
 };
 
+/**  Berkas dari frontend (dibaca via input file, ditulis Rust ke data dir). */
+export type FileUpload = {
+	name: string,
+	mime: string,
+	bytes: number[],
+};
+
 /**  Hasil login berhasil. */
 export type LoginOk = {
 	user: SessionUser,
 	must_change_password: boolean,
+};
+
+/**  Opsi dropdown form karyawan. */
+export type NamedOpt = {
+	id: number,
+	name: string,
 };
 
 /**  Opsi dropdown untuk field select. */
@@ -190,6 +467,23 @@ export type Role = {
 	user_count: number,
 };
 
+/**  Komponen gaji terpasang + katalog. */
+export type SalaryComponentRow = {
+	id: number,
+	code: string,
+	name: string,
+	component_type: string,
+	amount: number | null,
+};
+
+/**  Baris gaji pokok. */
+export type SalaryRow = {
+	id: number,
+	basic_salary: number | null,
+	effective_date: string,
+	is_active: boolean,
+};
+
 /**  Pengguna yang sedang login. */
 export type SessionUser = {
 	id: number,
@@ -205,6 +499,12 @@ export type Setting = {
 	key: string,
 	value: string | null,
 	group: string,
+};
+
+/**  Opsi statis untuk form child. */
+export type StaticOpt = {
+	value: string,
+	label: string,
 };
 
 /**  Baris pengguna untuk tabel admin. */

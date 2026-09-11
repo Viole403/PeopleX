@@ -19,7 +19,10 @@ import { can, useLogout, useSession } from "../lib/session";
 import { useTheme } from "../lib/theme";
 import { useUi } from "../lib/ui";
 
-const NAV_MAIN = [{ to: "/", label: "Dasbor", icon: Home01 }];
+const NAV_MAIN = [
+  { to: "/", label: "Dasbor", icon: Home01 },
+  { to: "/employees", label: "Karyawan", icon: Users01 },
+];
 const NAV_ADMIN = [
   { to: "/users", label: "Pengguna", icon: Users01, perm: "system.manage" },
   { to: "/roles", label: "Peran", icon: Settings01, perm: "system.manage" },

@@ -5,6 +5,8 @@ import { useUi } from "../lib/ui";
 
 const ITEMS = [
   { label: "Dasbor", to: "/" },
+  { label: "Karyawan", to: "/employees" },
+  { label: "Tambah Karyawan", to: "/employees/new" },
   { label: "Pengguna", to: "/users" },
   { label: "Peran", to: "/roles" },
   { label: "Organisasi", to: "/organization" },
