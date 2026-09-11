@@ -842,7 +842,6 @@ pub fn holiday_delete(conn: &Connection, actor_id: i64, id: i64) -> Result<(), S
 struct ResolvedShift {
     id: i64,
     start: NaiveDateTime,
-    end: NaiveDateTime,
     grace: i64,
 }
 
@@ -860,7 +859,7 @@ fn resolve_shift(
 ) -> Result<Option<ResolvedShift>, String> {
     let day: NaiveDate = NaiveDate::parse_from_str(date, "%Y-%m-%d")
         .map_err(|_| "Tanggal tidak valid.".to_string())?;
-    if let Some((sid, start, end, grace, over)) = conn
+    if let Some((sid, start, end, grace, _over)) = conn
         .query_row(
             "SELECT s.id, s.start_time, s.end_time, s.grace_period_minutes, s.is_overnight
              FROM shift_assignments sa INNER JOIN shifts s ON s.id = sa.shift_id
@@ -880,14 +879,10 @@ fn resolve_shift(
         .map_err(|e| format!("gagal resolve shift: {e}"))?
     {
         let start = parse_hm(day, &start)?;
-        let mut end = parse_hm(day, &end)?;
-        if over != 0 {
-            end += chrono::Duration::days(1);
-        }
+        parse_hm(day, &end)?;
         return Ok(Some(ResolvedShift {
             id: sid,
             start,
-            end,
             grace,
         }));
     }
@@ -909,16 +904,12 @@ fn resolve_shift(
         .optional()
         .map_err(|e| format!("gagal resolve jadwal: {e}"))?;
     found
-        .map(|(sid, start, end, grace, over)| {
+        .map(|(sid, start, end, grace, _over)| {
             let s = parse_hm(day, &start)?;
-            let mut e = parse_hm(day, &end)?;
-            if over != 0 {
-                e += chrono::Duration::days(1);
-            }
+            parse_hm(day, &end)?;
             Ok(ResolvedShift {
                 id: sid,
                 start: s,
-                end: e,
                 grace,
             })
         })
