@@ -105,11 +105,11 @@ fn seed_company(conn: &Connection) -> Result<i64, String> {
             &"HQ",
             &"PT Contoh Sukses Indonesia",
             &"PT Contoh Sukses Indonesia",
-            &"Jl. Jendral Sudirman No. 1, Jakarta Selatan",
-            &"Jakarta Selatan",
-            &"DKI Jakarta",
-            &"12190",
-            &"+62-21-5551234",
+            &"Jl. Pemuda No. 1, Surabaya",
+            &"Surabaya",
+            &"Jawa Timur",
+            &"60271",
+            &"+62-31-5551234",
             &"info@contohsukses.co.id",
             &"01.234.567.8-901.000",
             &"2010-01-01",
@@ -128,10 +128,10 @@ fn seed_departments(conn: &Connection, company_id: i64) -> Result<(i64, i64, i64
         &[
             &company_id,
             &"HO",
-            &"Head Office Jakarta",
-            &"Jl. Jendral Sudirman No. 1, Jakarta Selatan",
-            &"Jakarta Selatan",
-            &"+62-21-5551234",
+            &"Kantor Pusat Surabaya",
+            &"Jl. Pemuda No. 1, Surabaya",
+            &"Surabaya",
+            &"+62-31-5551234",
         ],
     )?;
     let branch_id = find_id(
@@ -244,8 +244,8 @@ fn seed_work_location(conn: &Connection) -> Result<i64, String> {
         "name, address, latitude, longitude, radius_meter",
         "?,?,?,?,?",
         &[
-            &"Head Office Jakarta",
-            &"Jl. Jendral Sudirman No. 1, Jakarta Selatan",
+            &"Kantor Pusat Surabaya",
+            &"Jl. Pemuda No. 1, Surabaya",
             &-6.224_f64,
             &106.809_f64,
             &200_i64,
@@ -255,7 +255,7 @@ fn seed_work_location(conn: &Connection) -> Result<i64, String> {
         conn,
         "work_locations",
         "name = ?1",
-        &[&"Head Office Jakarta"],
+        &[&"Kantor Pusat Surabaya"],
     )?
     .ok_or_else(|| "work location tidak ditemukan setelah seed".to_string())
 }
@@ -580,7 +580,7 @@ fn seed_admin_employee(
             &"Super",
             &"Administrator",
             &"male",
-            &"Jakarta",
+            &"Surabaya",
             &"1990-01-01",
             &"single",
             &"081200000001",
@@ -907,7 +907,7 @@ fn seed_settings(conn: &Connection) -> Result<(), String> {
     let settings: Vec<(&str, &str)> = vec![
         ("company_name", "PT Contoh Sukses Indonesia"),
         ("company_email", "info@contohsukses.co.id"),
-        ("company_phone", "+62-21-5551234"),
+        ("company_phone", "+62-31-5551234"),
         ("work_start_time", "08:00"),
         ("work_end_time", "17:00"),
         ("attendance_grace_minutes", "15"),
