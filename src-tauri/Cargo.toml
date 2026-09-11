@@ -29,6 +29,8 @@ r2d2 = "0.8"
 r2d2_sqlite = { version = "0.24", features = ["bundled"] }
 bcrypt = "0.19"
 chrono = "0.4"
+rand = "0.8"
+sha2 = "0.10"
 specta = { version = "2.0.0-rc.25", features = ["derive"] }
 specta-typescript = "0.0.12"
 tauri-specta = { version = "2.0.0-rc.25", features = ["typescript"] }
