@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
-import { commands } from "../bindings";
+import { commands, type SessionUser } from "../bindings";
 import { unwrap } from "../lib/query";
 import { useSession } from "../lib/session";
 
@@ -25,6 +25,9 @@ function ChangePasswordPage() {
     },
     onSuccess: () => {
       toast.success("Password berhasil diubah.");
+      queryClient.setQueryData(["session"], (old: SessionUser | null | undefined) =>
+        old ? { ...old, must_change_password: false } : old,
+      );
       void queryClient.invalidateQueries({ queryKey: ["session"] });
       void navigate({ to: "/" });
     },
