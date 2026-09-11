@@ -5,15 +5,97 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	dbStatus: () => typedError<DbStatus, string>(__TAURI_INVOKE("db_status")),
+	login: (username: string, password: string) => typedError<LoginOk, string>(__TAURI_INVOKE("login", { username, password })),
+	logout: () => typedError<null, string>(__TAURI_INVOKE("logout")),
+	sessionState: () => typedError<{
+	id: number,
+	username: string,
+	must_change_password: boolean,
+	is_super_admin: boolean,
+	roles: string[],
+	permissions: string[],
+} | null, string>(__TAURI_INVOKE("session_state")),
+	changePassword: (currentPassword: string, newPassword: string) => typedError<null, string>(__TAURI_INVOKE("change_password", { currentPassword, newPassword })),
+	requestPasswordReset: (email: string) => typedError<string | null, string>(__TAURI_INVOKE("request_password_reset", { email })),
+	resetPassword: (token: string, newPassword: string) => typedError<null, string>(__TAURI_INVOKE("reset_password", { token, newPassword })),
+	listRoles: () => typedError<Role[], string>(__TAURI_INVOKE("list_roles")),
+	createRole: (slug: string, name: string, description: string | null) => typedError<number, string>(__TAURI_INVOKE("create_role", { slug, name, description })),
+	updateRole: (roleId: number, name: string, description: string | null) => typedError<null, string>(__TAURI_INVOKE("update_role", { roleId, name, description })),
+	deleteRole: (roleId: number) => typedError<null, string>(__TAURI_INVOKE("delete_role", { roleId })),
+	listPermissions: () => typedError<Permission[], string>(__TAURI_INVOKE("list_permissions")),
+	rolePermissionIds: (roleId: number) => typedError<number[], string>(__TAURI_INVOKE("role_permission_ids", { roleId })),
+	syncRolePermissions: (roleId: number, permissionIds: number[]) => typedError<null, string>(__TAURI_INVOKE("sync_role_permissions", { roleId, permissionIds })),
+	listUsers: () => typedError<UserRow[], string>(__TAURI_INVOKE("list_users")),
+	userRoleIds: (userId: number) => typedError<number[], string>(__TAURI_INVOKE("user_role_ids", { userId })),
+	syncUserRoles: (userId: number, roleIds: number[]) => typedError<null, string>(__TAURI_INVOKE("sync_user_roles", { userId, roleIds })),
+	toggleUserStatus: (userId: number, status: string) => typedError<null, string>(__TAURI_INVOKE("toggle_user_status", { userId, status })),
+	adminResetPassword: (userId: number, newPassword: string) => typedError<null, string>(__TAURI_INVOKE("admin_reset_password", { userId, newPassword })),
+	auditList: (module: string | null, limit: number | null) => typedError<AuditEntry[], string>(__TAURI_INVOKE("audit_list", { module, limit })),
 };
 
 /* Types */
+/**  Baris audit untuk daftar. */
+export type AuditEntry = {
+	id: number,
+	user_id: number | null,
+	action: string,
+	module: string,
+	record_id: string | null,
+	description: string | null,
+	created_at: string,
+};
+
 /**  Status database untuk layar diagnosa. */
 export type DbStatus = {
 	ok: boolean,
 	tables: number,
 	users: number,
 	data_dir: string,
+};
+
+/**  Hasil login berhasil. */
+export type LoginOk = {
+	user: SessionUser,
+	must_change_password: boolean,
+};
+
+/**  Izin tunggal. */
+export type Permission = {
+	id: number,
+	slug: string,
+	name: string,
+	module: string,
+};
+
+/**  Peran untuk daftar dan form. */
+export type Role = {
+	id: number,
+	slug: string,
+	name: string,
+	description: string | null,
+	is_system: boolean,
+	user_count: number,
+};
+
+/**  Pengguna yang sedang login. */
+export type SessionUser = {
+	id: number,
+	username: string,
+	must_change_password: boolean,
+	is_super_admin: boolean,
+	roles: string[],
+	permissions: string[],
+};
+
+/**  Baris pengguna untuk tabel admin. */
+export type UserRow = {
+	id: number,
+	username: string,
+	email: string,
+	status: string,
+	must_change_password: boolean,
+	employee_name: string | null,
+	roles: string[],
 };
 
 /* Tauri Specta runtime */
