@@ -1,22 +1,27 @@
 pub mod db;
 pub mod seed;
+pub mod services;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::Manager;
 
-/// State global: koneksi database, direktori data, dan sesi login.
+/// State global: koneksi database, direktori data, dan sesi login (user id).
 pub struct AppState {
     pub db: db::DbPool,
     pub data_dir: PathBuf,
-    pub session: Mutex<Option<SessionUser>>,
+    pub session: Mutex<Option<i64>>,
 }
 
-/// Pengguna yang sedang login (diisi penuh di modul auth).
-#[derive(Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+/// Pengguna yang sedang login.
+#[derive(Clone, serde::Serialize, serde::Deserialize, specta::Type, Debug)]
 pub struct SessionUser {
     pub id: i32,
     pub username: String,
+    pub must_change_password: bool,
+    pub is_super_admin: bool,
+    pub roles: Vec<String>,
+    pub permissions: Vec<String>,
 }
 
 /// Status database untuk layar diagnosa.
@@ -58,7 +63,272 @@ fn db_status(state: tauri::State<AppState>) -> Result<DbStatus, String> {
     })
 }
 
-/// Siapkan direktori data, pool, migrasi, dan seed awal.
+/// Ambil koneksi dari pool dengan pesan galat seragam.
+fn pooled(state: &tauri::State<AppState>) -> Result<db::DbConn, String> {
+    state
+        .db
+        .get()
+        .map_err(|e| format!("gagal mengambil koneksi database: {e}"))
+}
+
+/// Pengguna aktif dari sesi (izin dimuat ulang tiap panggilan).
+fn current_actor(
+    state: &tauri::State<AppState>,
+    conn: &rusqlite::Connection,
+) -> Result<(i64, SessionUser), String> {
+    let uid = state
+        .session
+        .lock()
+        .map_err(|_| "Sesi terkunci.".to_string())?
+        .ok_or("Belum login.".to_string())?;
+    let user = services::auth::load_session_user(conn, uid)?
+        .ok_or("Sesi berakhir. Masuk kembali.".to_string())?;
+    Ok((uid, user))
+}
+
+/// Gerbang izin: super-admin lolos semua; selain itu salah satu izin cukup.
+fn require(
+    state: &tauri::State<AppState>,
+    conn: &rusqlite::Connection,
+    any_of: &[&str],
+) -> Result<(i64, SessionUser), String> {
+    let (uid, user) = current_actor(state, conn)?;
+    if user.is_super_admin
+        || any_of
+            .iter()
+            .any(|p| user.permissions.iter().any(|u| u == p))
+    {
+        Ok((uid, user))
+    } else {
+        Err("Akses ditolak.".to_string())
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+fn login(
+    state: tauri::State<AppState>,
+    username: String,
+    password: String,
+) -> Result<services::auth::LoginOk, String> {
+    let conn = pooled(&state)?;
+    let ok = services::auth::attempt_login(&conn, &username, &password)?;
+    *state
+        .session
+        .lock()
+        .map_err(|_| "Sesi terkunci.".to_string())? = Some(ok.user.id as i64);
+    Ok(ok)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn logout(state: tauri::State<AppState>) -> Result<(), String> {
+    let uid = state
+        .session
+        .lock()
+        .map_err(|_| "Sesi terkunci.".to_string())?
+        .take();
+    let conn = pooled(&state)?;
+    if let Some(id) = uid {
+        services::auth::logout(&conn, id)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn session_state(state: tauri::State<AppState>) -> Result<Option<SessionUser>, String> {
+    let conn = pooled(&state)?;
+    let uid = state
+        .session
+        .lock()
+        .map_err(|_| "Sesi terkunci.".to_string())?
+        .to_owned();
+    match uid {
+        None => Ok(None),
+        Some(id) => match services::auth::load_session_user(&conn, id)? {
+            Some(user) => Ok(Some(user)),
+            None => {
+                *state
+                    .session
+                    .lock()
+                    .map_err(|_| "Sesi terkunci.".to_string())? = None;
+                Ok(None)
+            }
+        },
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+fn change_password(
+    state: tauri::State<AppState>,
+    current_password: String,
+    new_password: String,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::auth::change_password(&conn, uid, &current_password, &new_password)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn request_password_reset(
+    state: tauri::State<AppState>,
+    email: String,
+) -> Result<Option<String>, String> {
+    let conn = pooled(&state)?;
+    services::auth::request_password_reset(&conn, &email)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn reset_password(
+    state: tauri::State<AppState>,
+    token: String,
+    new_password: String,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    services::auth::reset_password(&conn, &token, &new_password)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn list_roles(state: tauri::State<AppState>) -> Result<Vec<services::rbac::Role>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["system.manage"])?;
+    services::rbac::list_roles(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn create_role(
+    state: tauri::State<AppState>,
+    slug: String,
+    name: String,
+    description: Option<String>,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    services::rbac::create_role(&conn, uid, &slug, &name, description.as_deref())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn update_role(
+    state: tauri::State<AppState>,
+    role_id: i32,
+    name: String,
+    description: Option<String>,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    services::rbac::update_role(&conn, uid, role_id as i64, &name, description.as_deref())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn delete_role(state: tauri::State<AppState>, role_id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    services::rbac::delete_role(&conn, uid, role_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn list_permissions(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::rbac::Permission>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["system.manage"])?;
+    services::rbac::list_permissions(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn role_permission_ids(state: tauri::State<AppState>, role_id: i32) -> Result<Vec<i32>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["system.manage"])?;
+    services::rbac::role_permission_ids(&conn, role_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn sync_role_permissions(
+    state: tauri::State<AppState>,
+    role_id: i32,
+    permission_ids: Vec<i32>,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    let ids: Vec<i64> = permission_ids.iter().map(|v| *v as i64).collect();
+    services::rbac::sync_role_permissions(&conn, uid, role_id as i64, &ids)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn list_users(state: tauri::State<AppState>) -> Result<Vec<services::rbac::UserRow>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["system.manage"])?;
+    services::rbac::list_users(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn user_role_ids(state: tauri::State<AppState>, user_id: i32) -> Result<Vec<i32>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["system.manage"])?;
+    services::rbac::user_role_ids(&conn, user_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn sync_user_roles(
+    state: tauri::State<AppState>,
+    user_id: i32,
+    role_ids: Vec<i32>,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    let ids: Vec<i64> = role_ids.iter().map(|v| *v as i64).collect();
+    services::rbac::sync_user_roles(&conn, uid, user_id as i64, &ids)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn toggle_user_status(
+    state: tauri::State<AppState>,
+    user_id: i32,
+    status: String,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    services::rbac::toggle_user_status(&conn, uid, user_id as i64, &status)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn admin_reset_password(
+    state: tauri::State<AppState>,
+    user_id: i32,
+    new_password: String,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    services::rbac::admin_reset_password(&conn, uid, user_id as i64, &new_password)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn audit_list(
+    state: tauri::State<AppState>,
+    module: Option<String>,
+    limit: Option<i32>,
+) -> Result<Vec<services::audit::AuditEntry>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["audit.view", "system.manage"])?;
+    services::audit::list(&conn, module.as_deref(), limit.unwrap_or(100) as i64)
+}
 fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("gagal membuat direktori data: {e}"))?;
     let pool = db::init_pool(&data_dir.join("peoplex.db"))?;
@@ -78,7 +348,28 @@ fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
 
 /// Builder specta: satu-satunya daftar command yang diekspos ke frontend.
 fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
-    tauri_specta::Builder::new().commands(tauri_specta::collect_commands![db_status])
+    tauri_specta::Builder::new().commands(tauri_specta::collect_commands![
+        db_status,
+        login,
+        logout,
+        session_state,
+        change_password,
+        request_password_reset,
+        reset_password,
+        list_roles,
+        create_role,
+        update_role,
+        delete_role,
+        list_permissions,
+        role_permission_ids,
+        sync_role_permissions,
+        list_users,
+        user_role_ids,
+        sync_user_roles,
+        toggle_user_status,
+        admin_reset_password,
+        audit_list
+    ])
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
