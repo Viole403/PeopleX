@@ -16,9 +16,13 @@ use std::sync::LazyLock;
 pub type DbPool = Pool<SqliteConnectionManager>;
 pub type DbConn = PooledConnection<SqliteConnectionManager>;
 
-/// Migrasi versioned. M01 = skema awal (87 tabel).
-pub static MIGRATIONS: LazyLock<Migrations<'static>> =
-    LazyLock::new(|| Migrations::new(vec![M::up(include_str!("schema_sqlite.sql"))]));
+/// Migrasi versioned. M01 = skema awal (87 tabel). M02 = jenjang pendidikan.
+pub static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
+    Migrations::new(vec![
+        M::up(include_str!("schema_sqlite.sql")),
+        M::up(include_str!("migrations/m02_education_levels.sql")),
+    ])
+});
 
 /// Jalankan semua migrasi yang belum teraplikasi (atomik).
 pub fn migrate(conn: &mut Connection) -> Result<(), String> {
@@ -143,7 +147,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("count");
-        assert_eq!(n, 87, "skema harus memuat 87 tabel port HRIS");
+        assert_eq!(n, 87, "skema harus memuat 87 tabel");
     }
 
     #[test]
@@ -155,5 +159,42 @@ mod tests {
             [],
         );
         assert!(bad.is_err(), "branch tanpa company harus ditolak FK");
+    }
+
+    #[test]
+    fn m02_jenjang_baru_diterima_data_lama_aman() {
+        let (_dir, pool) = migrated_pool();
+        let conn = pool.get().expect("get");
+        conn.execute(
+            "INSERT INTO companies (code, name) VALUES ('T1', 'Tes')",
+            [],
+        )
+        .expect("insert company");
+        conn.execute(
+            "INSERT INTO employees (employee_number, first_name, gender, marital_status, company_id, join_date, employment_status, employment_type) VALUES ('EMP-T1', 'Uji', 'male', 'single', 1, '2026-01-01', 'active', 'permanent')",
+            [],
+        )
+        .expect("insert employee");
+        let eid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO employee_educations (employee_id, level, school_name) VALUES (?1, 's1', 'Kampus Lama')",
+            rusqlite::params![eid],
+        )
+        .expect("insert lama");
+        for lvl in ["smk", "d1", "d4", "sma"] {
+            conn.execute(
+                "INSERT INTO employee_educations (employee_id, level, school_name) VALUES (?1, ?2, 'Sekolah')",
+                rusqlite::params![eid, lvl],
+            )
+            .unwrap_or_else(|_| panic!("jenjang {lvl} harus diterima"));
+        }
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM employee_educations WHERE employee_id = ?1",
+                rusqlite::params![eid],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(n, 5);
     }
 }

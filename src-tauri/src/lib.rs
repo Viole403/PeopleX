@@ -496,6 +496,268 @@ fn remove_workflow_step(state: tauri::State<AppState>, step_id: i32) -> Result<(
     services::workflows::remove_step(&conn, uid, step_id as i64)
 }
 
+fn files_dir(state: &tauri::State<AppState>) -> std::path::PathBuf {
+    state.data_dir.join("uploads")
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_list(
+    state: tauri::State<AppState>,
+    search: String,
+    filters: services::employees::EmployeeFilter,
+    page: i32,
+    per_page: i32,
+) -> Result<services::employees::EmployeePage, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["employee.view", "system.manage"])?;
+    services::employees::list(&conn, &search, &filters, page, per_page)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_detail(
+    state: tauri::State<AppState>,
+    id: i32,
+) -> Result<Option<services::employees::EmployeeDetail>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["employee.view", "system.manage"])?;
+    services::employees::detail(&conn, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_dropdowns(
+    state: tauri::State<AppState>,
+) -> Result<services::employees::Dropdowns, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["employee.view", "system.manage"])?;
+    services::employees::dropdowns(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_create(
+    state: tauri::State<AppState>,
+    input: services::employees::EmployeeInput,
+    photo: Option<services::employees::FileUpload>,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["employee.create", "system.manage"])?;
+    let dir = files_dir(&state);
+    services::employees::create(&conn, &dir, uid, &input, photo.as_ref())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_update(
+    state: tauri::State<AppState>,
+    id: i32,
+    input: services::employees::EmployeeInput,
+    resign_date: Option<String>,
+    photo: Option<services::employees::FileUpload>,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["employee.update", "system.manage"])?;
+    let dir = files_dir(&state);
+    services::employees::update(&conn, &dir, uid, id as i64, &input, resign_date.as_deref(), photo.as_ref())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["employee.delete", "system.manage"])?;
+    services::employees::delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_child_types(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::employees::ChildMeta>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["employee.view", "system.manage"])?;
+    Ok(services::employees::child_types())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_child_list(
+    state: tauri::State<AppState>,
+    child: String,
+    employee_id: i32,
+) -> Result<Vec<std::collections::BTreeMap<String, String>>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["employee.view", "system.manage"])?;
+    services::employees::child_list(&conn, &child, employee_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_child_save(
+    state: tauri::State<AppState>,
+    child: String,
+    employee_id: i32,
+    id: Option<i32>,
+    values: std::collections::BTreeMap<String, String>,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["employee.create", "employee.update", "system.manage"],
+    )?;
+    services::employees::child_save(&conn, uid, &child, employee_id as i64, id.map(|v| v as i64), &values)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_child_delete(
+    state: tauri::State<AppState>,
+    child: String,
+    employee_id: i32,
+    id: i32,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["employee.delete", "system.manage"])?;
+    services::employees::child_delete(&conn, uid, &child, employee_id as i64, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_addresses(
+    state: tauri::State<AppState>,
+    employee_id: i32,
+) -> Result<services::employees::Addresses, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["employee.view", "system.manage"])?;
+    services::employees::addresses(&conn, employee_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_address_save(
+    state: tauri::State<AppState>,
+    employee_id: i32,
+    address_type: String,
+    values: std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["employee.update", "system.manage"])?;
+    services::employees::save_address(&conn, uid, employee_id as i64, &address_type, &values)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_documents(
+    state: tauri::State<AppState>,
+    employee_id: i32,
+) -> Result<Vec<services::employees::Document>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["employee.view", "system.manage"])?;
+    services::employees::documents(&conn, employee_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_document_upload(
+    state: tauri::State<AppState>,
+    employee_id: i32,
+    category: String,
+    name: String,
+    expiry_date: Option<String>,
+    file: services::employees::FileUpload,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["employee.create", "employee.update", "system.manage"])?;
+    let dir = files_dir(&state);
+    services::employees::upload_document(&conn, &dir, uid, employee_id as i64, &category, &name, expiry_date.as_deref(), &file)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_document_bytes(
+    state: tauri::State<AppState>,
+    employee_id: i32,
+    id: i32,
+) -> Result<services::employees::DocumentBytes, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["employee.view", "system.manage"])?;
+    let dir = files_dir(&state);
+    services::employees::document_bytes(&conn, &dir, employee_id as i64, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_document_delete(
+    state: tauri::State<AppState>,
+    employee_id: i32,
+    id: i32,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["employee.delete", "system.manage"])?;
+    services::employees::child_delete(&conn, uid, "documents", employee_id as i64, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_salary_current(
+    state: tauri::State<AppState>,
+    employee_id: i32,
+) -> Result<Option<services::employees::SalaryRow>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["employee.view", "system.manage"])?;
+    services::employees::salary_current(&conn, employee_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_salary_history(
+    state: tauri::State<AppState>,
+    employee_id: i32,
+) -> Result<Vec<services::employees::SalaryRow>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["employee.view", "system.manage"])?;
+    services::employees::salary_history(&conn, employee_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_salary_components(
+    state: tauri::State<AppState>,
+    salary_id: i32,
+) -> Result<Vec<services::employees::SalaryComponentRow>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["employee.view", "system.manage"])?;
+    services::employees::salary_components(&conn, salary_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_available_components(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::employees::SalaryComponentRow>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["employee.view", "system.manage"])?;
+    services::employees::available_components(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn employee_set_salary(
+    state: tauri::State<AppState>,
+    employee_id: i32,
+    basic_salary: f64,
+    effective_date: String,
+    components: Vec<(i32, f64)>,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["employee.update", "system.manage"])?;
+    let comps: Vec<(i64, f64)> = components.iter().map(|(c, a)| (*c as i64, *a)).collect();
+    services::employees::set_salary(&conn, uid, employee_id as i64, basic_salary, &effective_date, &comps)
+}
+
 fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("gagal membuat direktori data: {e}"))?;
     let pool = db::init_pool(&data_dir.join("peoplex.db"))?;
@@ -549,7 +811,28 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         org_chart,
         list_workflows,
         add_workflow_step,
-        remove_workflow_step
+        remove_workflow_step,
+        employee_list,
+        employee_detail,
+        employee_dropdowns,
+        employee_create,
+        employee_update,
+        employee_delete,
+        employee_child_types,
+        employee_child_list,
+        employee_child_save,
+        employee_child_delete,
+        employee_addresses,
+        employee_address_save,
+        employee_documents,
+        employee_document_upload,
+        employee_document_bytes,
+        employee_document_delete,
+        employee_salary_current,
+        employee_salary_history,
+        employee_salary_components,
+        employee_available_components,
+        employee_set_salary
     ])
 }
 
