@@ -142,6 +142,41 @@ export const commands = {
 	employeeSalaryComponents: (salaryId: number) => typedError<SalaryComponentRow[], string>(__TAURI_INVOKE("employee_salary_components", { salaryId })),
 	employeeAvailableComponents: () => typedError<SalaryComponentRow[], string>(__TAURI_INVOKE("employee_available_components")),
 	employeeSetSalary: (employeeId: number, basicSalary: number | null, effectiveDate: string, components: ([number, number | null])[]) => typedError<number, string>(__TAURI_INVOKE("employee_set_salary", { employeeId, basicSalary, effectiveDate, components })),
+	shiftList: () => typedError<Shift[], string>(__TAURI_INVOKE("shift_list")),
+	shiftSave: (id: number | null, input: ShiftInput) => typedError<number, string>(__TAURI_INVOKE("shift_save", { id, input })),
+	shiftDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("shift_delete", { id })),
+	scheduleList: () => typedError<Schedule[], string>(__TAURI_INVOKE("schedule_list")),
+	scheduleSave: (id: number | null, input: ScheduleInput) => typedError<number, string>(__TAURI_INVOKE("schedule_save", { id, input })),
+	scheduleSaveDays: (scheduleId: number, days: ([number, number | null, boolean])[]) => typedError<null, string>(__TAURI_INVOKE("schedule_save_days", { scheduleId, days })),
+	scheduleDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("schedule_delete", { id })),
+	assignmentList: () => typedError<Assignment[], string>(__TAURI_INVOKE("assignment_list")),
+	assignmentSave: (id: number | null, input: AssignmentInput) => typedError<number, string>(__TAURI_INVOKE("assignment_save", { id, input })),
+	assignmentDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("assignment_delete", { id })),
+	holidayList: () => typedError<Holiday[], string>(__TAURI_INVOKE("holiday_list")),
+	holidaySave: (id: number | null, input: HolidayInput) => typedError<number, string>(__TAURI_INVOKE("holiday_save", { id, input })),
+	holidayDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("holiday_delete", { id })),
+	attendanceToday: () => typedError<{
+	id: number,
+	employee_id: number,
+	date: string,
+	clock_in: string | null,
+	clock_out: string | null,
+	status: string,
+	late_minutes: number,
+	early_minutes: number,
+	work_minutes: number,
+	notes: string | null,
+	shift_id: number | null,
+} | null, string>(__TAURI_INVOKE("attendance_today")),
+	attendanceClockIn: (lat: number | null, lng: number | null) => typedError<ClockResult, string>(__TAURI_INVOKE("attendance_clock_in", { lat, lng })),
+	attendanceClockOut: (lat: number | null, lng: number | null) => typedError<ClockResult, string>(__TAURI_INVOKE("attendance_clock_out", { lat, lng })),
+	attendanceHistory: (month: string) => typedError<Attendance[], string>(__TAURI_INVOKE("attendance_history", { month })),
+	attendanceRecap: (date: string, search: string) => typedError<RecapRow[], string>(__TAURI_INVOKE("attendance_recap", { date, search })),
+	attendanceManual: (input: ManualInput) => typedError<number, string>(__TAURI_INVOKE("attendance_manual", { input })),
+	attendanceMyCorrections: () => typedError<Correction[], string>(__TAURI_INVOKE("attendance_my_corrections")),
+	attendancePendingCorrections: () => typedError<Correction[], string>(__TAURI_INVOKE("attendance_pending_corrections")),
+	attendanceRequestCorrection: (input: CorrectionInput) => typedError<number, string>(__TAURI_INVOKE("attendance_request_correction", { input })),
+	attendanceDecideCorrection: (id: number, decision: string, notes: string | null) => typedError<null, string>(__TAURI_INVOKE("attendance_decide_correction", { id, decision, notes })),
 };
 
 /* Types */
@@ -157,6 +192,42 @@ export type AddressRow = {
 export type Addresses = {
 	ktp: AddressRow | null,
 	domicile: AddressRow | null,
+};
+
+export type Assignment = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	work_schedule_id: number | null,
+	schedule_name: string | null,
+	shift_id: number | null,
+	shift_name: string | null,
+	date: string | null,
+	start_date: string,
+	end_date: string | null,
+};
+
+export type AssignmentInput = {
+	employee_id: number,
+	work_schedule_id: number | null,
+	shift_id: number | null,
+	date: string | null,
+	start_date: string | null,
+	end_date: string | null,
+};
+
+export type Attendance = {
+	id: number,
+	employee_id: number,
+	date: string,
+	clock_in: string | null,
+	clock_out: string | null,
+	status: string,
+	late_minutes: number,
+	early_minutes: number,
+	work_minutes: number,
+	notes: string | null,
+	shift_id: number | null,
 };
 
 /**  Baris audit untuk daftar. */
@@ -188,6 +259,12 @@ export type ChildMeta = {
 	slug: string,
 	title: string,
 	fields: ChildField[],
+};
+
+/**  Hasil clock in/out: status + pesan. */
+export type ClockResult = {
+	status: string,
+	message: string,
 };
 
 /**  Profil perusahaan (baris pertama). */
@@ -225,6 +302,26 @@ export type CompanyNode = {
 	name: string,
 	employee_count: number,
 	branches: BranchNode[],
+};
+
+export type Correction = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	date: string,
+	requested_clock_in: string | null,
+	requested_clock_out: string | null,
+	reason: string,
+	status: string,
+	notes: string | null,
+	created_at: string,
+};
+
+export type CorrectionInput = {
+	date: string,
+	requested_clock_in: string | null,
+	requested_clock_out: string | null,
+	reason: string,
 };
 
 /**  Status database untuk layar diagnosa. */
@@ -425,10 +522,34 @@ export type FileUpload = {
 	bytes: number[],
 };
 
+export type Holiday = {
+	id: number,
+	name: string,
+	date: string,
+	holiday_type: string,
+	description: string | null,
+};
+
+export type HolidayInput = {
+	name: string,
+	date: string,
+	holiday_type: string,
+	description: string | null,
+};
+
 /**  Hasil login berhasil. */
 export type LoginOk = {
 	user: SessionUser,
 	must_change_password: boolean,
+};
+
+export type ManualInput = {
+	employee_id: number,
+	date: string,
+	clock_in: string | null,
+	clock_out: string | null,
+	status: string,
+	notes: string | null,
 };
 
 /**  Opsi dropdown form karyawan. */
@@ -455,6 +576,18 @@ export type Permission = {
 	slug: string,
 	name: string,
 	module: string,
+};
+
+export type RecapRow = {
+	employee_id: number,
+	employee_number: string,
+	name: string,
+	department_name: string | null,
+	clock_in: string | null,
+	clock_out: string | null,
+	status: string | null,
+	late_minutes: number | null,
+	work_minutes: number | null,
 };
 
 /**  Peran untuk daftar dan form. */
@@ -484,6 +617,25 @@ export type SalaryRow = {
 	is_active: boolean,
 };
 
+export type Schedule = {
+	id: number,
+	name: string,
+	description: string | null,
+	days: ScheduleDay[],
+};
+
+export type ScheduleDay = {
+	day_of_week: number,
+	day_name: string,
+	shift_id: number | null,
+	is_working_day: boolean,
+};
+
+export type ScheduleInput = {
+	name: string,
+	description: string | null,
+};
+
 /**  Pengguna yang sedang login. */
 export type SessionUser = {
 	id: number,
@@ -499,6 +651,27 @@ export type Setting = {
 	key: string,
 	value: string | null,
 	group: string,
+};
+
+export type Shift = {
+	id: number,
+	name: string,
+	start_time: string,
+	end_time: string,
+	break_start: string | null,
+	break_end: string | null,
+	grace_period_minutes: number,
+	is_overnight: boolean,
+};
+
+export type ShiftInput = {
+	name: string,
+	start_time: string,
+	end_time: string,
+	break_start: string | null,
+	break_end: string | null,
+	grace_period_minutes: number,
+	is_overnight: boolean,
 };
 
 /**  Opsi statis untuk form child. */

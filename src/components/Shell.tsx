@@ -22,11 +22,13 @@ import { useUi } from "../lib/ui";
 const NAV_MAIN = [
   { to: "/", label: "Dasbor", icon: Home01 },
   { to: "/employees", label: "Karyawan", icon: Users01 },
+  { to: "/attendance", label: "Absensi", icon: Database01 },
 ];
 const NAV_ADMIN = [
   { to: "/users", label: "Pengguna", icon: Users01, perm: "system.manage" },
   { to: "/roles", label: "Peran", icon: Settings01, perm: "system.manage" },
   { to: "/organization", label: "Organisasi", icon: Users01, perm: "organization.view" },
+  { to: "/schedules", label: "Shift & Jadwal", icon: Settings01, perm: "attendance.view" },
   { to: "/settings", label: "Pengaturan", icon: Settings01, perm: "system.manage" },
   { to: "/audit", label: "Audit Log", icon: List, perm: "audit.view" },
   { to: "/status", label: "Status Basis Data", icon: Database01, perm: null },
