@@ -13,22 +13,28 @@ pub struct AppState {
 }
 
 /// Pengguna yang sedang login (diisi penuh di modul auth).
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SessionUser {
-    pub id: i64,
+    pub id: i32,
     pub username: String,
 }
 
 /// Status database untuk layar diagnosa.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct DbStatus {
     pub ok: bool,
-    pub tables: i64,
-    pub users: i64,
+    pub tables: i32,
+    pub users: i32,
     pub data_dir: String,
 }
 
+/// i64 dari SQLite ke i32 untuk DTO (tolak overflow, jangan silent-truncate).
+fn to_dto_int(v: i64, field: &str) -> Result<i32, String> {
+    i32::try_from(v).map_err(|_| format!("nilai {field} di luar jangkauan"))
+}
+
 #[tauri::command]
+#[specta::specta]
 fn db_status(state: tauri::State<AppState>) -> Result<DbStatus, String> {
     let conn = state
         .db
@@ -46,8 +52,8 @@ fn db_status(state: tauri::State<AppState>) -> Result<DbStatus, String> {
         .map_err(|e| format!("gagal menghitung users: {e}"))?;
     Ok(DbStatus {
         ok: true,
-        tables,
-        users,
+        tables: to_dto_int(tables, "tables")?,
+        users: to_dto_int(users, "users")?,
         data_dir: state.data_dir.display().to_string(),
     })
 }
@@ -70,8 +76,21 @@ fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
     })
 }
 
+/// Builder specta: satu-satunya daftar command yang diekspos ke frontend.
+fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
+    tauri_specta::Builder::new().commands(tauri_specta::collect_commands![db_status])
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let builder = specta_builder();
+    #[cfg(debug_assertions)]
+    builder
+        .export(
+            specta_typescript::Typescript::default(),
+            "../src/bindings.ts",
+        )
+        .expect("gagal export TypeScript bindings");
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -83,7 +102,7 @@ pub fn run() {
             app.manage(state);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![db_status])
+        .invoke_handler(builder.invoke_handler())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -116,5 +135,23 @@ mod tests {
             .unwrap();
         assert_eq!(tables, 87);
         assert_eq!(admin, 1);
+    }
+
+    #[test]
+    fn specta_export_memuat_db_status() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("bindings.ts");
+        specta_builder()
+            .export(specta_typescript::Typescript::default(), &out)
+            .expect("export");
+        let ts = std::fs::read_to_string(&out).expect("read");
+        assert!(
+            ts.contains("dbStatus"),
+            "bindings harus memuat command dbStatus"
+        );
+        assert!(
+            ts.contains("DbStatus"),
+            "bindings harus memuat tipe DbStatus"
+        );
     }
 }
