@@ -26,6 +26,8 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 rusqlite_migration = "1"
 r2d2 = "0.8"
 r2d2_sqlite = { version = "0.24", features = ["bundled"] }
+bcrypt = "0.19"
+chrono = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
