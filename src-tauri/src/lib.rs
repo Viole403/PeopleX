@@ -560,7 +560,15 @@ fn employee_update(
     let conn = pooled(&state)?;
     let (uid, _) = require(&state, &conn, &["employee.update", "system.manage"])?;
     let dir = files_dir(&state);
-    services::employees::update(&conn, &dir, uid, id as i64, &input, resign_date.as_deref(), photo.as_ref())
+    services::employees::update(
+        &conn,
+        &dir,
+        uid,
+        id as i64,
+        &input,
+        resign_date.as_deref(),
+        photo.as_ref(),
+    )
 }
 
 #[tauri::command]
@@ -608,7 +616,14 @@ fn employee_child_save(
         &conn,
         &["employee.create", "employee.update", "system.manage"],
     )?;
-    services::employees::child_save(&conn, uid, &child, employee_id as i64, id.map(|v| v as i64), &values)
+    services::employees::child_save(
+        &conn,
+        uid,
+        &child,
+        employee_id as i64,
+        id.map(|v| v as i64),
+        &values,
+    )
 }
 
 #[tauri::command]
@@ -670,9 +685,22 @@ fn employee_document_upload(
     file: services::employees::FileUpload,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["employee.create", "employee.update", "system.manage"])?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["employee.create", "employee.update", "system.manage"],
+    )?;
     let dir = files_dir(&state);
-    services::employees::upload_document(&conn, &dir, uid, employee_id as i64, &category, &name, expiry_date.as_deref(), &file)
+    services::employees::upload_document(
+        &conn,
+        &dir,
+        uid,
+        employee_id as i64,
+        &category,
+        &name,
+        expiry_date.as_deref(),
+        &file,
+    )
 }
 
 #[tauri::command]
@@ -755,7 +783,303 @@ fn employee_set_salary(
     let conn = pooled(&state)?;
     let (uid, _) = require(&state, &conn, &["employee.update", "system.manage"])?;
     let comps: Vec<(i64, f64)> = components.iter().map(|(c, a)| (*c as i64, *a)).collect();
-    services::employees::set_salary(&conn, uid, employee_id as i64, basic_salary, &effective_date, &comps)
+    services::employees::set_salary(
+        &conn,
+        uid,
+        employee_id as i64,
+        basic_salary,
+        &effective_date,
+        &comps,
+    )
+}
+
+/// employee_id dari user login (aksi mandiri). Galat bila akun tak tertaut karyawan.
+fn my_employee(conn: &rusqlite::Connection, user_id: i64) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT employee_id FROM users WHERE id = ?1",
+        rusqlite::params![user_id],
+        |r| r.get::<_, Option<i64>>(0),
+    )
+    .map_err(|e| format!("gagal memuat akun: {e}"))?
+    .ok_or("Akun belum tertaut karyawan.".to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn shift_list(state: tauri::State<AppState>) -> Result<Vec<services::attendance::Shift>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["attendance.view", "system.manage"])?;
+    services::attendance::shift_list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn shift_save(
+    state: tauri::State<AppState>,
+    id: Option<i32>,
+    input: services::attendance::ShiftInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    services::attendance::shift_save(&conn, uid, id.map(|v| v as i64), &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn shift_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    services::attendance::shift_delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn schedule_list(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::attendance::Schedule>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["attendance.view", "system.manage"])?;
+    services::attendance::schedule_list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn schedule_save(
+    state: tauri::State<AppState>,
+    id: Option<i32>,
+    input: services::attendance::ScheduleInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    services::attendance::schedule_save(&conn, uid, id.map(|v| v as i64), &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn schedule_save_days(
+    state: tauri::State<AppState>,
+    schedule_id: i32,
+    days: Vec<(i32, Option<i32>, bool)>,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    let mapped: Vec<(i64, Option<i64>, bool)> = days
+        .iter()
+        .map(|(d, s, w)| (*d as i64, s.map(|v| v as i64), *w))
+        .collect();
+    services::attendance::schedule_save_days(&conn, uid, schedule_id as i64, &mapped)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn schedule_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    services::attendance::schedule_delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn assignment_list(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::attendance::Assignment>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["attendance.view", "system.manage"])?;
+    services::attendance::assignment_list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn assignment_save(
+    state: tauri::State<AppState>,
+    id: Option<i32>,
+    input: services::attendance::AssignmentInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    services::attendance::assignment_save(&conn, uid, id.map(|v| v as i64), &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn assignment_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    services::attendance::assignment_delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn holiday_list(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::attendance::Holiday>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["attendance.view", "system.manage"])?;
+    services::attendance::holiday_list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn holiday_save(
+    state: tauri::State<AppState>,
+    id: Option<i32>,
+    input: services::attendance::HolidayInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    services::attendance::holiday_save(&conn, uid, id.map(|v| v as i64), &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn holiday_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    services::attendance::holiday_delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn attendance_today(
+    state: tauri::State<AppState>,
+) -> Result<Option<services::attendance::Attendance>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::attendance::today(&conn, my_employee(&conn, uid)?)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn attendance_clock_in(
+    state: tauri::State<AppState>,
+    lat: Option<f64>,
+    lng: Option<f64>,
+) -> Result<services::attendance::ClockResult, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::attendance::clock_in(
+        &conn,
+        uid,
+        my_employee(&conn, uid)?,
+        lat,
+        lng,
+        Some("desktop"),
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+fn attendance_clock_out(
+    state: tauri::State<AppState>,
+    lat: Option<f64>,
+    lng: Option<f64>,
+) -> Result<services::attendance::ClockResult, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::attendance::clock_out(
+        &conn,
+        uid,
+        my_employee(&conn, uid)?,
+        lat,
+        lng,
+        Some("desktop"),
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+fn attendance_history(
+    state: tauri::State<AppState>,
+    month: String,
+) -> Result<Vec<services::attendance::Attendance>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::attendance::history(&conn, my_employee(&conn, uid)?, &month)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn attendance_recap(
+    state: tauri::State<AppState>,
+    date: String,
+    search: String,
+) -> Result<Vec<services::attendance::RecapRow>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["attendance.view", "system.manage"])?;
+    services::attendance::recap(&conn, &date, &search)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn attendance_manual(
+    state: tauri::State<AppState>,
+    input: services::attendance::ManualInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["attendance.create", "attendance.correct", "system.manage"],
+    )?;
+    services::attendance::manual_entry(&conn, uid, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn attendance_my_corrections(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::attendance::Correction>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::attendance::my_corrections(&conn, my_employee(&conn, uid)?)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn attendance_pending_corrections(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::attendance::Correction>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["attendance.approve", "system.manage"])?;
+    services::attendance::pending_corrections(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn attendance_request_correction(
+    state: tauri::State<AppState>,
+    input: services::attendance::CorrectionInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::attendance::request_correction(&conn, uid, my_employee(&conn, uid)?, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn attendance_decide_correction(
+    state: tauri::State<AppState>,
+    id: i32,
+    decision: String,
+    notes: Option<String>,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, user) = require(&state, &conn, &["attendance.approve", "system.manage"])?;
+    let actor_emp = my_employee(&conn, uid).ok();
+    let privileged = user.is_super_admin
+        || user
+            .permissions
+            .iter()
+            .any(|p| p == "attendance.approve" || p == "system.manage");
+    services::attendance::decide_correction(
+        &conn,
+        uid,
+        actor_emp,
+        privileged,
+        id as i64,
+        &decision,
+        notes.as_deref(),
+    )
 }
 
 fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
@@ -832,7 +1156,30 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         employee_salary_history,
         employee_salary_components,
         employee_available_components,
-        employee_set_salary
+        employee_set_salary,
+        shift_list,
+        shift_save,
+        shift_delete,
+        schedule_list,
+        schedule_save,
+        schedule_save_days,
+        schedule_delete,
+        assignment_list,
+        assignment_save,
+        assignment_delete,
+        holiday_list,
+        holiday_save,
+        holiday_delete,
+        attendance_today,
+        attendance_clock_in,
+        attendance_clock_out,
+        attendance_history,
+        attendance_recap,
+        attendance_manual,
+        attendance_my_corrections,
+        attendance_pending_corrections,
+        attendance_request_correction,
+        attendance_decide_correction
     ])
 }
 
