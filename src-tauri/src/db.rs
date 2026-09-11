@@ -9,10 +9,23 @@
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
+use rusqlite_migration::{Migrations, M};
 use std::path::Path;
+use std::sync::LazyLock;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 pub type DbConn = PooledConnection<SqliteConnectionManager>;
+
+/// Migrasi versioned. M01 = skema awal (87 tabel).
+pub static MIGRATIONS: LazyLock<Migrations<'static>> =
+    LazyLock::new(|| Migrations::new(vec![M::up(include_str!("schema_sqlite.sql"))]));
+
+/// Jalankan semua migrasi yang belum teraplikasi (atomik).
+pub fn migrate(conn: &mut Connection) -> Result<(), String> {
+    MIGRATIONS
+        .to_latest(conn)
+        .map_err(|e| format!("migrasi database gagal: {e}"))
+}
 
 /// PRAGMA wajib tiap koneksi baru dari pool.
 fn configure(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -104,5 +117,43 @@ mod tests {
         let nested = dir.path().join("a").join("b").join("nested.db");
         init_pool(&nested).expect("init_pool");
         assert!(nested.exists(), "file db harus tercipta");
+    }
+
+    #[test]
+    fn definisi_migrasi_valid() {
+        MIGRATIONS.validate().expect("migrasi harus valid");
+    }
+
+    fn migrated_pool() -> (tempfile::TempDir, DbPool) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = init_pool(&dir.path().join("migrated.db")).expect("init_pool");
+        let mut conn = pool.get().expect("get");
+        migrate(&mut conn).expect("migrate");
+        (dir, pool)
+    }
+
+    #[test]
+    fn migrate_membuat_87_tabel() {
+        let (_dir, pool) = migrated_pool();
+        let conn = pool.get().expect("get");
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(n, 87, "skema harus memuat 87 tabel port HRIS");
+    }
+
+    #[test]
+    fn fk_tetap_ditegakkan_setelah_migrate() {
+        let (_dir, pool) = migrated_pool();
+        let conn = pool.get().expect("get");
+        let bad = conn.execute(
+            "INSERT INTO branches (company_id, code, name) VALUES (999, 'X', 'Yatim')",
+            [],
+        );
+        assert!(bad.is_err(), "branch tanpa company harus ditolak FK");
     }
 }
