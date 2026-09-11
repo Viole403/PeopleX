@@ -93,6 +93,7 @@ pub fn run() {
         .expect("gagal export TypeScript bindings");
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
         .setup(|app| {
             let data_dir = app
                 .path()
@@ -153,5 +154,16 @@ mod tests {
             ts.contains("DbStatus"),
             "bindings harus memuat tipe DbStatus"
         );
+    }
+
+    #[test]
+    #[ignore]
+    fn export_bindings_ke_src() {
+        specta_builder()
+            .export(
+                specta_typescript::Typescript::default(),
+                "../src/bindings.ts",
+            )
+            .expect("export");
     }
 }
