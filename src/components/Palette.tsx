@@ -7,6 +7,8 @@ const ITEMS = [
   { label: "Dasbor", to: "/" },
   { label: "Pengguna", to: "/users" },
   { label: "Peran", to: "/roles" },
+  { label: "Organisasi", to: "/organization" },
+  { label: "Pengaturan", to: "/settings" },
   { label: "Audit Log", to: "/audit" },
   { label: "Status Basis Data", to: "/status" },
   { label: "Ganti Password", to: "/change-password" },

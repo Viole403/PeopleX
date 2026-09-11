@@ -31,6 +31,33 @@ export const commands = {
 	toggleUserStatus: (userId: number, status: string) => typedError<null, string>(__TAURI_INVOKE("toggle_user_status", { userId, status })),
 	adminResetPassword: (userId: number, newPassword: string) => typedError<null, string>(__TAURI_INVOKE("admin_reset_password", { userId, newPassword })),
 	auditList: (module: string | null, limit: number | null) => typedError<AuditEntry[], string>(__TAURI_INVOKE("audit_list", { module, limit })),
+	getSettings: () => typedError<Setting[], string>(__TAURI_INVOKE("get_settings")),
+	saveSettings: (items: ([string, string])[]) => typedError<null, string>(__TAURI_INVOKE("save_settings", { items })),
+	getCompany: () => typedError<{
+	id: number,
+	code: string,
+	name: string,
+	legal_name: string | null,
+	address: string | null,
+	city: string | null,
+	province: string | null,
+	postal_code: string | null,
+	phone: string | null,
+	email: string | null,
+	npwp: string | null,
+	established_date: string | null,
+} | null, string>(__TAURI_INVOKE("get_company")),
+	saveCompany: (input: CompanyInput) => typedError<null, string>(__TAURI_INVOKE("save_company", { input })),
+	orgEntities: () => typedError<EntityMeta[], string>(__TAURI_INVOKE("org_entities")),
+	orgList: (slug: string, search: string, page: number, perPage: number) => typedError<OrgPage, string>(__TAURI_INVOKE("org_list", { slug, search, page, perPage })),
+	orgGet: (slug: string, id: number) => typedError<{ [key in string]: string } | null, string>(__TAURI_INVOKE("org_get", { slug, id })),
+	orgOptions: (slug: string, field: string) => typedError<Opt[], string>(__TAURI_INVOKE("org_options", { slug, field })),
+	orgSave: (slug: string, id: number | null, values: { [key in string]: string }) => typedError<number, string>(__TAURI_INVOKE("org_save", { slug, id, values })),
+	orgDelete: (slug: string, id: number) => typedError<null, string>(__TAURI_INVOKE("org_delete", { slug, id })),
+	orgChart: () => typedError<CompanyNode[], string>(__TAURI_INVOKE("org_chart")),
+	listWorkflows: () => typedError<Workflow[], string>(__TAURI_INVOKE("list_workflows")),
+	addWorkflowStep: (workflowId: number, approverType: string, roleId: number | null, userId: number | null) => typedError<number, string>(__TAURI_INVOKE("add_workflow_step", { workflowId, approverType, roleId, userId })),
+	removeWorkflowStep: (stepId: number) => typedError<null, string>(__TAURI_INVOKE("remove_workflow_step", { stepId })),
 };
 
 /* Types */
@@ -45,6 +72,49 @@ export type AuditEntry = {
 	created_at: string,
 };
 
+export type BranchNode = {
+	id: number,
+	name: string,
+	departments: DepartmentNode[],
+};
+
+/**  Profil perusahaan (baris pertama). */
+export type Company = {
+	id: number,
+	code: string,
+	name: string,
+	legal_name: string | null,
+	address: string | null,
+	city: string | null,
+	province: string | null,
+	postal_code: string | null,
+	phone: string | null,
+	email: string | null,
+	npwp: string | null,
+	established_date: string | null,
+};
+
+/**  Pembaruan parsial profil perusahaan (field kosong = pertahankan nilai lama). */
+export type CompanyInput = {
+	name: string | null,
+	legal_name: string | null,
+	address: string | null,
+	city: string | null,
+	province: string | null,
+	postal_code: string | null,
+	phone: string | null,
+	email: string | null,
+	npwp: string | null,
+	established_date: string | null,
+};
+
+export type CompanyNode = {
+	id: number,
+	name: string,
+	employee_count: number,
+	branches: BranchNode[],
+};
+
 /**  Status database untuk layar diagnosa. */
 export type DbStatus = {
 	ok: boolean,
@@ -53,10 +123,53 @@ export type DbStatus = {
 	data_dir: string,
 };
 
+export type DepartmentNode = {
+	id: number,
+	name: string,
+	head_name: string | null,
+	employee_count: number,
+	divisions: DivisionNode[],
+};
+
+/**  Node struktur untuk tampilan bagan. */
+export type DivisionNode = {
+	id: number,
+	name: string,
+};
+
+/**  Metadata entitas untuk tab dan tabel. */
+export type EntityMeta = {
+	slug: string,
+	title: string,
+	columns: string[],
+	fields: FieldMeta[],
+};
+
+/**  Metadata field untuk membangun form dinamis. */
+export type FieldMeta = {
+	name: string,
+	label: string,
+	field_type: string,
+	required: boolean,
+	options: Opt[] | null,
+};
+
 /**  Hasil login berhasil. */
 export type LoginOk = {
 	user: SessionUser,
 	must_change_password: boolean,
+};
+
+/**  Opsi dropdown untuk field select. */
+export type Opt = {
+	id: number,
+	name: string,
+};
+
+/**  Halaman daftar generik (nilai selalu string; frontend format ulang). */
+export type OrgPage = {
+	rows: { [key in string]: string }[],
+	total: number,
 };
 
 /**  Izin tunggal. */
@@ -87,6 +200,13 @@ export type SessionUser = {
 	permissions: string[],
 };
 
+/**  Satu baris pengaturan. */
+export type Setting = {
+	key: string,
+	value: string | null,
+	group: string,
+};
+
 /**  Baris pengguna untuk tabel admin. */
 export type UserRow = {
 	id: number,
@@ -96,6 +216,26 @@ export type UserRow = {
 	must_change_password: boolean,
 	employee_name: string | null,
 	roles: string[],
+};
+
+/**  Alur beserta tahap-tahapnya. */
+export type Workflow = {
+	id: number,
+	module: string,
+	name: string,
+	is_active: boolean,
+	steps: WorkflowStep[],
+};
+
+/**  Satu tahap persetujuan. */
+export type WorkflowStep = {
+	id: number,
+	step_order: number,
+	approver_type: string,
+	role_id: number | null,
+	user_id: number | null,
+	role_name: string | null,
+	username: string | null,
 };
 
 /* Tauri Specta runtime */
