@@ -48,7 +48,7 @@ function OrganizationPage() {
         <p className="text-sm text-text-error-primary">Gagal memuat entitas.</p>
       ) : (
         <>
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-1 rounded-xl border border-border-secondary bg-bg-primary p-1">
             {entities.data.map((e) => (
               <button
                 key={e.slug}

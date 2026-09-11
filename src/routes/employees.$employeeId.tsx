@@ -91,7 +91,7 @@ function EmployeeDetailPage() {
           </button>
         )}
       </div>
-      <div className="flex flex-wrap gap-1">
+      <div className="flex flex-wrap gap-1 rounded-xl border border-border-secondary bg-bg-primary p-1">
         {TABS.map((t) => (
           <button
             key={t}
