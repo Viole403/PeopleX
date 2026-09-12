@@ -23,6 +23,7 @@ const NAV_MAIN = [
   { to: "/", label: "Dasbor", icon: Home01 },
   { to: "/employees", label: "Karyawan", icon: Users01 },
   { to: "/attendance", label: "Absensi", icon: Database01 },
+  { to: "/leave", label: "Cuti & Izin", icon: Database01 },
 ];
 const NAV_ADMIN = [
   { to: "/users", label: "Pengguna", icon: Users01, perm: "system.manage" },

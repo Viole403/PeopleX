@@ -177,6 +177,28 @@ export const commands = {
 	attendancePendingCorrections: () => typedError<Correction[], string>(__TAURI_INVOKE("attendance_pending_corrections")),
 	attendanceRequestCorrection: (input: CorrectionInput) => typedError<number, string>(__TAURI_INVOKE("attendance_request_correction", { input })),
 	attendanceDecideCorrection: (id: number, decision: string, notes: string | null) => typedError<null, string>(__TAURI_INVOKE("attendance_decide_correction", { id, decision, notes })),
+	leaveBalances: (year: number) => typedError<Balance[], string>(__TAURI_INVOKE("leave_balances", { year })),
+	leaveTypes: () => typedError<LeaveType[], string>(__TAURI_INVOKE("leave_types")),
+	leaveTypeSave: (id: number | null, input: LeaveTypeInput) => typedError<number, string>(__TAURI_INVOKE("leave_type_save", { id, input })),
+	leaveTypeDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("leave_type_delete", { id })),
+	leaveMy: () => typedError<LeaveRequest[], string>(__TAURI_INVOKE("leave_my")),
+	leavePending: () => typedError<LeaveRequest[], string>(__TAURI_INVOKE("leave_pending")),
+	leaveAll: () => typedError<LeaveRequest[], string>(__TAURI_INVOKE("leave_all")),
+	leaveCreate: (input: LeaveCreate) => typedError<number, string>(__TAURI_INVOKE("leave_create", { input })),
+	leaveDecide: (id: number, decision: string, notes: string | null) => typedError<null, string>(__TAURI_INVOKE("leave_decide", { id, decision, notes })),
+	leaveCancel: (id: number) => typedError<null, string>(__TAURI_INVOKE("leave_cancel", { id })),
+	leaveCalendar: (month: string) => typedError<CalendarDay[], string>(__TAURI_INVOKE("leave_calendar", { month })),
+	overtimeMy: () => typedError<Overtime[], string>(__TAURI_INVOKE("overtime_my")),
+	overtimePending: () => typedError<Overtime[], string>(__TAURI_INVOKE("overtime_pending")),
+	overtimeAll: () => typedError<Overtime[], string>(__TAURI_INVOKE("overtime_all")),
+	overtimeCreate: (input: OvertimeCreate) => typedError<number, string>(__TAURI_INVOKE("overtime_create", { input })),
+	overtimeDecide: (id: number, decision: string, notes: string | null) => typedError<null, string>(__TAURI_INVOKE("overtime_decide", { id, decision, notes })),
+	permissionTypes: () => typedError<PermissionType[], string>(__TAURI_INVOKE("permission_types")),
+	permissionMy: () => typedError<PermissionRequest[], string>(__TAURI_INVOKE("permission_my")),
+	permissionPending: () => typedError<PermissionRequest[], string>(__TAURI_INVOKE("permission_pending")),
+	permissionAll: () => typedError<PermissionRequest[], string>(__TAURI_INVOKE("permission_all")),
+	permissionCreate: (input: PermissionCreate) => typedError<number, string>(__TAURI_INVOKE("permission_create", { input })),
+	permissionDecide: (id: number, decision: string) => typedError<null, string>(__TAURI_INVOKE("permission_decide", { id, decision })),
 };
 
 /* Types */
@@ -241,10 +263,28 @@ export type AuditEntry = {
 	created_at: string,
 };
 
+export type Balance = {
+	leave_type_id: number,
+	code: string,
+	name: string,
+	is_paid: boolean,
+	allocated_days: number | null,
+	used_days: number | null,
+	carried_days: number | null,
+	adjustment_days: number | null,
+	remaining: number | null,
+};
+
 export type BranchNode = {
 	id: number,
 	name: string,
 	departments: DepartmentNode[],
+};
+
+export type CalendarDay = {
+	date: string,
+	label: string,
+	kind: string,
 };
 
 export type ChildField = {
@@ -537,6 +577,50 @@ export type HolidayInput = {
 	description: string | null,
 };
 
+export type LeaveCreate = {
+	leave_type_id: number,
+	start_date: string,
+	end_date: string,
+	reason: string | null,
+};
+
+export type LeaveRequest = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	leave_type_id: number,
+	leave_type_name: string,
+	start_date: string,
+	end_date: string,
+	total_days: number | null,
+	reason: string | null,
+	status: string,
+	current_step: number,
+	created_at: string,
+};
+
+export type LeaveType = {
+	id: number,
+	code: string,
+	name: string,
+	default_days_per_year: number | null,
+	is_paid: boolean,
+	carry_forward: boolean,
+	carry_forward_max_days: number | null,
+	requires_attachment: boolean,
+};
+
+export type LeaveTypeInput = {
+	code: string,
+	name: string,
+	default_days_per_year: number | null,
+	is_paid: boolean,
+	carry_forward: boolean,
+	carry_forward_max_days: number | null,
+	requires_attachment: boolean,
+};
+
 /**  Hasil login berhasil. */
 export type LoginOk = {
 	user: SessionUser,
@@ -570,12 +654,63 @@ export type OrgPage = {
 	total: number,
 };
 
+export type Overtime = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	date: string,
+	start_time: string,
+	end_time: string,
+	duration_minutes: number,
+	reason: string | null,
+	status: string,
+	current_step: number,
+	created_at: string,
+};
+
+export type OvertimeCreate = {
+	date: string,
+	start_time: string,
+	end_time: string,
+	reason: string | null,
+};
+
 /**  Izin tunggal. */
 export type Permission = {
 	id: number,
 	slug: string,
 	name: string,
 	module: string,
+};
+
+export type PermissionCreate = {
+	permission_type_id: number,
+	date: string,
+	start_time: string | null,
+	end_time: string | null,
+	reason: string,
+};
+
+export type PermissionRequest = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	permission_type_id: number,
+	permission_type_name: string,
+	date: string,
+	start_time: string | null,
+	end_time: string | null,
+	reason: string,
+	status: string,
+	created_at: string,
+};
+
+export type PermissionType = {
+	id: number,
+	code: string,
+	name: string,
 };
 
 export type RecapRow = {

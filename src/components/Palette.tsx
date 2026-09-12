@@ -8,6 +8,7 @@ const ITEMS = [
   { label: "Karyawan", to: "/employees" },
   { label: "Tambah Karyawan", to: "/employees/new" },
   { label: "Absensi", to: "/attendance" },
+  { label: "Cuti & Izin", to: "/leave" },
   { label: "Shift & Jadwal", to: "/schedules" },
   { label: "Pengguna", to: "/users" },
   { label: "Peran", to: "/roles" },
