@@ -13,6 +13,8 @@ const ITEMS = [
   { label: "Rekrutmen", to: "/recruitment" },
   { label: "Onboarding", to: "/onboarding" },
   { label: "Offboarding", to: "/offboarding" },
+  { label: "Kinerja", to: "/performance" },
+  { label: "Training", to: "/training" },
   { label: "Pengaturan Gaji", to: "/payroll-settings" },
   { label: "Shift & Jadwal", to: "/schedules" },
   { label: "Pengguna", to: "/users" },

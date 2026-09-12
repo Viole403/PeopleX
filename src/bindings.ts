@@ -327,6 +327,44 @@ export const commands = {
 	offboardingDecide: (id: number, action: string) => typedError<string, string>(__TAURI_INVOKE("offboarding_decide", { id, action })),
 	offboardingExitSave: (id: number, input: ExitInterviewInput) => typedError<null, string>(__TAURI_INVOKE("offboarding_exit_save", { id, input })),
 	offboardingClearance: (itemId: number, cleared: boolean, notes: string | null) => typedError<null, string>(__TAURI_INVOKE("offboarding_clearance", { itemId, cleared, notes })),
+	performancePeriods: () => typedError<PerfPeriod[], string>(__TAURI_INVOKE("performance_periods")),
+	performancePeriodSave: (id: number | null, input: PerfPeriodInput) => typedError<number, string>(__TAURI_INVOKE("performance_period_save", { id, input })),
+	performancePeriodDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("performance_period_delete", { id })),
+	performanceKpis: () => typedError<Kpi[], string>(__TAURI_INVOKE("performance_kpis")),
+	performanceKpiSave: (id: number | null, input: KpiInput) => typedError<number, string>(__TAURI_INVOKE("performance_kpi_save", { id, input })),
+	performanceKpiDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("performance_kpi_delete", { id })),
+	performanceReviews: (periodId: number) => typedError<ReviewRow[], string>(__TAURI_INVOKE("performance_reviews", { periodId })),
+	performanceMyReviews: () => typedError<ReviewRow[], string>(__TAURI_INVOKE("performance_my_reviews")),
+	performanceReviewDetail: (id: number) => typedError<{
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	period_name: string,
+	status: string,
+	self_score: number | null,
+	supervisor_score: number | null,
+	manager_score: number | null,
+	hr_score: number | null,
+	final_score: number | null,
+	final_rating: number | null,
+	kpis: ReviewKpi[],
+	scores: ReviewScore[],
+} | null, string>(__TAURI_INVOKE("performance_review_detail", { id })),
+	performanceEnsureReview: (periodId: number, employeeId: number) => typedError<number, string>(__TAURI_INVOKE("performance_ensure_review", { periodId, employeeId })),
+	performanceAssignKpi: (periodId: number, employeeId: number, kpiId: number, target: number | null, weight: number | null) => typedError<number, string>(__TAURI_INVOKE("performance_assign_kpi", { periodId, employeeId, kpiId, target, weight })),
+	performanceSubmitActual: (employeeKpiId: number, actual: number | null) => typedError<number | null, string>(__TAURI_INVOKE("performance_submit_actual", { employeeKpiId, actual })),
+	performanceSubmitReview: (reviewId: number, role: string, score: number | null, comments: string | null) => typedError<null, string>(__TAURI_INVOKE("performance_submit_review", { reviewId, role, score, comments })),
+	trainingList: () => typedError<Training[], string>(__TAURI_INVOKE("training_list")),
+	trainingParticipants: (trainingId: number) => typedError<Participant[], string>(__TAURI_INVOKE("training_participants", { trainingId })),
+	trainingSave: (id: number | null, input: TrainingInput) => typedError<number, string>(__TAURI_INVOKE("training_save", { id, input })),
+	trainingDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("training_delete", { id })),
+	trainingAddParticipant: (trainingId: number, employeeId: number) => typedError<number, string>(__TAURI_INVOKE("training_add_participant", { trainingId, employeeId })),
+	trainingParticipantStatus: (participantId: number, status: string) => typedError<null, string>(__TAURI_INVOKE("training_participant_status", { participantId, status })),
+	trainingCertifications: () => typedError<Certification[], string>(__TAURI_INVOKE("training_certifications")),
+	trainingCertificationAdd: (input: CertificationInput) => typedError<number, string>(__TAURI_INVOKE("training_certification_add", { input })),
+	trainingSkillMatrix: () => typedError<SkillCell[], string>(__TAURI_INVOKE("training_skill_matrix")),
+	trainingSkillSet: (employeeId: number, skillName: string, level: number) => typedError<null, string>(__TAURI_INVOKE("training_skill_set", { employeeId, skillName, level })),
 };
 
 /* Types */
@@ -475,6 +513,26 @@ export type CandidateRow = {
 	stage: string,
 	rating: number | null,
 	created_at: string,
+};
+
+export type Certification = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	name: string,
+	issuer: string | null,
+	certificate_number: string | null,
+	issued_date: string | null,
+	expiry_date: string | null,
+};
+
+export type CertificationInput = {
+	employee_id: number,
+	name: string,
+	issuer: string | null,
+	certificate_number: string | null,
+	issued_date: string | null,
+	expiry_date: string | null,
 };
 
 export type ChildField = {
@@ -847,6 +905,20 @@ export type InterviewInput = {
 	notes: string | null,
 };
 
+export type Kpi = {
+	id: number,
+	name: string,
+	description: string | null,
+	department_id: number | null,
+	department_name: string | null,
+};
+
+export type KpiInput = {
+	name: string,
+	description: string | null,
+	department_id: number | null,
+};
+
 export type LeaveCreate = {
 	leave_type_id: number,
 	start_date: string,
@@ -997,6 +1069,14 @@ export type OvertimeCreate = {
 	reason: string | null,
 };
 
+export type Participant = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	status: string,
+};
+
 export type PayrollDetail = {
 	id: number,
 	employee_id: number,
@@ -1047,6 +1127,23 @@ export type PayslipInfo = {
 	period_name: string,
 	net_salary: number | null,
 	pdf_ready: boolean,
+};
+
+export type PerfPeriod = {
+	id: number,
+	name: string,
+	period_type: string,
+	start_date: string,
+	end_date: string,
+	status: string,
+};
+
+export type PerfPeriodInput = {
+	name: string,
+	period_type: string,
+	start_date: string,
+	end_date: string,
+	status: string,
 };
 
 export type Period = {
@@ -1114,6 +1211,50 @@ export type RecapRow = {
 	status: string | null,
 	late_minutes: number | null,
 	work_minutes: number | null,
+};
+
+export type ReviewDetail = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	period_name: string,
+	status: string,
+	self_score: number | null,
+	supervisor_score: number | null,
+	manager_score: number | null,
+	hr_score: number | null,
+	final_score: number | null,
+	final_rating: number | null,
+	kpis: ReviewKpi[],
+	scores: ReviewScore[],
+};
+
+export type ReviewKpi = {
+	id: number,
+	kpi_name: string,
+	target: number | null,
+	weight: number | null,
+	actual: number | null,
+	score: number | null,
+};
+
+export type ReviewRow = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	period_name: string,
+	status: string,
+	final_score: number | null,
+	final_rating: number | null,
+};
+
+export type ReviewScore = {
+	reviewer_role: string,
+	reviewer_id: number | null,
+	comments: string | null,
+	rating: number | null,
 };
 
 /**  Peran untuk daftar dan form. */
@@ -1200,6 +1341,13 @@ export type ShiftInput = {
 	is_overnight: boolean,
 };
 
+export type SkillCell = {
+	employee_id: number,
+	employee_name: string,
+	skill_name: string,
+	level: number,
+};
+
 export type StageEvent = {
 	stage: string,
 	notes: string | null,
@@ -1210,6 +1358,32 @@ export type StageEvent = {
 export type StaticOpt = {
 	value: string,
 	label: string,
+};
+
+export type Training = {
+	id: number,
+	title: string,
+	description: string | null,
+	trainer_name: string | null,
+	start_date: string,
+	end_date: string,
+	location: string | null,
+	cost: number | null,
+	quota: number | null,
+	status: string,
+	participant_count: number,
+};
+
+export type TrainingInput = {
+	title: string,
+	description: string | null,
+	trainer_name: string | null,
+	start_date: string,
+	end_date: string,
+	location: string | null,
+	cost: number | null,
+	quota: number | null,
+	status: string,
 };
 
 /**  Baris pengguna untuk tabel admin. */
