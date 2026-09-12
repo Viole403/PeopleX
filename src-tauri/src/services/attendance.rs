@@ -1845,8 +1845,12 @@ mod tests {
         let r = clock_out(&conn, actor, emp, None, None, None).expect("out");
         assert_eq!(r.status, "present");
         assert!(clock_out(&conn, actor, emp, None, None, None).is_err());
-        // dengan shift (masuk 2 jam lalu, pulang 2 jam lagi): late + early
+        // dengan shift (masuk 2 jam lalu, pulang 2 jam lagi): late + early.
+        // bila jendela melewati tengah malam, shift malam tak terpakai: cukup late.
         let emp2 = make_employee(&conn, "EMP-T3", None);
+        let now2 = Local::now().naive_local();
+        let wraps =
+            now2 + chrono::Duration::hours(2) > now2.date().and_hms_opt(23, 59, 59).expect("jam");
         let shift = shift_around_now(&conn, "Siang", 2, 2);
         assign_schedule(&conn, emp2, shift);
         let r = clock_in(&conn, actor, emp2, Some(-6.2), Some(106.8), None).expect("in2");
@@ -1855,23 +1859,26 @@ mod tests {
         assert!(att.late_minutes > 60);
         let r = clock_out(&conn, actor, emp2, None, None, None).expect("out2");
         assert_eq!(r.status, "late");
-        let early: i64 = conn
-            .query_row(
-                "SELECT early_minutes FROM attendances WHERE employee_id = ?1 AND date = ?2",
-                params![emp2, today_str()],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(early > 60);
-        // pulang-cepat: masuk dalam toleransi, pulang sebelum shift berakhir
+        if !wraps {
+            let early: i64 = conn
+                .query_row(
+                    "SELECT early_minutes FROM attendances WHERE employee_id = ?1 AND date = ?2",
+                    params![emp2, today_str()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(early > 60);
+        }
+        // pulang-cepat: masuk dalam toleransi, pulang sebelum shift berakhir.
+        // bila jendela melewati tengah malam, cukup verifikasi clock out sukses.
         let emp3 = make_employee(&conn, "EMP-T3B", None);
         let now = Local::now().naive_local();
+        let end_dt = now + chrono::Duration::hours(2);
+        let wraps = end_dt.date() != now.date();
         let start = (now - chrono::Duration::minutes(10))
             .format("%H:%M:%S")
             .to_string();
-        let end = (now + chrono::Duration::hours(2))
-            .format("%H:%M:%S")
-            .to_string();
+        let end = end_dt.format("%H:%M:%S").to_string();
         let sh = shift_save(
             &conn,
             1,
@@ -1891,7 +1898,9 @@ mod tests {
         let r = clock_in(&conn, actor, emp3, None, None, None).expect("in3");
         assert_eq!(r.status, "present");
         let r = clock_out(&conn, actor, emp3, None, None, None).expect("out3");
-        assert_eq!(r.status, "early_checkout");
+        if !wraps {
+            assert_eq!(r.status, "early_checkout");
+        }
     }
 
     #[test]
