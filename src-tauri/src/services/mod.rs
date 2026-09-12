@@ -1,8 +1,12 @@
+pub mod approval;
 pub mod attendance;
 pub mod audit;
 pub mod auth;
 pub mod employees;
+pub mod leave;
 pub mod organization;
+pub mod overtime;
+pub mod permission;
 pub mod rbac;
 pub mod settings;
 pub mod workflows;

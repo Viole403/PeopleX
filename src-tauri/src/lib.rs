@@ -1082,6 +1082,240 @@ fn attendance_decide_correction(
     )
 }
 
+#[tauri::command]
+#[specta::specta]
+fn leave_balances(
+    state: tauri::State<AppState>,
+    year: i32,
+) -> Result<Vec<services::leave::Balance>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::leave::balances(&conn, my_employee(&conn, uid)?, year)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn leave_types(state: tauri::State<AppState>) -> Result<Vec<services::leave::LeaveType>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["leave.view", "system.manage"])?;
+    services::leave::type_list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn leave_type_save(
+    state: tauri::State<AppState>,
+    id: Option<i32>,
+    input: services::leave::LeaveTypeInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["leave.update", "system.manage"])?;
+    services::leave::type_save(&conn, uid, id.map(|v| v as i64), &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn leave_type_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["leave.update", "system.manage"])?;
+    services::leave::type_delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn leave_my(state: tauri::State<AppState>) -> Result<Vec<services::leave::LeaveRequest>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::leave::my_requests(&conn, my_employee(&conn, uid)?)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn leave_pending(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::leave::LeaveRequest>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::leave::pending_for(&conn, uid)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn leave_all(state: tauri::State<AppState>) -> Result<Vec<services::leave::LeaveRequest>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["leave.view", "system.manage"])?;
+    services::leave::all_requests(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn leave_create(
+    state: tauri::State<AppState>,
+    input: services::leave::LeaveCreate,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::leave::create(&conn, uid, my_employee(&conn, uid)?, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn leave_decide(
+    state: tauri::State<AppState>,
+    id: i32,
+    decision: String,
+    notes: Option<String>,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::leave::decide(&conn, uid, id as i64, &decision, notes.as_deref())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn leave_cancel(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::leave::cancel(&conn, uid, my_employee(&conn, uid)?, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn leave_calendar(
+    state: tauri::State<AppState>,
+    month: String,
+) -> Result<Vec<services::leave::CalendarDay>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["leave.view", "system.manage"])?;
+    services::leave::calendar(&conn, &month)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn overtime_my(state: tauri::State<AppState>) -> Result<Vec<services::overtime::Overtime>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::overtime::my_requests(&conn, my_employee(&conn, uid)?)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn overtime_pending(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::overtime::Overtime>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::overtime::pending_for(&conn, uid)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn overtime_all(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::overtime::Overtime>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["overtime.view", "system.manage"])?;
+    services::overtime::all_requests(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn overtime_create(
+    state: tauri::State<AppState>,
+    input: services::overtime::OvertimeCreate,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::overtime::create(&conn, uid, my_employee(&conn, uid)?, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn overtime_decide(
+    state: tauri::State<AppState>,
+    id: i32,
+    decision: String,
+    notes: Option<String>,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::overtime::decide(&conn, uid, id as i64, &decision, notes.as_deref())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn permission_types(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::permission::PermissionType>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["permission.view", "system.manage"])?;
+    services::permission::types(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn permission_my(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::permission::PermissionRequest>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::permission::my_requests(&conn, my_employee(&conn, uid)?)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn permission_pending(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::permission::PermissionRequest>, String> {
+    let conn = pooled(&state)?;
+    let (uid, user) = current_actor(&state, &conn)?;
+    let privileged = user.is_super_admin
+        || user
+            .permissions
+            .iter()
+            .any(|p| p == "permission.approve" || p == "system.manage");
+    services::permission::pending_for(&conn, uid, privileged)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn permission_all(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::permission::PermissionRequest>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["permission.view", "system.manage"])?;
+    services::permission::all_requests(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn permission_create(
+    state: tauri::State<AppState>,
+    input: services::permission::PermissionCreate,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::permission::create(&conn, uid, my_employee(&conn, uid)?, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn permission_decide(
+    state: tauri::State<AppState>,
+    id: i32,
+    decision: String,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, user) = current_actor(&state, &conn)?;
+    let actor_emp = my_employee(&conn, uid).ok();
+    let privileged = user.is_super_admin
+        || user
+            .permissions
+            .iter()
+            .any(|p| p == "permission.approve" || p == "system.manage");
+    services::permission::decide(&conn, uid, actor_emp, privileged, id as i64, &decision)
+}
+
 fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("gagal membuat direktori data: {e}"))?;
     let pool = db::init_pool(&data_dir.join("peoplex.db"))?;
@@ -1179,7 +1413,29 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         attendance_my_corrections,
         attendance_pending_corrections,
         attendance_request_correction,
-        attendance_decide_correction
+        attendance_decide_correction,
+        leave_balances,
+        leave_types,
+        leave_type_save,
+        leave_type_delete,
+        leave_my,
+        leave_pending,
+        leave_all,
+        leave_create,
+        leave_decide,
+        leave_cancel,
+        leave_calendar,
+        overtime_my,
+        overtime_pending,
+        overtime_all,
+        overtime_create,
+        overtime_decide,
+        permission_types,
+        permission_my,
+        permission_pending,
+        permission_all,
+        permission_create,
+        permission_decide
     ])
 }
 
