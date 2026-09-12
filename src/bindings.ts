@@ -365,6 +365,45 @@ export const commands = {
 	trainingCertificationAdd: (input: CertificationInput) => typedError<number, string>(__TAURI_INVOKE("training_certification_add", { input })),
 	trainingSkillMatrix: () => typedError<SkillCell[], string>(__TAURI_INVOKE("training_skill_matrix")),
 	trainingSkillSet: (employeeId: number, skillName: string, level: number) => typedError<null, string>(__TAURI_INVOKE("training_skill_set", { employeeId, skillName, level })),
+	assetCategories: () => typedError<Category[], string>(__TAURI_INVOKE("asset_categories")),
+	assetCategorySave: (id: number | null, code: string, name: string) => typedError<number, string>(__TAURI_INVOKE("asset_category_save", { id, code, name })),
+	assetCategoryDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("asset_category_delete", { id })),
+	assetsList: (search: string) => typedError<Asset[], string>(__TAURI_INVOKE("assets_list", { search })),
+	assetDetail: (id: number) => typedError<{
+	asset: Asset,
+	assignments: AssetAssignment[],
+	maintenance: Maintenance[],
+} | null, string>(__TAURI_INVOKE("asset_detail", { id })),
+	assetSave: (id: number | null, input: AssetInput) => typedError<number, string>(__TAURI_INVOKE("asset_save", { id, input })),
+	assetDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("asset_delete", { id })),
+	assetMy: () => typedError<MyAsset[], string>(__TAURI_INVOKE("asset_my")),
+	assetAssign: (assetId: number, input: AssignInput) => typedError<number, string>(__TAURI_INVOKE("asset_assign", { assetId, input })),
+	assetReturn: (assignmentId: number, input: ReturnInput) => typedError<null, string>(__TAURI_INVOKE("asset_return", { assignmentId, input })),
+	assetMaintenanceAdd: (assetId: number, input: MaintenanceInput) => typedError<number, string>(__TAURI_INVOKE("asset_maintenance_add", { assetId, input })),
+	assetMarkAvailable: (assetId: number) => typedError<null, string>(__TAURI_INVOKE("asset_mark_available", { assetId })),
+	tripMy: () => typedError<Trip[], string>(__TAURI_INVOKE("trip_my")),
+	tripAll: () => typedError<Trip[], string>(__TAURI_INVOKE("trip_all")),
+	tripPending: () => typedError<Trip[], string>(__TAURI_INVOKE("trip_pending")),
+	tripExpenses: (tripId: number) => typedError<TripExpense[], string>(__TAURI_INVOKE("trip_expenses", { tripId })),
+	tripCreate: (input: TripInput) => typedError<number, string>(__TAURI_INVOKE("trip_create", { input })),
+	tripDecide: (id: number, decision: string) => typedError<null, string>(__TAURI_INVOKE("trip_decide", { id, decision })),
+	tripExpenseAdd: (tripId: number, input: TripExpenseInput, receipt: {
+	name: string,
+	mime: string,
+	bytes: number[],
+} | null) => typedError<number, string>(__TAURI_INVOKE("trip_expense_add", { tripId, input, receipt })),
+	tripSettle: (tripId: number) => typedError<null, string>(__TAURI_INVOKE("trip_settle", { tripId })),
+	reimburseCategories: () => typedError<ReimburseCategory[], string>(__TAURI_INVOKE("reimburse_categories")),
+	reimburseCategorySave: (id: number | null, code: string, name: string, maxAmount: number | null) => typedError<number, string>(__TAURI_INVOKE("reimburse_category_save", { id, code, name, maxAmount })),
+	reimburseCategoryDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("reimburse_category_delete", { id })),
+	reimburseMy: () => typedError<Reimburse[], string>(__TAURI_INVOKE("reimburse_my")),
+	reimburseAll: () => typedError<Reimburse[], string>(__TAURI_INVOKE("reimburse_all")),
+	reimburseCreate: (input: ReimburseInput, receipt: {
+	name: string,
+	mime: string,
+	bytes: number[],
+} | null) => typedError<number, string>(__TAURI_INVOKE("reimburse_create", { input, receipt })),
+	reimburseDecide: (id: number, action: string) => typedError<string, string>(__TAURI_INVOKE("reimburse_decide", { id, action })),
 };
 
 /* Types */
@@ -392,6 +431,57 @@ export type Assessment = {
 export type AssessmentInput = {
 	assessment_name: string,
 	score: number | null,
+	notes: string | null,
+};
+
+export type Asset = {
+	id: number,
+	asset_code: string,
+	name: string,
+	asset_category_id: number,
+	category_name: string,
+	brand: string | null,
+	serial_number: string | null,
+	purchase_date: string | null,
+	purchase_price: number | null,
+	condition_status: string,
+	status: string,
+};
+
+export type AssetAssignment = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	assigned_date: string,
+	returned_date: string | null,
+	condition_on_assign: string | null,
+	condition_on_return: string | null,
+	notes: string | null,
+};
+
+export type AssetDetail = {
+	asset: Asset,
+	assignments: AssetAssignment[],
+	maintenance: Maintenance[],
+};
+
+export type AssetInput = {
+	asset_code: string,
+	name: string,
+	asset_category_id: number,
+	brand: string | null,
+	serial_number: string | null,
+	purchase_date: string | null,
+	purchase_price: number | null,
+	condition_status: string,
+	status: string,
+};
+
+export type AssignInput = {
+	employee_id: number,
+	assigned_date: string,
+	condition_on_assign: string | null,
 	notes: string | null,
 };
 
@@ -513,6 +603,12 @@ export type CandidateRow = {
 	stage: string,
 	rating: number | null,
 	created_at: string,
+};
+
+export type Category = {
+	id: number,
+	code: string,
+	name: string,
 };
 
 export type Certification = {
@@ -969,6 +1065,21 @@ export type LoginOk = {
 	must_change_password: boolean,
 };
 
+export type Maintenance = {
+	id: number,
+	maintenance_date: string,
+	description: string,
+	cost: number | null,
+	performed_by: string | null,
+};
+
+export type MaintenanceInput = {
+	maintenance_date: string,
+	description: string,
+	cost: number | null,
+	performed_by: string | null,
+};
+
 export type ManualInput = {
 	employee_id: number,
 	date: string,
@@ -976,6 +1087,15 @@ export type ManualInput = {
 	clock_out: string | null,
 	status: string,
 	notes: string | null,
+};
+
+export type MyAsset = {
+	assignment_id: number,
+	asset_code: string,
+	name: string,
+	brand: string | null,
+	category_name: string,
+	assigned_date: string,
 };
 
 /**  Opsi dropdown form karyawan. */
@@ -1213,6 +1333,42 @@ export type RecapRow = {
 	work_minutes: number | null,
 };
 
+export type Reimburse = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	category_id: number,
+	category_name: string,
+	amount: number | null,
+	description: string | null,
+	receipt_path: string | null,
+	status: string,
+	current_step: number,
+	paid_at: string | null,
+	supervisor_id: number | null,
+	manager_id: number | null,
+};
+
+export type ReimburseCategory = {
+	id: number,
+	code: string,
+	name: string,
+	max_amount: number | null,
+};
+
+export type ReimburseInput = {
+	category_id: number,
+	amount: number | null,
+	description: string | null,
+};
+
+export type ReturnInput = {
+	returned_date: string,
+	condition_on_return: string | null,
+	notes: string | null,
+};
+
 export type ReviewDetail = {
 	id: number,
 	employee_id: number,
@@ -1384,6 +1540,47 @@ export type TrainingInput = {
 	cost: number | null,
 	quota: number | null,
 	status: string,
+};
+
+export type Trip = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	destination: string,
+	purpose: string,
+	start_date: string,
+	end_date: string,
+	transportation: string | null,
+	hotel: string | null,
+	budget: number | null,
+	status: string,
+	current_step: number,
+	expense_total: number | null,
+};
+
+export type TripExpense = {
+	id: number,
+	category: string,
+	description: string | null,
+	amount: number | null,
+	receipt_path: string | null,
+};
+
+export type TripExpenseInput = {
+	category: string,
+	description: string | null,
+	amount: number | null,
+};
+
+export type TripInput = {
+	destination: string,
+	purpose: string,
+	start_date: string,
+	end_date: string,
+	transportation: string | null,
+	hotel: string | null,
+	budget: number | null,
 };
 
 /**  Baris pengguna untuk tabel admin. */
