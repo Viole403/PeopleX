@@ -199,6 +199,39 @@ export const commands = {
 	permissionAll: () => typedError<PermissionRequest[], string>(__TAURI_INVOKE("permission_all")),
 	permissionCreate: (input: PermissionCreate) => typedError<number, string>(__TAURI_INVOKE("permission_create", { input })),
 	permissionDecide: (id: number, decision: string) => typedError<null, string>(__TAURI_INVOKE("permission_decide", { id, decision })),
+	payrollPeriods: () => typedError<Period[], string>(__TAURI_INVOKE("payroll_periods")),
+	payrollPeriodCreate: (input: PeriodInput) => typedError<number, string>(__TAURI_INVOKE("payroll_period_create", { input })),
+	payrollRows: (periodId: number) => typedError<PayrollRow[], string>(__TAURI_INVOKE("payroll_rows", { periodId })),
+	payrollDetail: (id: number) => typedError<{
+	id: number,
+	employee_id: number,
+	employee_number: string,
+	name: string,
+	department_name: string | null,
+	position_name: string | null,
+	period_name: string,
+	start_date: string,
+	end_date: string,
+	basic_salary: number | null,
+	total_income: number | null,
+	total_deduction: number | null,
+	net_salary: number | null,
+	status: string,
+	lines: PayrollLine[],
+} | null, string>(__TAURI_INVOKE("payroll_detail", { id })),
+	payrollGenerate: (periodId: number) => typedError<null, string>(__TAURI_INVOKE("payroll_generate", { periodId })),
+	payrollApprove: (periodId: number) => typedError<null, string>(__TAURI_INVOKE("payroll_approve", { periodId })),
+	payrollPay: (periodId: number) => typedError<null, string>(__TAURI_INVOKE("payroll_pay", { periodId })),
+	payrollLock: (periodId: number) => typedError<null, string>(__TAURI_INVOKE("payroll_lock", { periodId })),
+	payrollMySlips: () => typedError<PayslipInfo[], string>(__TAURI_INVOKE("payroll_my_slips")),
+	payrollPayslipRender: (payrollId: number) => typedError<string, string>(__TAURI_INVOKE("payroll_payslip_render", { payrollId })),
+	payrollPayslipFile: (payrollId: number) => typedError<PayslipFile, string>(__TAURI_INVOKE("payroll_payslip_file", { payrollId })),
+	payrollComponents: () => typedError<Component[], string>(__TAURI_INVOKE("payroll_components")),
+	payrollComponentSave: (id: number | null, input: ComponentInput) => typedError<number, string>(__TAURI_INVOKE("payroll_component_save", { id, input })),
+	payrollComponentDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("payroll_component_delete", { id })),
+	payrollDeductions: (pendingOnly: boolean) => typedError<Deduction[], string>(__TAURI_INVOKE("payroll_deductions", { pendingOnly })),
+	payrollDeductionSave: (id: number | null, input: DeductionInput) => typedError<number, string>(__TAURI_INVOKE("payroll_deduction_save", { id, input })),
+	payrollDeductionDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("payroll_deduction_delete", { id })),
 };
 
 /* Types */
@@ -344,6 +377,25 @@ export type CompanyNode = {
 	branches: BranchNode[],
 };
 
+export type Component = {
+	id: number,
+	code: string,
+	name: string,
+	component_type: string,
+	calculation_type: string,
+	is_taxable: boolean,
+	is_active: boolean,
+};
+
+export type ComponentInput = {
+	code: string,
+	name: string,
+	component_type: string,
+	calculation_type: string,
+	is_taxable: boolean,
+	is_active: boolean,
+};
+
 export type Correction = {
 	id: number,
 	employee_id: number,
@@ -370,6 +422,27 @@ export type DbStatus = {
 	tables: number,
 	users: number,
 	data_dir: string,
+};
+
+export type Deduction = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	deduction_type: string,
+	description: string,
+	amount: number | null,
+	installment_no: number | null,
+	total_installments: number | null,
+	status: string,
+};
+
+export type DeductionInput = {
+	employee_id: number,
+	deduction_type: string,
+	description: string,
+	amount: number | null,
+	installment_no: number | null,
+	total_installments: number | null,
 };
 
 export type DepartmentNode = {
@@ -674,6 +747,76 @@ export type OvertimeCreate = {
 	start_time: string,
 	end_time: string,
 	reason: string | null,
+};
+
+export type PayrollDetail = {
+	id: number,
+	employee_id: number,
+	employee_number: string,
+	name: string,
+	department_name: string | null,
+	position_name: string | null,
+	period_name: string,
+	start_date: string,
+	end_date: string,
+	basic_salary: number | null,
+	total_income: number | null,
+	total_deduction: number | null,
+	net_salary: number | null,
+	status: string,
+	lines: PayrollLine[],
+};
+
+export type PayrollLine = {
+	component_name: string,
+	line_type: string,
+	amount: number | null,
+};
+
+export type PayrollRow = {
+	id: number,
+	employee_id: number,
+	employee_number: string,
+	name: string,
+	basic_salary: number | null,
+	total_income: number | null,
+	total_deduction: number | null,
+	net_salary: number | null,
+	status: string,
+};
+
+/**  Berkas slip untuk unduh. */
+export type PayslipFile = {
+	mime: string,
+	name: string,
+	bytes: number[],
+};
+
+export type PayslipInfo = {
+	id: number,
+	payroll_id: number,
+	payslip_number: string,
+	period_name: string,
+	net_salary: number | null,
+	pdf_ready: boolean,
+};
+
+export type Period = {
+	id: number,
+	name: string,
+	start_date: string,
+	end_date: string,
+	payment_date: string | null,
+	status: string,
+	employee_count: number,
+	total_net: number | null,
+};
+
+export type PeriodInput = {
+	name: string,
+	start_date: string,
+	end_date: string,
+	payment_date: string | null,
 };
 
 /**  Izin tunggal. */

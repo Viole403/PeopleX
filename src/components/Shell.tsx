@@ -24,6 +24,7 @@ const NAV_MAIN = [
   { to: "/employees", label: "Karyawan", icon: Users01 },
   { to: "/attendance", label: "Absensi", icon: Database01 },
   { to: "/leave", label: "Cuti & Izin", icon: Database01 },
+  { to: "/payroll", label: "Penggajian", icon: Database01 },
 ];
 const NAV_ADMIN = [
   { to: "/users", label: "Pengguna", icon: Users01, perm: "system.manage" },
@@ -31,6 +32,7 @@ const NAV_ADMIN = [
   { to: "/organization", label: "Organisasi", icon: Users01, perm: "organization.view" },
   { to: "/schedules", label: "Shift & Jadwal", icon: Settings01, perm: "attendance.view" },
   { to: "/settings", label: "Pengaturan", icon: Settings01, perm: "system.manage" },
+  { to: "/payroll-settings", label: "Pengaturan Gaji", icon: Settings01, perm: "system.manage" },
   { to: "/audit", label: "Audit Log", icon: List, perm: "audit.view" },
   { to: "/status", label: "Status Basis Data", icon: Database01, perm: null },
 ];
