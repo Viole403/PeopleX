@@ -1,4 +1,5 @@
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import {
   Bell01,
   ChevronLeft,
@@ -16,6 +17,8 @@ import {
 } from "@untitledui/icons";
 import { useEffect } from "react";
 import { can, useLogout, useSession } from "../lib/session";
+import { unwrap } from "../lib/query";
+import { commands } from "../bindings";
 import { useTheme } from "../lib/theme";
 import { useUi } from "../lib/ui";
 
@@ -32,6 +35,8 @@ const NAV_MAIN = [
   { to: "/training", label: "Training", icon: Database01 },
   { to: "/assets", label: "Aset", icon: Database01 },
   { to: "/travel", label: "Dinas & Reimburse", icon: Database01 },
+  { to: "/announcements", label: "Pengumuman", icon: Database01 },
+  { to: "/reports", label: "Laporan", icon: Database01 },
 ];
 const NAV_ADMIN = [
   { to: "/users", label: "Pengguna", icon: Users01, perm: "system.manage" },
@@ -72,6 +77,12 @@ export function Shell() {
   const { data: session, isPending } = useSession();
   const logout = useLogout();
   const navigate = useNavigate();
+  const unread = useQuery({
+    queryKey: ["notifications", "unread"],
+    queryFn: () => unwrap(commands.notificationUnread()),
+    enabled: !!session && !session.must_change_password,
+    staleTime: 30_000,
+  });
   const pathname = useRouterState({ select: (s) => s.location.pathname });
 
   const bare = pathname === "/login" || pathname === "/change-password";
@@ -185,9 +196,16 @@ export function Shell() {
               <Command size={12} />K
             </kbd>
           </button>
-          <IconButton label="Notifikasi" onClick={() => {}}>
-            <Bell01 size={20} />
-          </IconButton>
+          <span className="relative">
+            <IconButton label="Notifikasi" onClick={() => void navigate({ to: "/notifications" })}>
+              <Bell01 size={20} />
+            </IconButton>
+            {(unread.data ?? 0) > 0 && (
+              <span className="absolute -right-0.5 -top-0.5 flex size-4 items-center justify-center rounded-full bg-red-600 text-[10px] font-bold text-white">
+                {(unread.data ?? 0) > 9 ? "9+" : unread.data}
+              </span>
+            )}
+          </span>
           <IconButton
             label={effective === "dark" ? "Mode terang" : "Mode gelap"}
             onClick={() => void toggle()}
