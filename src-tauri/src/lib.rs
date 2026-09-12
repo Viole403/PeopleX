@@ -2,6 +2,7 @@ pub mod db;
 pub mod seed;
 pub mod services;
 
+use rusqlite::OptionalExtension;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::Manager;
@@ -1316,6 +1317,202 @@ fn permission_decide(
     services::permission::decide(&conn, uid, actor_emp, privileged, id as i64, &decision)
 }
 
+#[tauri::command]
+#[specta::specta]
+fn payroll_periods(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::payroll::Period>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["payroll.view", "system.manage"])?;
+    services::payroll::period_list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_period_create(
+    state: tauri::State<AppState>,
+    input: services::payroll::PeriodInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["payroll.create", "system.manage"])?;
+    services::payroll::period_create(&conn, uid, uid, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_rows(
+    state: tauri::State<AppState>,
+    period_id: i32,
+) -> Result<Vec<services::payroll::PayrollRow>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["payroll.view", "system.manage"])?;
+    services::payroll::payrolls_for_period(&conn, period_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_detail(
+    state: tauri::State<AppState>,
+    id: i32,
+) -> Result<Option<services::payroll::PayrollDetail>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["payroll.view", "system.manage"])?;
+    services::payroll::payroll_detail(&conn, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_generate(state: tauri::State<AppState>, period_id: i32) -> Result<(), String> {
+    let mut conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["payroll.generate", "system.manage"])?;
+    services::payroll::generate(&mut conn, uid, period_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_approve(state: tauri::State<AppState>, period_id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["payroll.approve", "system.manage"])?;
+    services::payroll::approve_period(&conn, uid, period_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_pay(state: tauri::State<AppState>, period_id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["payroll.approve", "system.manage"])?;
+    services::payroll::mark_paid(&conn, uid, period_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_lock(state: tauri::State<AppState>, period_id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["payroll.approve", "system.manage"])?;
+    services::payroll::lock_period(&conn, uid, period_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_my_slips(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::payroll::PayslipInfo>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::payroll::my_payslips(&conn, my_employee(&conn, uid)?)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_payslip_render(
+    state: tauri::State<AppState>,
+    payroll_id: i32,
+) -> Result<String, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["payroll.view", "system.manage"])?;
+    let dir = files_dir(&state);
+    services::payslip::render(&conn, &dir, payroll_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_payslip_file(
+    state: tauri::State<AppState>,
+    payroll_id: i32,
+) -> Result<services::payslip::PayslipFile, String> {
+    let conn = pooled(&state)?;
+    let (uid, user) = current_actor(&state, &conn)?;
+    let owner: Option<i64> = conn
+        .query_row(
+            "SELECT p.employee_id FROM payrolls p WHERE p.id = ?1",
+            rusqlite::params![payroll_id as i64],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("gagal memuat payroll: {e}"))?;
+    let mine = my_employee(&conn, uid).ok();
+    let allowed = user.is_super_admin
+        || user
+            .permissions
+            .iter()
+            .any(|p| p == "payroll.view" || p == "system.manage")
+        || (mine.is_some() && owner == mine);
+    if !allowed {
+        return Err("Akses ditolak.".to_string());
+    }
+    let dir = files_dir(&state);
+    services::payslip::read_file(&conn, &dir, payroll_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_components(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::payroll::Component>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["payroll.view", "system.manage"])?;
+    services::payroll::component_list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_component_save(
+    state: tauri::State<AppState>,
+    id: Option<i32>,
+    input: services::payroll::ComponentInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["payroll.create", "payroll.update", "system.manage"],
+    )?;
+    services::payroll::component_save(&conn, uid, id.map(|v| v as i64), &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_component_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["payroll.delete", "system.manage"])?;
+    services::payroll::component_delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_deductions(
+    state: tauri::State<AppState>,
+    pending_only: bool,
+) -> Result<Vec<services::payroll::Deduction>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["payroll.view", "system.manage"])?;
+    services::payroll::deduction_list(&conn, pending_only)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_deduction_save(
+    state: tauri::State<AppState>,
+    id: Option<i32>,
+    input: services::payroll::DeductionInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["payroll.create", "payroll.update", "system.manage"],
+    )?;
+    services::payroll::deduction_save(&conn, uid, id.map(|v| v as i64), &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn payroll_deduction_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["payroll.delete", "system.manage"])?;
+    services::payroll::deduction_delete(&conn, uid, id as i64)
+}
+
 fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("gagal membuat direktori data: {e}"))?;
     let pool = db::init_pool(&data_dir.join("peoplex.db"))?;
@@ -1435,7 +1632,24 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         permission_pending,
         permission_all,
         permission_create,
-        permission_decide
+        permission_decide,
+        payroll_periods,
+        payroll_period_create,
+        payroll_rows,
+        payroll_detail,
+        payroll_generate,
+        payroll_approve,
+        payroll_pay,
+        payroll_lock,
+        payroll_my_slips,
+        payroll_payslip_render,
+        payroll_payslip_file,
+        payroll_components,
+        payroll_component_save,
+        payroll_component_delete,
+        payroll_deductions,
+        payroll_deduction_save,
+        payroll_deduction_delete
     ])
 }
 

@@ -6,6 +6,8 @@ pub mod employees;
 pub mod leave;
 pub mod organization;
 pub mod overtime;
+pub mod payroll;
+pub mod payslip;
 pub mod permission;
 pub mod rbac;
 pub mod settings;
