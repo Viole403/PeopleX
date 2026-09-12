@@ -2451,6 +2451,245 @@ fn reimburse_decide(
     services::travel::reimburse_decide(&conn, uid, actor_emp, privileged, id as i64, &action)
 }
 
+// ---------------- Dasbor ----------------
+
+#[tauri::command]
+#[specta::specta]
+fn dashboard_hr(state: tauri::State<AppState>) -> Result<services::dashboard::HrDashboard, String> {
+    let conn = pooled(&state)?;
+    require(
+        &state,
+        &conn,
+        &["employee.view", "payroll.view", "system.manage"],
+    )?;
+    services::dashboard::hr(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn dashboard_me(state: tauri::State<AppState>) -> Result<services::dashboard::MySummary, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::dashboard::mine(&conn, uid)
+}
+
+// ---------------- Notifikasi ----------------
+
+#[tauri::command]
+#[specta::specta]
+fn notification_recent(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::notifications::Notification>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::notifications::recent(&conn, uid)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn notification_all(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::notifications::Notification>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::notifications::all(&conn, uid)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn notification_unread(state: tauri::State<AppState>) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::notifications::unread_count(&conn, uid)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn notification_mark_read(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::notifications::mark_read(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn notification_mark_all(state: tauri::State<AppState>) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::notifications::mark_all(&conn, uid)
+}
+
+// ---------------- Pengumuman ----------------
+
+#[tauri::command]
+#[specta::specta]
+fn announcement_visible(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::announcements::Announcement>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::announcements::visible(&conn, uid)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn announcement_list(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::announcements::Announcement>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["announcement.view", "system.manage"])?;
+    services::announcements::all(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn announcement_get(
+    state: tauri::State<AppState>,
+    id: i32,
+) -> Result<services::announcements::Announcement, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::announcements::get(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn announcement_create(
+    state: tauri::State<AppState>,
+    input: services::announcements::AnnouncementInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["announcement.create", "system.manage"])?;
+    services::announcements::create(&conn, uid, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn announcement_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["announcement.delete", "system.manage"])?;
+    services::announcements::delete(&conn, uid, id as i64)
+}
+
+// ---------------- Laporan ----------------
+
+#[tauri::command]
+#[specta::specta]
+fn report_employees(
+    state: tauri::State<AppState>,
+    search: Option<String>,
+    department_id: Option<i32>,
+    status: Option<String>,
+) -> Result<services::reports::ReportTable, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["report.view", "system.manage"])?;
+    services::reports::employees(
+        &conn,
+        search.as_deref(),
+        department_id.map(|v| v as i64),
+        status.as_deref(),
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+fn report_headcount(
+    state: tauri::State<AppState>,
+) -> Result<services::reports::ReportTable, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["report.view", "system.manage"])?;
+    services::reports::headcount(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn report_attendance(
+    state: tauri::State<AppState>,
+    month: String,
+    department_id: Option<i32>,
+) -> Result<services::reports::ReportTable, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["report.view", "system.manage"])?;
+    services::reports::attendance(&conn, &month, department_id.map(|v| v as i64))
+}
+
+#[tauri::command]
+#[specta::specta]
+fn report_leave(
+    state: tauri::State<AppState>,
+    year: i32,
+) -> Result<services::reports::ReportTable, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["report.view", "system.manage"])?;
+    services::reports::leave(&conn, year)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn report_payroll(
+    state: tauri::State<AppState>,
+    period_id: i32,
+) -> Result<services::reports::ReportTable, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["report.view", "system.manage"])?;
+    services::reports::payroll(&conn, period_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn report_recruitment(
+    state: tauri::State<AppState>,
+) -> Result<services::reports::ReportTable, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["report.view", "system.manage"])?;
+    services::reports::recruitment(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn report_performance(
+    state: tauri::State<AppState>,
+    period_id: i32,
+) -> Result<services::reports::ReportTable, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["report.view", "system.manage"])?;
+    services::reports::performance(&conn, period_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn report_contracts(
+    state: tauri::State<AppState>,
+    before: String,
+) -> Result<services::reports::ReportTable, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["report.view", "system.manage"])?;
+    services::reports::contracts(&conn, &before)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn report_analytics(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::reports::DeptStat>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["report.view", "system.manage"])?;
+    services::reports::analytics(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn report_export(
+    state: tauri::State<AppState>,
+    kind: String,
+    arg1: Option<String>,
+    arg2: Option<i32>,
+) -> Result<services::reports::ExportFile, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["report.export", "system.manage"])?;
+    services::reports::export(&conn, &kind, arg1.as_deref(), arg2.map(|v| v as i64))
+}
+
 fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("gagal membuat direktori data: {e}"))?;
     let pool = db::init_pool(&data_dir.join("peoplex.db"))?;
@@ -2662,7 +2901,29 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         reimburse_my,
         reimburse_all,
         reimburse_create,
-        reimburse_decide
+        reimburse_decide,
+        dashboard_hr,
+        dashboard_me,
+        notification_recent,
+        notification_all,
+        notification_unread,
+        notification_mark_read,
+        notification_mark_all,
+        announcement_visible,
+        announcement_list,
+        announcement_get,
+        announcement_create,
+        announcement_delete,
+        report_employees,
+        report_headcount,
+        report_attendance,
+        report_leave,
+        report_payroll,
+        report_recruitment,
+        report_performance,
+        report_contracts,
+        report_analytics,
+        report_export
     ])
 }
 
