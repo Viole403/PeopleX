@@ -1825,6 +1825,319 @@ fn offboarding_clearance(
     services::offboarding::toggle_clearance(&conn, uid, item_id as i64, cleared, notes.as_deref())
 }
 
+#[tauri::command]
+#[specta::specta]
+fn performance_periods(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::performance::PerfPeriod>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["performance.view", "system.manage"])?;
+    services::performance::period_list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn performance_period_save(
+    state: tauri::State<AppState>,
+    id: Option<i32>,
+    input: services::performance::PerfPeriodInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["performance.create", "performance.update", "system.manage"],
+    )?;
+    services::performance::period_save(&conn, uid, id.map(|v| v as i64), &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn performance_period_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["performance.delete", "system.manage"])?;
+    services::performance::period_delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn performance_kpis(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::performance::Kpi>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["performance.view", "system.manage"])?;
+    services::performance::kpi_list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn performance_kpi_save(
+    state: tauri::State<AppState>,
+    id: Option<i32>,
+    input: services::performance::KpiInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["performance.create", "performance.update", "system.manage"],
+    )?;
+    services::performance::kpi_save(&conn, uid, id.map(|v| v as i64), &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn performance_kpi_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["performance.delete", "system.manage"])?;
+    services::performance::kpi_delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn performance_reviews(
+    state: tauri::State<AppState>,
+    period_id: i32,
+) -> Result<Vec<services::performance::ReviewRow>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["performance.view", "system.manage"])?;
+    services::performance::reviews_for_period(&conn, period_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn performance_my_reviews(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::performance::ReviewRow>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::performance::my_reviews(&conn, my_employee(&conn, uid)?)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn performance_review_detail(
+    state: tauri::State<AppState>,
+    id: i32,
+) -> Result<Option<services::performance::ReviewDetail>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["performance.view", "system.manage"])?;
+    services::performance::review_detail(&conn, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn performance_ensure_review(
+    state: tauri::State<AppState>,
+    period_id: i32,
+    employee_id: i32,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    require(
+        &state,
+        &conn,
+        &["performance.create", "performance.update", "system.manage"],
+    )?;
+    services::performance::ensure_review(&conn, period_id as i64, employee_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn performance_assign_kpi(
+    state: tauri::State<AppState>,
+    period_id: i32,
+    employee_id: i32,
+    kpi_id: i32,
+    target: f64,
+    weight: f64,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["performance.create", "performance.update", "system.manage"],
+    )?;
+    services::performance::assign_kpi(
+        &conn,
+        uid,
+        period_id as i64,
+        employee_id as i64,
+        kpi_id as i64,
+        target,
+        weight,
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+fn performance_submit_actual(
+    state: tauri::State<AppState>,
+    employee_kpi_id: i32,
+    actual: f64,
+) -> Result<f64, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["performance.create", "performance.update", "system.manage"],
+    )?;
+    services::performance::submit_actual(&conn, uid, employee_kpi_id as i64, actual)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn performance_submit_review(
+    state: tauri::State<AppState>,
+    review_id: i32,
+    role: String,
+    score: f64,
+    comments: Option<String>,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["performance.create", "performance.review", "system.manage"],
+    )?;
+    services::performance::submit_review(
+        &conn,
+        uid,
+        review_id as i64,
+        &role,
+        score,
+        comments.as_deref(),
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+fn training_list(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::training::Training>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["training.view", "system.manage"])?;
+    services::training::list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn training_participants(
+    state: tauri::State<AppState>,
+    training_id: i32,
+) -> Result<Vec<services::training::Participant>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["training.view", "system.manage"])?;
+    services::training::detail_participants(&conn, training_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn training_save(
+    state: tauri::State<AppState>,
+    id: Option<i32>,
+    input: services::training::TrainingInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["training.create", "training.update", "system.manage"],
+    )?;
+    services::training::save(&conn, uid, id.map(|v| v as i64), &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn training_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["training.delete", "system.manage"])?;
+    services::training::delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn training_add_participant(
+    state: tauri::State<AppState>,
+    training_id: i32,
+    employee_id: i32,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["training.create", "training.update", "system.manage"],
+    )?;
+    services::training::add_participant(&conn, uid, training_id as i64, employee_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn training_participant_status(
+    state: tauri::State<AppState>,
+    participant_id: i32,
+    status: String,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["training.create", "training.update", "system.manage"],
+    )?;
+    services::training::set_participant_status(&conn, uid, participant_id as i64, &status)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn training_certifications(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::training::Certification>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["training.view", "system.manage"])?;
+    services::training::certifications(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn training_certification_add(
+    state: tauri::State<AppState>,
+    input: services::training::CertificationInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["training.create", "training.update", "system.manage"],
+    )?;
+    services::training::add_certification(&conn, uid, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn training_skill_matrix(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::training::SkillCell>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["training.view", "system.manage"])?;
+    services::training::skill_matrix(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn training_skill_set(
+    state: tauri::State<AppState>,
+    employee_id: i32,
+    skill_name: String,
+    level: i32,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["training.create", "training.update", "system.manage"],
+    )?;
+    services::training::set_skill(&conn, uid, employee_id as i64, &skill_name, level)
+}
+
 fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("gagal membuat direktori data: {e}"))?;
     let pool = db::init_pool(&data_dir.join("peoplex.db"))?;
@@ -1986,7 +2299,30 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         offboarding_create,
         offboarding_decide,
         offboarding_exit_save,
-        offboarding_clearance
+        offboarding_clearance,
+        performance_periods,
+        performance_period_save,
+        performance_period_delete,
+        performance_kpis,
+        performance_kpi_save,
+        performance_kpi_delete,
+        performance_reviews,
+        performance_my_reviews,
+        performance_review_detail,
+        performance_ensure_review,
+        performance_assign_kpi,
+        performance_submit_actual,
+        performance_submit_review,
+        training_list,
+        training_participants,
+        training_save,
+        training_delete,
+        training_add_participant,
+        training_participant_status,
+        training_certifications,
+        training_certification_add,
+        training_skill_matrix,
+        training_skill_set
     ])
 }
 
