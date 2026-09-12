@@ -2138,6 +2138,319 @@ fn training_skill_set(
     services::training::set_skill(&conn, uid, employee_id as i64, &skill_name, level)
 }
 
+#[tauri::command]
+#[specta::specta]
+fn asset_categories(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::assets::Category>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["asset.view", "system.manage"])?;
+    services::assets::category_list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn asset_category_save(
+    state: tauri::State<AppState>,
+    id: Option<i32>,
+    code: String,
+    name: String,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["asset.create", "asset.update", "system.manage"],
+    )?;
+    services::assets::category_save(&conn, uid, id.map(|v| v as i64), &code, &name)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn asset_category_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["asset.delete", "system.manage"])?;
+    services::assets::category_delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn assets_list(
+    state: tauri::State<AppState>,
+    search: String,
+) -> Result<Vec<services::assets::Asset>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["asset.view", "system.manage"])?;
+    services::assets::asset_list(&conn, &search)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn asset_detail(
+    state: tauri::State<AppState>,
+    id: i32,
+) -> Result<Option<services::assets::AssetDetail>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["asset.view", "system.manage"])?;
+    services::assets::asset_detail(&conn, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn asset_save(
+    state: tauri::State<AppState>,
+    id: Option<i32>,
+    input: services::assets::AssetInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["asset.create", "asset.update", "system.manage"],
+    )?;
+    services::assets::asset_save(&conn, uid, id.map(|v| v as i64), &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn asset_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["asset.delete", "system.manage"])?;
+    services::assets::asset_delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn asset_my(state: tauri::State<AppState>) -> Result<Vec<services::assets::MyAsset>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::assets::my_assets(&conn, my_employee(&conn, uid)?)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn asset_assign(
+    state: tauri::State<AppState>,
+    asset_id: i32,
+    input: services::assets::AssignInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["asset.create", "asset.update", "system.manage"],
+    )?;
+    services::assets::assign(&conn, uid, asset_id as i64, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn asset_return(
+    state: tauri::State<AppState>,
+    assignment_id: i32,
+    input: services::assets::ReturnInput,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["asset.create", "asset.update", "system.manage"],
+    )?;
+    services::assets::return_asset(&conn, uid, uid, assignment_id as i64, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn asset_maintenance_add(
+    state: tauri::State<AppState>,
+    asset_id: i32,
+    input: services::assets::MaintenanceInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["asset.create", "asset.update", "system.manage"],
+    )?;
+    services::assets::add_maintenance(&conn, uid, asset_id as i64, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn asset_mark_available(state: tauri::State<AppState>, asset_id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["asset.create", "asset.update", "system.manage"],
+    )?;
+    services::assets::mark_available(&conn, uid, asset_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn trip_my(state: tauri::State<AppState>) -> Result<Vec<services::travel::Trip>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::travel::my_trips(&conn, my_employee(&conn, uid)?)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn trip_all(state: tauri::State<AppState>) -> Result<Vec<services::travel::Trip>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["business_trip.view", "system.manage"])?;
+    services::travel::all_trips(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn trip_pending(state: tauri::State<AppState>) -> Result<Vec<services::travel::Trip>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::travel::pending_for(&conn, uid)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn trip_expenses(
+    state: tauri::State<AppState>,
+    trip_id: i32,
+) -> Result<Vec<services::travel::TripExpense>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["business_trip.view", "system.manage"])?;
+    services::travel::trip_expenses(&conn, trip_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn trip_create(
+    state: tauri::State<AppState>,
+    input: services::travel::TripInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::travel::trip_create(&conn, uid, my_employee(&conn, uid)?, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn trip_decide(state: tauri::State<AppState>, id: i32, decision: String) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::travel::trip_decide(&conn, uid, id as i64, &decision)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn trip_expense_add(
+    state: tauri::State<AppState>,
+    trip_id: i32,
+    input: services::travel::TripExpenseInput,
+    receipt: Option<services::employees::FileUpload>,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    let dir = files_dir(&state);
+    services::travel::trip_add_expense(&conn, &dir, uid, trip_id as i64, &input, receipt.as_ref())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn trip_settle(state: tauri::State<AppState>, trip_id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["business_trip.approve", "system.manage"])?;
+    services::travel::trip_settle(&conn, uid, trip_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn reimburse_categories(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::travel::ReimburseCategory>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["reimbursement.view", "system.manage"])?;
+    services::travel::category_list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn reimburse_category_save(
+    state: tauri::State<AppState>,
+    id: Option<i32>,
+    code: String,
+    name: String,
+    max_amount: Option<f64>,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    services::travel::category_save(&conn, uid, id.map(|v| v as i64), &code, &name, max_amount)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn reimburse_category_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    services::travel::category_delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn reimburse_my(state: tauri::State<AppState>) -> Result<Vec<services::travel::Reimburse>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::travel::my_reimburse(&conn, my_employee(&conn, uid)?)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn reimburse_all(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::travel::Reimburse>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["reimbursement.view", "system.manage"])?;
+    services::travel::all_reimburse(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn reimburse_create(
+    state: tauri::State<AppState>,
+    input: services::travel::ReimburseInput,
+    receipt: Option<services::employees::FileUpload>,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    let dir = files_dir(&state);
+    services::travel::reimburse_create(
+        &conn,
+        &dir,
+        uid,
+        my_employee(&conn, uid)?,
+        &input,
+        receipt.as_ref(),
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+fn reimburse_decide(
+    state: tauri::State<AppState>,
+    id: i32,
+    action: String,
+) -> Result<String, String> {
+    let conn = pooled(&state)?;
+    let (uid, user) = current_actor(&state, &conn)?;
+    let actor_emp = my_employee(&conn, uid).ok();
+    let privileged = user.is_super_admin
+        || user
+            .permissions
+            .iter()
+            .any(|p| p == "reimbursement.approve" || p == "system.manage");
+    services::travel::reimburse_decide(&conn, uid, actor_emp, privileged, id as i64, &action)
+}
+
 fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("gagal membuat direktori data: {e}"))?;
     let pool = db::init_pool(&data_dir.join("peoplex.db"))?;
@@ -2322,7 +2635,34 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         training_certifications,
         training_certification_add,
         training_skill_matrix,
-        training_skill_set
+        training_skill_set,
+        asset_categories,
+        asset_category_save,
+        asset_category_delete,
+        assets_list,
+        asset_detail,
+        asset_save,
+        asset_delete,
+        asset_my,
+        asset_assign,
+        asset_return,
+        asset_maintenance_add,
+        asset_mark_available,
+        trip_my,
+        trip_all,
+        trip_pending,
+        trip_expenses,
+        trip_create,
+        trip_decide,
+        trip_expense_add,
+        trip_settle,
+        reimburse_categories,
+        reimburse_category_save,
+        reimburse_category_delete,
+        reimburse_my,
+        reimburse_all,
+        reimburse_create,
+        reimburse_decide
     ])
 }
 

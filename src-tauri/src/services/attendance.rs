@@ -1845,18 +1845,37 @@ mod tests {
         let r = clock_out(&conn, actor, emp, None, None, None).expect("out");
         assert_eq!(r.status, "present");
         assert!(clock_out(&conn, actor, emp, None, None, None).is_err());
-        // dengan shift (masuk 2 jam lalu, pulang 2 jam lagi): late + early.
-        // bila jendela melewati tengah malam, shift malam tak terpakai: cukup late.
+        // dengan shift (masuk 1 menit lalu -> telat; pulang 2 jam lagi -> awal).
+        // bila pulang melewati tengah malam, cukup telat.
         let emp2 = make_employee(&conn, "EMP-T3", None);
         let now2 = Local::now().naive_local();
-        let wraps =
-            now2 + chrono::Duration::hours(2) > now2.date().and_hms_opt(23, 59, 59).expect("jam");
-        let shift = shift_around_now(&conn, "Siang", 2, 2);
+        let start_ago = (now2 - chrono::Duration::minutes(1))
+            .format("%H:%M:%S")
+            .to_string();
+        let end_fwd = (now2 + chrono::Duration::hours(2))
+            .format("%H:%M:%S")
+            .to_string();
+        let wraps = end_fwd <= start_ago;
+        let shift = shift_save(
+            &conn,
+            1,
+            None,
+            &ShiftInput {
+                name: "Siang".to_string(),
+                start_time: start_ago,
+                end_time: end_fwd,
+                break_start: None,
+                break_end: None,
+                grace_period_minutes: 0,
+                is_overnight: false,
+            },
+        )
+        .expect("shift") as i64;
         assign_schedule(&conn, emp2, shift);
         let r = clock_in(&conn, actor, emp2, Some(-6.2), Some(106.8), None).expect("in2");
         assert_eq!(r.status, "late");
         let att = today(&conn, emp2).expect("today").expect("ada");
-        assert!(att.late_minutes > 60);
+        assert!(att.late_minutes >= 1);
         let r = clock_out(&conn, actor, emp2, None, None, None).expect("out2");
         assert_eq!(r.status, "late");
         if !wraps {

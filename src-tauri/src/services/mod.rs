@@ -1,4 +1,5 @@
 pub mod approval;
+pub mod assets;
 pub mod attendance;
 pub mod audit;
 pub mod auth;
@@ -16,4 +17,5 @@ pub mod rbac;
 pub mod recruitment;
 pub mod settings;
 pub mod training;
+pub mod travel;
 pub mod workflows;
