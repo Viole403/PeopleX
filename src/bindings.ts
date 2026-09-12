@@ -404,6 +404,28 @@ export const commands = {
 	bytes: number[],
 } | null) => typedError<number, string>(__TAURI_INVOKE("reimburse_create", { input, receipt })),
 	reimburseDecide: (id: number, action: string) => typedError<string, string>(__TAURI_INVOKE("reimburse_decide", { id, action })),
+	dashboardHr: () => typedError<HrDashboard, string>(__TAURI_INVOKE("dashboard_hr")),
+	dashboardMe: () => typedError<MySummary, string>(__TAURI_INVOKE("dashboard_me")),
+	notificationRecent: () => typedError<Notification[], string>(__TAURI_INVOKE("notification_recent")),
+	notificationAll: () => typedError<Notification[], string>(__TAURI_INVOKE("notification_all")),
+	notificationUnread: () => typedError<number, string>(__TAURI_INVOKE("notification_unread")),
+	notificationMarkRead: (id: number) => typedError<null, string>(__TAURI_INVOKE("notification_mark_read", { id })),
+	notificationMarkAll: () => typedError<null, string>(__TAURI_INVOKE("notification_mark_all")),
+	announcementVisible: () => typedError<Announcement[], string>(__TAURI_INVOKE("announcement_visible")),
+	announcementList: () => typedError<Announcement[], string>(__TAURI_INVOKE("announcement_list")),
+	announcementGet: (id: number) => typedError<Announcement, string>(__TAURI_INVOKE("announcement_get", { id })),
+	announcementCreate: (input: AnnouncementInput) => typedError<number, string>(__TAURI_INVOKE("announcement_create", { input })),
+	announcementDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("announcement_delete", { id })),
+	reportEmployees: (search: string | null, departmentId: number | null, status: string | null) => typedError<ReportTable, string>(__TAURI_INVOKE("report_employees", { search, departmentId, status })),
+	reportHeadcount: () => typedError<ReportTable, string>(__TAURI_INVOKE("report_headcount")),
+	reportAttendance: (month: string, departmentId: number | null) => typedError<ReportTable, string>(__TAURI_INVOKE("report_attendance", { month, departmentId })),
+	reportLeave: (year: number) => typedError<ReportTable, string>(__TAURI_INVOKE("report_leave", { year })),
+	reportPayroll: (periodId: number) => typedError<ReportTable, string>(__TAURI_INVOKE("report_payroll", { periodId })),
+	reportRecruitment: () => typedError<ReportTable, string>(__TAURI_INVOKE("report_recruitment")),
+	reportPerformance: (periodId: number) => typedError<ReportTable, string>(__TAURI_INVOKE("report_performance", { periodId })),
+	reportContracts: (before: string) => typedError<ReportTable, string>(__TAURI_INVOKE("report_contracts", { before })),
+	reportAnalytics: () => typedError<DeptStat[], string>(__TAURI_INVOKE("report_analytics")),
+	reportExport: (kind: string, arg1: string | null, arg2: number | null) => typedError<ExportFile, string>(__TAURI_INVOKE("report_export", { kind, arg1, arg2 })),
 };
 
 /* Types */
@@ -419,6 +441,35 @@ export type AddressRow = {
 export type Addresses = {
 	ktp: AddressRow | null,
 	domicile: AddressRow | null,
+};
+
+export type AnnounceLite = {
+	id: number,
+	title: string,
+	created_at: string,
+};
+
+export type Announcement = {
+	id: number,
+	title: string,
+	content: string,
+	target_type: string,
+	publish_at: string | null,
+	expire_at: string | null,
+	status: string,
+	created_by_name: string | null,
+	created_at: string,
+	read_at: string | null,
+	targets: Target[],
+};
+
+export type AnnouncementInput = {
+	title: string,
+	content: string,
+	target_type: string,
+	publish_at: string | null,
+	expire_at: string | null,
+	targets: TargetInput[],
 };
 
 export type Assessment = {
@@ -542,6 +593,12 @@ export type Balance = {
 	carried_days: number | null,
 	adjustment_days: number | null,
 	remaining: number | null,
+};
+
+export type Birthday = {
+	name: string,
+	employee_number: string,
+	birth_date: string | null,
 };
 
 export type BranchNode = {
@@ -773,6 +830,14 @@ export type DepartmentNode = {
 	divisions: DivisionNode[],
 };
 
+export type DeptStat = {
+	department: string,
+	employees: number,
+	open_vacancies: number,
+	active_trainings: number,
+	avg_performance: number | null,
+};
+
 /**  Node struktur untuk tampilan bagan. */
 export type DivisionNode = {
 	id: number,
@@ -951,6 +1016,11 @@ export type ExitInterviewInput = {
 	would_recommend: boolean | null,
 };
 
+export type ExportFile = {
+	filename: string,
+	csv: string,
+};
+
 /**  Metadata field untuk membangun form dinamis. */
 export type FieldMeta = {
 	name: string,
@@ -980,6 +1050,30 @@ export type HolidayInput = {
 	date: string,
 	holiday_type: string,
 	description: string | null,
+};
+
+export type HolidayLite = {
+	name: string,
+	date: string,
+};
+
+export type HrDashboard = {
+	total_employees: number,
+	new_hires_this_month: number,
+	resigned_this_month: number,
+	active_contracts: number,
+	expiring_contracts: number,
+	pending_leave: number,
+	pending_overtime: number,
+	pending_corrections: number,
+	pending_trips: number,
+	present_today: number,
+	late_today: number,
+	birthdays_today: Birthday[],
+	upcoming_holidays: HolidayLite[],
+	recent_announcements: AnnounceLite[],
+	headcount_by_department: NameCount[],
+	headcount_by_type: NameCount[],
 };
 
 export type Interview = {
@@ -1013,6 +1107,13 @@ export type KpiInput = {
 	name: string,
 	description: string | null,
 	department_id: number | null,
+};
+
+export type LeaveBalanceLite = {
+	leave_type: string,
+	allocated: number | null,
+	used: number | null,
+	remaining: number | null,
 };
 
 export type LeaveCreate = {
@@ -1098,10 +1199,40 @@ export type MyAsset = {
 	assigned_date: string,
 };
 
+export type MySummary = {
+	employee_name: string,
+	employee_number: string,
+	department: string | null,
+	position: string | null,
+	today_status: string | null,
+	today_clock_in: string | null,
+	pending_leave: number,
+	pending_overtime: number,
+	pending_corrections: number,
+	my_assets: number,
+	unread_announcements: number,
+	leave_balances: LeaveBalanceLite[],
+};
+
+export type NameCount = {
+	name: string,
+	count: number,
+};
+
 /**  Opsi dropdown form karyawan. */
 export type NamedOpt = {
 	id: number,
 	name: string,
+};
+
+export type Notification = {
+	id: number,
+	kind: string,
+	title: string,
+	message: string | null,
+	link: string | null,
+	is_read: boolean,
+	created_at: string,
 };
 
 export type OffboardingCreate = {
@@ -1363,6 +1494,12 @@ export type ReimburseInput = {
 	description: string | null,
 };
 
+export type ReportTable = {
+	title: string,
+	headers: string[],
+	rows: string[][],
+};
+
 export type ReturnInput = {
 	returned_date: string,
 	condition_on_return: string | null,
@@ -1514,6 +1651,17 @@ export type StageEvent = {
 export type StaticOpt = {
 	value: string,
 	label: string,
+};
+
+export type Target = {
+	target_type: string,
+	target_id: number,
+	target_name: string | null,
+};
+
+export type TargetInput = {
+	target_type: string,
+	target_id: number,
 };
 
 export type Training = {
