@@ -1,0 +1,146 @@
+name: Rilis
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  verify-release:
+    name: Validasi versi dan uji rilis
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout kode rilis
+        uses: actions/checkout@v7
+
+      - name: Validasi tag terhadap versi Cargo
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag harus memakai format vX.Y.Z, contoh v0.2.0."
+            exit 1
+          fi
+          VERSION="$(python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          cargo = Path('src-tauri/Cargo.toml').read_text()
+          package_match = re.search(
+              r'^\[package\][^\[]*?^version\s*=\s*"([^"]+)"',
+              cargo,
+              re.MULTILINE | re.DOTALL,
+          )
+          if package_match is None:
+              raise SystemExit('Versi [package] tidak ditemukan di src-tauri/Cargo.toml')
+          cargo_version = package_match.group(1)
+          frontend_version = json.loads(Path('package.json').read_text())['version']
+          tauri_version = json.loads(Path('src-tauri/tauri.conf.json').read_text())['version']
+          if not (cargo_version == frontend_version == tauri_version):
+              raise SystemExit(
+                  'Versi tidak sinkron: '
+                  f'Cargo={cargo_version}, package.json={frontend_version}, tauri.conf.json={tauri_version}'
+              )
+          print(cargo_version)
+          PY
+          )"
+          if [[ "${GITHUB_REF_NAME}" != "v${VERSION}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} tidak sama dengan versi Cargo ${VERSION}."
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Instal dependensi sistem Tauri Linux
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Rust stabil
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Instal dependensi frontend
+        run: bun install --frozen-lockfile
+
+      - name: Uji backend
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+  build:
+    name: Build installer ${{ matrix.platform }}
+    needs: verify-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+          - platform: macos-latest
+            args: ''
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout kode rilis
+        uses: actions/checkout@v7
+
+      - name: Instal dependensi sistem Tauri Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Rust stabil
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Instal dependensi frontend
+        run: bun install --frozen-lockfile
+
+      - name: Build dan unggah installer
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: PeopleX ${{ needs.verify-release.outputs.version }}
+          releaseBody: Unduh installer sesuai sistem operasi pada bagian aset rilis ini.
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
