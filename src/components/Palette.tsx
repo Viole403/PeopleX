@@ -15,6 +15,8 @@ const ITEMS = [
   { label: "Offboarding", to: "/offboarding" },
   { label: "Kinerja", to: "/performance" },
   { label: "Training", to: "/training" },
+  { label: "Aset", to: "/assets" },
+  { label: "Dinas & Reimburse", to: "/travel" },
   { label: "Pengaturan Gaji", to: "/payroll-settings" },
   { label: "Shift & Jadwal", to: "/schedules" },
   { label: "Pengguna", to: "/users" },

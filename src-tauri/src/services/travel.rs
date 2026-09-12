@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::approval;
 use super::audit;
-use super::employees::{self, FileUpload};
+use super::employees::FileUpload;
 use crate::to_dto_int;
 
 const RECEIPT_MIMES: &[&str] = &["image/jpeg", "image/png", "application/pdf"];
@@ -1087,7 +1087,7 @@ mod tests {
             )
             .unwrap();
         assert!(paid_at.is_some());
-        let bad = employees::FileUpload {
+        let bad = FileUpload {
             name: "x.exe".to_string(),
             mime: "application/x-ms".to_string(),
             bytes: vec![1],

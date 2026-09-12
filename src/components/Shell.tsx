@@ -30,6 +30,8 @@ const NAV_MAIN = [
   { to: "/offboarding", label: "Offboarding", icon: Users01 },
   { to: "/performance", label: "Kinerja", icon: Database01 },
   { to: "/training", label: "Training", icon: Database01 },
+  { to: "/assets", label: "Aset", icon: Database01 },
+  { to: "/travel", label: "Dinas & Reimburse", icon: Database01 },
 ];
 const NAV_ADMIN = [
   { to: "/users", label: "Pengguna", icon: Users01, perm: "system.manage" },
