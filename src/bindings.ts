@@ -425,7 +425,7 @@ export const commands = {
 	reportPerformance: (periodId: number) => typedError<ReportTable, string>(__TAURI_INVOKE("report_performance", { periodId })),
 	reportContracts: (before: string) => typedError<ReportTable, string>(__TAURI_INVOKE("report_contracts", { before })),
 	reportAnalytics: () => typedError<DeptStat[], string>(__TAURI_INVOKE("report_analytics")),
-	reportExport: (kind: string, arg1: string | null, arg2: number | null) => typedError<ExportFile, string>(__TAURI_INVOKE("report_export", { kind, arg1, arg2 })),
+	reportExport: (kind: string, format: string, arg1: string | null, arg2: number | null) => typedError<ExportFile, string>(__TAURI_INVOKE("report_export", { kind, format, arg1, arg2 })),
 };
 
 /* Types */
@@ -1018,7 +1018,8 @@ export type ExitInterviewInput = {
 
 export type ExportFile = {
 	filename: string,
-	csv: string,
+	mime: string,
+	bytes: number[],
 };
 
 /**  Metadata field untuk membangun form dinamis. */

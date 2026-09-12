@@ -96,7 +96,7 @@ function ReportsPage() {
     retry: false,
   });
 
-  const downloadCsv = async () => {
+  const download = async (format: "csv" | "xlsx" | "pdf") => {
     const args: Record<Kind, { arg1: string | null; arg2: number | null }> = {
       employees: { arg1: null, arg2: null },
       headcount: { arg1: null, arg2: null },
@@ -109,8 +109,8 @@ function ReportsPage() {
       analytics: { arg1: null, arg2: null },
     };
     try {
-      const f = await unwrap(commands.reportExport(kind, args[kind].arg1, args[kind].arg2));
-      const blob = new Blob([f.csv], { type: "text/csv;charset=utf-8" });
+      const f = await unwrap(commands.reportExport(kind, format, args[kind].arg1, args[kind].arg2));
+      const blob = new Blob([new Uint8Array(f.bytes)], { type: f.mime });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -130,13 +130,24 @@ function ReportsPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-display-sm font-semibold">Laporan</h1>
         {canExport && kind !== "analytics" && (
-          <button
-            type="button"
-            onClick={downloadCsv}
-            className="rounded-lg bg-bg-brand-solid px-4 py-2 text-sm font-semibold text-white hover:bg-bg-brand-solid_hover"
-          >
-            Unduh CSV
-          </button>
+          <div className="flex gap-2">
+            {(
+              [
+                ["csv", "Unduh CSV"],
+                ["xlsx", "Unduh XLSX"],
+                ["pdf", "Unduh PDF"],
+              ] as const
+            ).map(([format, label]) => (
+              <button
+                key={format}
+                type="button"
+                onClick={() => download(format)}
+                className="rounded-lg bg-bg-brand-solid px-4 py-2 text-sm font-semibold text-white hover:bg-bg-brand-solid_hover"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         )}
       </div>
       <div className="flex flex-wrap gap-2">

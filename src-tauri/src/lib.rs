@@ -2682,12 +2682,19 @@ fn report_analytics(
 fn report_export(
     state: tauri::State<AppState>,
     kind: String,
+    format: String,
     arg1: Option<String>,
     arg2: Option<i32>,
 ) -> Result<services::reports::ExportFile, String> {
     let conn = pooled(&state)?;
     require(&state, &conn, &["report.export", "system.manage"])?;
-    services::reports::export(&conn, &kind, arg1.as_deref(), arg2.map(|v| v as i64))
+    services::reports::export(
+        &conn,
+        &kind,
+        &format,
+        arg1.as_deref(),
+        arg2.map(|v| v as i64),
+    )
 }
 
 fn init_state(data_dir: PathBuf) -> Result<AppState, String> {

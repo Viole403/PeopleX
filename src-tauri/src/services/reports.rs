@@ -1,6 +1,8 @@
-//! Laporan: tabel siap tampil dan ekspor CSV.
+//! Laporan: tabel siap tampil dan ekspor CSV, XLSX, dan PDF.
 
+use printpdf::{BuiltinFont, Mm, Op, PdfDocument, PdfFontHandle, PdfPage, PdfSaveOptions, Pt};
 use rusqlite::{params, Connection};
+use rust_xlsxwriter::{Format, Workbook};
 
 const FULL: &str = "TRIM(e.first_name || ' ' || COALESCE(e.last_name,''))";
 
@@ -23,7 +25,8 @@ pub struct DeptStat {
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct ExportFile {
     pub filename: String,
-    pub csv: String,
+    pub mime: String,
+    pub bytes: Vec<u8>,
 }
 
 fn h(items: &[&str]) -> Vec<String> {
@@ -441,9 +444,109 @@ pub fn analytics(conn: &Connection) -> Result<Vec<DeptStat>, String> {
     Ok(out)
 }
 
+fn to_xlsx(t: &ReportTable) -> Result<Vec<u8>, String> {
+    let mut book = Workbook::new();
+    let sheet = book.add_worksheet();
+    sheet
+        .set_name("Laporan")
+        .map_err(|e| format!("gagal menyiapkan sheet: {e}"))?;
+    let bold = Format::new().set_bold();
+    for (c, h) in t.headers.iter().enumerate() {
+        sheet
+            .write_with_format(0, c as u16, h, &bold)
+            .map_err(|e| format!("gagal menulis sel: {e}"))?;
+    }
+    for (r, row) in t.rows.iter().enumerate() {
+        for (c, cell) in row.iter().enumerate() {
+            sheet
+                .write_string((r + 1) as u32, c as u16, cell)
+                .map_err(|e| format!("gagal menulis sel: {e}"))?;
+        }
+    }
+    for c in 0..t.headers.len() as u16 {
+        sheet
+            .set_column_width(c, 24)
+            .map_err(|e| format!("gagal mengatur lebar kolom: {e}"))?;
+    }
+    book.save_to_buffer()
+        .map_err(|e| format!("gagal menyusun XLSX: {e}"))
+}
+
+fn pdf_line(ops: &mut Vec<Op>, text: &str) {
+    let mut s: String = text.chars().take(104).collect();
+    if s.len() < text.len() {
+        s.push_str("...");
+    }
+    ops.push(Op::ShowText {
+        items: vec![printpdf::TextItem::Text(s)],
+    });
+    ops.push(Op::AddLineBreak);
+}
+
+fn to_pdf(t: &ReportTable, when: &str) -> Result<Vec<u8>, String> {
+    let head = || {
+        vec![
+            Op::StartTextSection,
+            Op::SetFont {
+                font: PdfFontHandle::Builtin(BuiltinFont::HelveticaBold),
+                size: Pt(13.0),
+            },
+            Op::SetLineHeight { lh: Pt(16.0) },
+            Op::ShowText {
+                items: vec![printpdf::TextItem::Text(t.title.clone())],
+            },
+            Op::AddLineBreak,
+            Op::SetFont {
+                font: PdfFontHandle::Builtin(BuiltinFont::Helvetica),
+                size: Pt(9.0),
+            },
+            Op::SetLineHeight { lh: Pt(12.0) },
+            Op::ShowText {
+                items: vec![printpdf::TextItem::Text(format!("Diunduh {when}"))],
+            },
+            Op::AddLineBreak,
+            Op::SetFont {
+                font: PdfFontHandle::Builtin(BuiltinFont::CourierBold),
+                size: Pt(8.0),
+            },
+            Op::SetLineHeight { lh: Pt(11.0) },
+        ]
+    };
+    let mut pages: Vec<PdfPage> = Vec::new();
+    let mut ops = head();
+    let header_line = t.headers.join(" | ");
+    pdf_line(&mut ops, &header_line);
+    let mut count = 0usize;
+    for row in &t.rows {
+        if count >= 40 {
+            ops.push(Op::EndTextSection);
+            pages.push(PdfPage::new(Mm(210.0), Mm(297.0), ops));
+            ops = head();
+            pdf_line(&mut ops, &header_line);
+            count = 0;
+        }
+        pdf_line(&mut ops, &row.join(" | "));
+        count += 1;
+    }
+    if t.rows.is_empty() {
+        pdf_line(&mut ops, "Tidak ada data.");
+    }
+    ops.push(Op::EndTextSection);
+    pages.push(PdfPage::new(Mm(210.0), Mm(297.0), ops));
+    let mut warnings = Vec::new();
+    let bytes = PdfDocument::new(&t.title)
+        .with_pages(pages)
+        .save(&PdfSaveOptions::default(), &mut warnings);
+    if bytes.is_empty() {
+        return Err("Gagal merender PDF.".to_string());
+    }
+    Ok(bytes)
+}
+
 pub fn export(
     conn: &Connection,
     kind: &str,
+    format: &str,
     arg1: Option<&str>,
     arg2: Option<i64>,
 ) -> Result<ExportFile, String> {
@@ -462,9 +565,28 @@ pub fn export(
         .naive_local()
         .format("%Y-%m-%d")
         .to_string();
+    let (ext, mime, bytes) = match format {
+        "csv" => (
+            "csv",
+            "text/csv;charset=utf-8".to_string(),
+            to_csv(&table).into_bytes(),
+        ),
+        "xlsx" => (
+            "xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
+            to_xlsx(&table)?,
+        ),
+        "pdf" => (
+            "pdf",
+            "application/pdf".to_string(),
+            to_pdf(&table, &today)?,
+        ),
+        _ => return Err("Format ekspor tidak dikenal.".to_string()),
+    };
     Ok(ExportFile {
-        filename: format!("laporan-{kind}-{today}.csv"),
-        csv: to_csv(&table),
+        filename: format!("laporan-{kind}-{today}.{ext}"),
+        mime,
+        bytes,
     })
 }
 
@@ -495,12 +617,21 @@ mod tests {
     }
 
     #[test]
-    fn ekspor_csv_memakai_titik_koma() {
+    fn ekspor_csv_xlsx_pdf_valid() {
         let (_d, pool) = live();
         let conn = pool.get().expect("get");
-        let f = export(&conn, "headcount", None, None).expect("csv");
+        let f = export(&conn, "headcount", "csv", None, None).expect("csv");
         assert!(f.filename.starts_with("laporan-headcount-"));
-        assert!(f.csv.contains(';'));
-        assert!(export(&conn, "keliru", None, None).is_err());
+        assert!(f.filename.ends_with(".csv"));
+        let text = String::from_utf8(f.bytes).expect("utf8");
+        assert!(text.contains(';'));
+        let x = export(&conn, "headcount", "xlsx", None, None).expect("xlsx");
+        assert!(x.filename.ends_with(".xlsx"));
+        assert_eq!(&x.bytes[0..2], b"PK");
+        let p = export(&conn, "headcount", "pdf", None, None).expect("pdf");
+        assert!(p.filename.ends_with(".pdf"));
+        assert!(p.bytes.starts_with(b"%PDF"));
+        assert!(export(&conn, "keliru", "csv", None, None).is_err());
+        assert!(export(&conn, "headcount", "keliru", None, None).is_err());
     }
 }
