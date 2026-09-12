@@ -232,6 +232,101 @@ export const commands = {
 	payrollDeductions: (pendingOnly: boolean) => typedError<Deduction[], string>(__TAURI_INVOKE("payroll_deductions", { pendingOnly })),
 	payrollDeductionSave: (id: number | null, input: DeductionInput) => typedError<number, string>(__TAURI_INVOKE("payroll_deduction_save", { id, input })),
 	payrollDeductionDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("payroll_deduction_delete", { id })),
+	vacancyList: () => typedError<Vacancy[], string>(__TAURI_INVOKE("vacancy_list")),
+	vacancyGet: (id: number) => typedError<{
+	id: number,
+	title: string,
+	department_id: number | null,
+	department_name: string | null,
+	position_id: number | null,
+	position_name: string | null,
+	employment_type: string,
+	description: string | null,
+	requirements: string | null,
+	quota: number,
+	status: string,
+	posted_date: string | null,
+	closing_date: string | null,
+	candidate_count: number,
+} | null, string>(__TAURI_INVOKE("vacancy_get", { id })),
+	vacancySave: (id: number | null, input: VacancyInput) => typedError<number, string>(__TAURI_INVOKE("vacancy_save", { id, input })),
+	vacancyDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("vacancy_delete", { id })),
+	candidatesByVacancy: (vacancyId: number) => typedError<CandidateRow[], string>(__TAURI_INVOKE("candidates_by_vacancy", { vacancyId })),
+	candidateDetail: (id: number) => typedError<{
+	id: number,
+	vacancy_id: number,
+	vacancy_title: string,
+	full_name: string,
+	email: string | null,
+	phone: string | null,
+	birth_date: string | null,
+	gender: string | null,
+	address: string | null,
+	cv_path: string | null,
+	source: string | null,
+	stage: string,
+	rating: number | null,
+	notes: string | null,
+	employee_id: number | null,
+	documents: CandidateDoc[],
+	interviews: Interview[],
+	assessments: Assessment[],
+	stage_history: StageEvent[],
+} | null, string>(__TAURI_INVOKE("candidate_detail", { id })),
+	candidateCreate: (vacancyId: number, input: CandidateInput, cv: {
+	name: string,
+	mime: string,
+	bytes: number[],
+} | null) => typedError<number, string>(__TAURI_INVOKE("candidate_create", { vacancyId, input, cv })),
+	candidateDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("candidate_delete", { id })),
+	candidateStage: (id: number, stage: string, notes: string | null) => typedError<null, string>(__TAURI_INVOKE("candidate_stage", { id, stage, notes })),
+	interviewAdd: (candidateId: number, input: InterviewInput) => typedError<number, string>(__TAURI_INVOKE("interview_add", { candidateId, input })),
+	interviewDecide: (id: number, result: string, notes: string | null) => typedError<null, string>(__TAURI_INVOKE("interview_decide", { id, result, notes })),
+	assessmentAdd: (candidateId: number, input: AssessmentInput) => typedError<number, string>(__TAURI_INVOKE("assessment_add", { candidateId, input })),
+	candidateHire: (id: number, joinDate: string | null) => typedError<number, string>(__TAURI_INVOKE("candidate_hire", { id, joinDate })),
+	candidateCv: (candidateId: number, id: number) => typedError<DocumentBytes, string>(__TAURI_INVOKE("candidate_cv", { candidateId, id })),
+	onboardingList: () => typedError<Onboarding[], string>(__TAURI_INVOKE("onboarding_list")),
+	onboardingGet: (id: number) => typedError<{
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	start_date: string,
+	status: string,
+	progress_percent: number,
+	tasks: OnboardingTask[],
+} | null, string>(__TAURI_INVOKE("onboarding_get", { id })),
+	onboardingMine: () => typedError<{
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	start_date: string,
+	status: string,
+	progress_percent: number,
+	tasks: OnboardingTask[],
+} | null, string>(__TAURI_INVOKE("onboarding_mine")),
+	onboardingToggle: (taskId: number, completed: boolean) => typedError<[number, string], string>(__TAURI_INVOKE("onboarding_toggle", { taskId, completed })),
+	offboardingList: () => typedError<OffboardingRow[], string>(__TAURI_INVOKE("offboarding_list")),
+	offboardingMy: () => typedError<OffboardingRow[], string>(__TAURI_INVOKE("offboarding_my")),
+	offboardingGet: (id: number) => typedError<{
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	supervisor_id: number | null,
+	resignation_date: string,
+	last_working_date: string,
+	reason: string | null,
+	status: string,
+	current_step: number,
+	exit_interview: ExitInterview | null,
+	clearance_items: ClearanceItem[],
+} | null, string>(__TAURI_INVOKE("offboarding_get", { id })),
+	offboardingCreate: (input: OffboardingCreate) => typedError<number, string>(__TAURI_INVOKE("offboarding_create", { input })),
+	offboardingDecide: (id: number, action: string) => typedError<string, string>(__TAURI_INVOKE("offboarding_decide", { id, action })),
+	offboardingExitSave: (id: number, input: ExitInterviewInput) => typedError<null, string>(__TAURI_INVOKE("offboarding_exit_save", { id, input })),
+	offboardingClearance: (itemId: number, cleared: boolean, notes: string | null) => typedError<null, string>(__TAURI_INVOKE("offboarding_clearance", { itemId, cleared, notes })),
 };
 
 /* Types */
@@ -247,6 +342,19 @@ export type AddressRow = {
 export type Addresses = {
 	ktp: AddressRow | null,
 	domicile: AddressRow | null,
+};
+
+export type Assessment = {
+	id: number,
+	assessment_name: string,
+	score: number | null,
+	notes: string | null,
+};
+
+export type AssessmentInput = {
+	assessment_name: string,
+	score: number | null,
+	notes: string | null,
 };
 
 export type Assignment = {
@@ -320,6 +428,55 @@ export type CalendarDay = {
 	kind: string,
 };
 
+export type CandidateDetail = {
+	id: number,
+	vacancy_id: number,
+	vacancy_title: string,
+	full_name: string,
+	email: string | null,
+	phone: string | null,
+	birth_date: string | null,
+	gender: string | null,
+	address: string | null,
+	cv_path: string | null,
+	source: string | null,
+	stage: string,
+	rating: number | null,
+	notes: string | null,
+	employee_id: number | null,
+	documents: CandidateDoc[],
+	interviews: Interview[],
+	assessments: Assessment[],
+	stage_history: StageEvent[],
+};
+
+export type CandidateDoc = {
+	id: number,
+	name: string,
+	file_path: string,
+	category: string | null,
+};
+
+export type CandidateInput = {
+	full_name: string,
+	email: string | null,
+	phone: string | null,
+	birth_date: string | null,
+	gender: string | null,
+	address: string | null,
+	source: string | null,
+};
+
+export type CandidateRow = {
+	id: number,
+	full_name: string,
+	email: string | null,
+	phone: string | null,
+	stage: string,
+	rating: number | null,
+	created_at: string,
+};
+
 export type ChildField = {
 	name: string,
 	label: string,
@@ -332,6 +489,15 @@ export type ChildMeta = {
 	slug: string,
 	title: string,
 	fields: ChildField[],
+};
+
+export type ClearanceItem = {
+	id: number,
+	item_name: string,
+	department: string | null,
+	is_cleared: boolean,
+	cleared_at: string | null,
+	notes: string | null,
 };
 
 /**  Hasil clock in/out: status + pesan. */
@@ -619,6 +785,18 @@ export type EntityMeta = {
 	fields: FieldMeta[],
 };
 
+export type ExitInterview = {
+	feedback: string | null,
+	reason_category: string | null,
+	would_recommend: boolean | null,
+};
+
+export type ExitInterviewInput = {
+	feedback: string | null,
+	reason_category: string | null,
+	would_recommend: boolean | null,
+};
+
 /**  Metadata field untuk membangun form dinamis. */
 export type FieldMeta = {
 	name: string,
@@ -648,6 +826,25 @@ export type HolidayInput = {
 	date: string,
 	holiday_type: string,
 	description: string | null,
+};
+
+export type Interview = {
+	id: number,
+	interviewer_id: number | null,
+	interviewer_name: string | null,
+	schedule_at: string,
+	location: string | null,
+	interview_type: string,
+	result: string,
+	notes: string | null,
+};
+
+export type InterviewInput = {
+	interviewer_id: number | null,
+	schedule_at: string,
+	location: string | null,
+	interview_type: string,
+	notes: string | null,
 };
 
 export type LeaveCreate = {
@@ -713,6 +910,57 @@ export type ManualInput = {
 export type NamedOpt = {
 	id: number,
 	name: string,
+};
+
+export type OffboardingCreate = {
+	resignation_date: string,
+	last_working_date: string,
+	reason: string | null,
+};
+
+export type OffboardingDetail = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	supervisor_id: number | null,
+	resignation_date: string,
+	last_working_date: string,
+	reason: string | null,
+	status: string,
+	current_step: number,
+	exit_interview: ExitInterview | null,
+	clearance_items: ClearanceItem[],
+};
+
+export type OffboardingRow = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	resignation_date: string,
+	last_working_date: string,
+	status: string,
+	current_step: number,
+};
+
+export type Onboarding = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	start_date: string,
+	status: string,
+	progress_percent: number,
+	tasks: OnboardingTask[],
+};
+
+export type OnboardingTask = {
+	id: number,
+	task_name: string,
+	is_completed: boolean,
+	completed_at: string | null,
+	sort_order: number,
 };
 
 /**  Opsi dropdown untuk field select. */
@@ -952,6 +1200,12 @@ export type ShiftInput = {
 	is_overnight: boolean,
 };
 
+export type StageEvent = {
+	stage: string,
+	notes: string | null,
+	changed_at: string,
+};
+
 /**  Opsi statis untuk form child. */
 export type StaticOpt = {
 	value: string,
@@ -967,6 +1221,36 @@ export type UserRow = {
 	must_change_password: boolean,
 	employee_name: string | null,
 	roles: string[],
+};
+
+export type Vacancy = {
+	id: number,
+	title: string,
+	department_id: number | null,
+	department_name: string | null,
+	position_id: number | null,
+	position_name: string | null,
+	employment_type: string,
+	description: string | null,
+	requirements: string | null,
+	quota: number,
+	status: string,
+	posted_date: string | null,
+	closing_date: string | null,
+	candidate_count: number,
+};
+
+export type VacancyInput = {
+	title: string,
+	department_id: number | null,
+	position_id: number | null,
+	employment_type: string,
+	description: string | null,
+	requirements: string | null,
+	quota: number,
+	status: string,
+	posted_date: string | null,
+	closing_date: string | null,
 };
 
 /**  Alur beserta tahap-tahapnya. */

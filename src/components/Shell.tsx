@@ -25,6 +25,9 @@ const NAV_MAIN = [
   { to: "/attendance", label: "Absensi", icon: Database01 },
   { to: "/leave", label: "Cuti & Izin", icon: Database01 },
   { to: "/payroll", label: "Penggajian", icon: Database01 },
+  { to: "/recruitment", label: "Rekrutmen", icon: Users01 },
+  { to: "/onboarding", label: "Onboarding", icon: Users01 },
+  { to: "/offboarding", label: "Offboarding", icon: Users01 },
 ];
 const NAV_ADMIN = [
   { to: "/users", label: "Pengguna", icon: Users01, perm: "system.manage" },
