@@ -1513,6 +1513,318 @@ fn payroll_deduction_delete(state: tauri::State<AppState>, id: i32) -> Result<()
     services::payroll::deduction_delete(&conn, uid, id as i64)
 }
 
+#[tauri::command]
+#[specta::specta]
+fn vacancy_list(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::recruitment::Vacancy>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["recruitment.view", "system.manage"])?;
+    services::recruitment::vacancy_list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn vacancy_get(
+    state: tauri::State<AppState>,
+    id: i32,
+) -> Result<Option<services::recruitment::Vacancy>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["recruitment.view", "system.manage"])?;
+    services::recruitment::vacancy_get(&conn, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn vacancy_save(
+    state: tauri::State<AppState>,
+    id: Option<i32>,
+    input: services::recruitment::VacancyInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["recruitment.create", "recruitment.update", "system.manage"],
+    )?;
+    services::recruitment::vacancy_save(&conn, uid, id.map(|v| v as i64), &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn vacancy_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["recruitment.delete", "system.manage"])?;
+    services::recruitment::vacancy_delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn candidates_by_vacancy(
+    state: tauri::State<AppState>,
+    vacancy_id: i32,
+) -> Result<Vec<services::recruitment::CandidateRow>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["recruitment.view", "system.manage"])?;
+    services::recruitment::candidates_by_vacancy(&conn, vacancy_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn candidate_detail(
+    state: tauri::State<AppState>,
+    id: i32,
+) -> Result<Option<services::recruitment::CandidateDetail>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["recruitment.view", "system.manage"])?;
+    services::recruitment::candidate_detail(&conn, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn candidate_create(
+    state: tauri::State<AppState>,
+    vacancy_id: i32,
+    input: services::recruitment::CandidateInput,
+    cv: Option<services::employees::FileUpload>,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["recruitment.create", "system.manage"])?;
+    let dir = files_dir(&state);
+    services::recruitment::candidate_create(
+        &conn,
+        &dir,
+        uid,
+        vacancy_id as i64,
+        &input,
+        cv.as_ref(),
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+fn candidate_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["recruitment.delete", "system.manage"])?;
+    services::recruitment::candidate_delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn candidate_stage(
+    state: tauri::State<AppState>,
+    id: i32,
+    stage: String,
+    notes: Option<String>,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["recruitment.update", "system.manage"])?;
+    services::recruitment::update_stage(&conn, uid, id as i64, &stage, notes.as_deref())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn interview_add(
+    state: tauri::State<AppState>,
+    candidate_id: i32,
+    input: services::recruitment::InterviewInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["recruitment.update", "system.manage"])?;
+    services::recruitment::add_interview(&conn, uid, candidate_id as i64, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn interview_decide(
+    state: tauri::State<AppState>,
+    id: i32,
+    result: String,
+    notes: Option<String>,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["recruitment.update", "system.manage"])?;
+    services::recruitment::decide_interview(&conn, uid, id as i64, &result, notes.as_deref())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn assessment_add(
+    state: tauri::State<AppState>,
+    candidate_id: i32,
+    input: services::recruitment::AssessmentInput,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["recruitment.update", "system.manage"])?;
+    services::recruitment::add_assessment(&conn, uid, candidate_id as i64, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn candidate_hire(
+    state: tauri::State<AppState>,
+    id: i32,
+    join_date: Option<String>,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["recruitment.update", "system.manage"])?;
+    let dir = files_dir(&state);
+    services::recruitment::hire(&conn, &dir, uid, id as i64, join_date.as_deref())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn candidate_cv(
+    state: tauri::State<AppState>,
+    candidate_id: i32,
+    id: i32,
+) -> Result<services::employees::DocumentBytes, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["recruitment.view", "system.manage"])?;
+    let dir = files_dir(&state);
+    services::recruitment::candidate_document_bytes(&conn, &dir, candidate_id as i64, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn onboarding_list(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::onboarding::Onboarding>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["onboarding.view", "system.manage"])?;
+    services::onboarding::list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn onboarding_get(
+    state: tauri::State<AppState>,
+    id: i32,
+) -> Result<Option<services::onboarding::Onboarding>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["onboarding.view", "system.manage"])?;
+    services::onboarding::find(&conn, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn onboarding_mine(
+    state: tauri::State<AppState>,
+) -> Result<Option<services::onboarding::Onboarding>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::onboarding::for_employee(&conn, my_employee(&conn, uid)?)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn onboarding_toggle(
+    state: tauri::State<AppState>,
+    task_id: i32,
+    completed: bool,
+) -> Result<(i32, String), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["onboarding.create", "onboarding.update", "system.manage"],
+    )?;
+    services::onboarding::toggle_task(&conn, uid, task_id as i64, completed)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn offboarding_list(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::offboarding::OffboardingRow>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["offboarding.view", "system.manage"])?;
+    services::offboarding::list(&conn)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn offboarding_my(
+    state: tauri::State<AppState>,
+) -> Result<Vec<services::offboarding::OffboardingRow>, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::offboarding::my_requests(&conn, my_employee(&conn, uid)?)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn offboarding_get(
+    state: tauri::State<AppState>,
+    id: i32,
+) -> Result<Option<services::offboarding::OffboardingDetail>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["offboarding.view", "system.manage"])?;
+    services::offboarding::find(&conn, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn offboarding_create(
+    state: tauri::State<AppState>,
+    input: services::offboarding::OffboardingCreate,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::offboarding::create(&conn, uid, my_employee(&conn, uid)?, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn offboarding_decide(
+    state: tauri::State<AppState>,
+    id: i32,
+    action: String,
+) -> Result<String, String> {
+    let conn = pooled(&state)?;
+    let (uid, user) = current_actor(&state, &conn)?;
+    let actor_emp = my_employee(&conn, uid).ok();
+    let privileged = user.is_super_admin
+        || user
+            .permissions
+            .iter()
+            .any(|p| p == "offboarding.approve" || p == "system.manage");
+    services::offboarding::decide(&conn, uid, actor_emp, privileged, id as i64, &action, None)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn offboarding_exit_save(
+    state: tauri::State<AppState>,
+    id: i32,
+    input: services::offboarding::ExitInterviewInput,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["offboarding.create", "offboarding.update", "system.manage"],
+    )?;
+    services::offboarding::save_exit_interview(&conn, uid, id as i64, &input)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn offboarding_clearance(
+    state: tauri::State<AppState>,
+    item_id: i32,
+    cleared: bool,
+    notes: Option<String>,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["offboarding.create", "offboarding.update", "system.manage"],
+    )?;
+    services::offboarding::toggle_clearance(&conn, uid, item_id as i64, cleared, notes.as_deref())
+}
+
 fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("gagal membuat direktori data: {e}"))?;
     let pool = db::init_pool(&data_dir.join("peoplex.db"))?;
@@ -1649,7 +1961,32 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         payroll_component_delete,
         payroll_deductions,
         payroll_deduction_save,
-        payroll_deduction_delete
+        payroll_deduction_delete,
+        vacancy_list,
+        vacancy_get,
+        vacancy_save,
+        vacancy_delete,
+        candidates_by_vacancy,
+        candidate_detail,
+        candidate_create,
+        candidate_delete,
+        candidate_stage,
+        interview_add,
+        interview_decide,
+        assessment_add,
+        candidate_hire,
+        candidate_cv,
+        onboarding_list,
+        onboarding_get,
+        onboarding_mine,
+        onboarding_toggle,
+        offboarding_list,
+        offboarding_my,
+        offboarding_get,
+        offboarding_create,
+        offboarding_decide,
+        offboarding_exit_save,
+        offboarding_clearance
     ])
 }
 
