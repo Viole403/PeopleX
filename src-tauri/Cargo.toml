@@ -37,6 +37,8 @@ specta-typescript = "0.0.12"
 tauri-specta = { version = "2.0.0-rc.25", features = ["typescript"] }
 rust_xlsxwriter = "0.99.0"
 sea-orm = { version = "2.0.2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
+toml = "1.1.6"
+tokio = { version = "1.53.1", features = ["rt"] }
 
 [dev-dependencies]
 tempfile = "3"

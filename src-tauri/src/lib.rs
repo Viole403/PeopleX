@@ -1,3 +1,4 @@
+pub mod config;
 pub mod db;
 pub mod entities;
 pub mod seed;
@@ -13,6 +14,7 @@ use crate::services::repository::SettingsRepo;
 /// State global: koneksi database, direktori data, dan sesi login (user id).
 pub struct AppState {
     pub db: db::DbPool,
+    pub sea: sea_orm::DatabaseConnection,
     pub data_dir: PathBuf,
     pub session: Mutex<Option<i64>>,
 }
@@ -44,21 +46,33 @@ fn to_dto_int(v: i64, field: &str) -> Result<i32, String> {
 
 #[tauri::command]
 #[specta::specta]
-fn db_status(state: tauri::State<AppState>) -> Result<DbStatus, String> {
-    let conn = state
-        .db
-        .get()
-        .map_err(|e| format!("gagal mengambil koneksi database: {e}"))?;
-    let tables: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(|e| format!("gagal menghitung tabel: {e}"))?;
-    let users: i64 = conn
-        .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
-        .map_err(|e| format!("gagal menghitung users: {e}"))?;
+async fn db_status(state: tauri::State<'_, AppState>) -> Result<DbStatus, String> {
+    use sea_orm::ConnectionTrait;
+    let tables_stmt = sea_orm::Statement::from_string(
+        sea_orm::DbBackend::Sqlite,
+        "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            .to_string(),
+    );
+    let tables: i64 = state
+        .sea
+        .query_one_raw(tables_stmt)
+        .await
+        .map_err(|e| format!("gagal menghitung tabel: {e}"))?
+        .ok_or("hasil hitung tabel kosong.".to_string())?
+        .try_get::<i64>("", "n")
+        .map_err(|e| format!("gagal membaca hitung tabel: {e}"))?;
+    let users_stmt = sea_orm::Statement::from_string(
+        sea_orm::DbBackend::Sqlite,
+        "SELECT COUNT(*) AS n FROM users".to_string(),
+    );
+    let users: i64 = state
+        .sea
+        .query_one_raw(users_stmt)
+        .await
+        .map_err(|e| format!("gagal menghitung users: {e}"))?
+        .ok_or("hasil hitung users kosong.".to_string())?
+        .try_get::<i64>("", "n")
+        .map_err(|e| format!("gagal membaca hitung users: {e}"))?;
     Ok(DbStatus {
         ok: true,
         tables: to_dto_int(tables, "tables")?,
@@ -2814,6 +2828,7 @@ fn report_export(
 
 fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("gagal membuat direktori data: {e}"))?;
+    let cfg = config::load(&data_dir)?;
     let pool = db::init_pool(&data_dir.join("peoplex.db"))?;
     {
         let mut conn = pool
@@ -2823,8 +2838,17 @@ fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
         seed::seed(&mut conn)?;
         services::backup::ensure_scheduled(&conn, &services::backup::backup_dir(&data_dir));
     }
+    let url = cfg.sea_url(&data_dir)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("gagal membuat runtime async: {e}"))?;
+    let sea = rt
+        .block_on(sea_orm::Database::connect(&url))
+        .map_err(|e| format!("gagal konek SeaORM: {e}"))?;
     Ok(AppState {
         db: pool,
+        sea,
         data_dir,
         session: Mutex::new(None),
     })
