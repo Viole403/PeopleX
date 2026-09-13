@@ -2648,6 +2648,17 @@ fn report_payroll(
 
 #[tauri::command]
 #[specta::specta]
+fn report_pph21_annual(
+    state: tauri::State<AppState>,
+    year: i32,
+) -> Result<services::reports::ReportTable, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["report.view", "system.manage"])?;
+    services::reports::pph21_annual(&conn, year)
+}
+
+#[tauri::command]
+#[specta::specta]
 fn report_recruitment(
     state: tauri::State<AppState>,
 ) -> Result<services::reports::ReportTable, String> {
@@ -2938,6 +2949,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         report_attendance,
         report_leave,
         report_payroll,
+        report_pph21_annual,
         report_recruitment,
         report_performance,
         report_contracts,

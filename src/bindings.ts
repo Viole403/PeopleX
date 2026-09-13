@@ -422,6 +422,7 @@ export const commands = {
 	reportAttendance: (month: string, departmentId: number | null) => typedError<ReportTable, string>(__TAURI_INVOKE("report_attendance", { month, departmentId })),
 	reportLeave: (year: number) => typedError<ReportTable, string>(__TAURI_INVOKE("report_leave", { year })),
 	reportPayroll: (periodId: number) => typedError<ReportTable, string>(__TAURI_INVOKE("report_payroll", { periodId })),
+	reportPph21Annual: (year: number) => typedError<ReportTable, string>(__TAURI_INVOKE("report_pph21_annual", { year })),
 	reportRecruitment: () => typedError<ReportTable, string>(__TAURI_INVOKE("report_recruitment")),
 	reportPerformance: (periodId: number) => typedError<ReportTable, string>(__TAURI_INVOKE("report_performance", { periodId })),
 	reportContracts: (before: string) => typedError<ReportTable, string>(__TAURI_INVOKE("report_contracts", { before })),

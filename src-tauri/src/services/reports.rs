@@ -307,6 +307,46 @@ pub fn payroll(conn: &Connection, period_id: i64) -> Result<ReportTable, String>
     })
 }
 
+/// Rekap PPh 21 setahun per karyawan (bahan form 1721-A1):
+/// bruto dari payroll periode final, PPh dari rincian estimasi.
+pub fn pph21_annual(conn: &Connection, year: i32) -> Result<ReportTable, String> {
+    if !(2000..=2100).contains(&year) {
+        return Err("Tahun harus 2000 sampai 2100.".to_string());
+    }
+    let y = year.to_string();
+    let mut stmt = conn
+        .prepare(&format!("SELECT e.employee_number, {FULL}, COALESCE(e.npwp,'-'), COALESCE(e.ptkp_status,'TK/0'), SUM(p.total_income), COALESCE((SELECT SUM(d.amount) FROM payroll_details d INNER JOIN payrolls q ON q.id = d.payroll_id INNER JOIN payroll_periods qp ON qp.id = q.payroll_period_id WHERE q.employee_id = e.id AND d.component_name = 'PPh 21 (estimasi)' AND substr(qp.start_date,1,4) = ?1 AND qp.status IN ('approved','paid','locked')), 0) FROM payrolls p INNER JOIN employees e ON e.id = p.employee_id INNER JOIN payroll_periods pp ON pp.id = p.payroll_period_id WHERE substr(pp.start_date,1,4) = ?1 AND pp.status IN ('approved','paid','locked') GROUP BY e.id ORDER BY e.first_name LIMIT 2000"))
+        .map_err(|e| format!("gagal menyiapkan PPh tahunan: {e}"))?;
+    let rows = stmt
+        .query_map(params![y], |r| {
+            Ok(vec![
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                num(r.get::<_, Option<f64>>(4)?.unwrap_or(0.0)),
+                num(r.get::<_, Option<f64>>(5)?.unwrap_or(0.0)),
+            ])
+        })
+        .map_err(|e| format!("gagal membaca PPh tahunan: {e}"))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| format!("gagal membaca baris: {e}"))?);
+    }
+    Ok(ReportTable {
+        title: "Laporan PPh 21 Tahunan".to_string(),
+        headers: h(&[
+            "NIP",
+            "Nama",
+            "NPWP",
+            "PTKP",
+            "Bruto Setahun",
+            "PPh 21 Setahun",
+        ]),
+        rows: out,
+    })
+}
+
 pub fn recruitment(conn: &Connection) -> Result<ReportTable, String> {
     let mut stmt = conn
         .prepare("SELECT v.title, COALESCE(d.name,'-'), v.quota, COUNT(c.id), SUM(CASE WHEN c.stage IN ('interview','hr_interview','test') THEN 1 ELSE 0 END), SUM(CASE WHEN c.stage = 'hired' THEN 1 ELSE 0 END), SUM(CASE WHEN c.stage = 'rejected' THEN 1 ELSE 0 END) FROM vacancies v LEFT JOIN departments d ON d.id = v.department_id LEFT JOIN candidates c ON c.vacancy_id = v.id AND c.deleted_at IS NULL WHERE v.deleted_at IS NULL GROUP BY v.id ORDER BY v.id DESC LIMIT 500")
@@ -559,6 +599,7 @@ pub fn export(
         "recruitment" => recruitment(conn)?,
         "performance" => performance(conn, arg2.unwrap_or(0))?,
         "contracts" => contracts(conn, arg1.unwrap_or(""))?,
+        "pph21annual" => pph21_annual(conn, arg2.unwrap_or(0) as i32)?,
         _ => return Err("Jenis laporan tidak dikenal.".to_string()),
     };
     let today = chrono::Local::now()
@@ -614,6 +655,49 @@ mod tests {
         let h = headcount(&conn).expect("hc");
         assert!(!h.rows.is_empty());
         assert!(attendance(&conn, "20XX-13", None).is_err());
+    }
+
+    #[test]
+    fn pph21_tahunan_merangkum_periode_final() {
+        use crate::services::payroll as pay;
+        let (_d, pool) = live();
+        let conn = pool.get().expect("get");
+        let actor: i64 = conn
+            .query_row("SELECT id FROM users WHERE username = 'admin'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        conn.execute(
+            "INSERT INTO employees (employee_number, first_name, gender, marital_status, company_id, join_date, employment_status, employment_type, ptkp_status) VALUES ('EMP-PPH', 'Pajak', 'male', 'single', 1, '2026-01-01', 'active', 'permanent', 'TK/0')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO employee_salaries (employee_id, basic_salary, effective_date, is_active) VALUES (last_insert_rowid(), 20000000, '2026-01-01', 1)",
+            [],
+        )
+        .unwrap();
+        let pid = pay::period_create(
+            &conn,
+            actor,
+            actor,
+            &pay::PeriodInput {
+                name: "Jan 2026".to_string(),
+                start_date: "2026-01-01".to_string(),
+                end_date: "2026-01-31".to_string(),
+                payment_date: None,
+            },
+        )
+        .expect("periode") as i64;
+        drop(conn);
+        let mut c = pool.get().expect("get");
+        pay::generate(&mut c, actor, pid).expect("generate");
+        pay::approve_period(&c, actor, pid).expect("approve");
+        let t = pph21_annual(&c, 2026).expect("tahunan");
+        assert_eq!(t.headers.len(), 6);
+        assert_eq!(t.rows.len(), 1);
+        assert_eq!(t.rows[0][4], "20000000");
+        assert!(pph21_annual(&c, 1999).is_err());
     }
 
     #[test]

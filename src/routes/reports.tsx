@@ -19,6 +19,7 @@ type Kind =
   | "recruitment"
   | "performance"
   | "contracts"
+  | "pph21annual"
   | "analytics";
 
 const KINDS: { id: Kind; label: string }[] = [
@@ -30,6 +31,7 @@ const KINDS: { id: Kind; label: string }[] = [
   { id: "recruitment", label: "Rekrutmen" },
   { id: "performance", label: "Kinerja" },
   { id: "contracts", label: "Kontrak" },
+  { id: "pph21annual", label: "PPh 21 Tahunan" },
   { id: "analytics", label: "Analitik" },
 ];
 
@@ -82,6 +84,8 @@ function ReportsPage() {
           return unwrap(commands.reportPerformance(perfId ?? 0));
         case "contracts":
           return unwrap(commands.reportContracts(before || "9999-12-31"));
+        case "pph21annual":
+          return unwrap(commands.reportPph21Annual(Number(year) || 0));
         case "analytics":
           return unwrap(commands.reportHeadcount());
       }
@@ -106,6 +110,7 @@ function ReportsPage() {
       recruitment: { arg1: null, arg2: null },
       performance: { arg1: null, arg2: perfId ?? 0 },
       contracts: { arg1: before || "9999-12-31", arg2: null },
+      pph21annual: { arg1: null, arg2: Number(year) || 0 },
       analytics: { arg1: null, arg2: null },
     };
     try {
