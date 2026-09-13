@@ -390,6 +390,7 @@ fn seed_permissions(conn: &Connection) -> Result<std::collections::HashMap<Strin
         ("report", vec!["view", "export"]),
         ("settings", vec!["manage"]),
         ("rbac", vec!["manage"]),
+        ("workflow", vec!["manage"]),
         ("system", vec!["manage"]),
         ("audit", vec!["view"]),
     ];
@@ -990,7 +991,7 @@ mod tests {
         let conn = pool.get().expect("get");
         let c = counts(&conn);
         assert_eq!(c["roles"], 8);
-        assert_eq!(c["permissions"], 86);
+        assert_eq!(c["permissions"], 87);
         assert_eq!(c["leave_types"], 8);
         assert_eq!(c["salary_components"], 16);
         assert_eq!(c["approval_workflows"], 5);
@@ -1002,7 +1003,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(super_perms, 86);
+        assert_eq!(super_perms, 87);
     }
 
     #[test]

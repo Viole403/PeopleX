@@ -510,7 +510,7 @@ fn list_workflows(
     state: tauri::State<AppState>,
 ) -> Result<Vec<services::workflows::Workflow>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["system.manage"])?;
+    require(&state, &conn, &["workflow.manage"])?;
     services::workflows::list(&conn)
 }
 
@@ -524,7 +524,7 @@ fn add_workflow_step(
     user_id: Option<i32>,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    let (uid, _) = require(&state, &conn, &["workflow.manage"])?;
     services::workflows::add_step(
         &conn,
         uid,
@@ -539,7 +539,7 @@ fn add_workflow_step(
 #[specta::specta]
 fn remove_workflow_step(state: tauri::State<AppState>, step_id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    let (uid, _) = require(&state, &conn, &["workflow.manage"])?;
     services::workflows::remove_step(&conn, uid, step_id as i64)
 }
 
