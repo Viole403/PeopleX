@@ -114,11 +114,57 @@ fn login(
 ) -> Result<services::auth::LoginOk, String> {
     let conn = pooled(&state)?;
     let ok = services::auth::attempt_login(&conn, &username, &password)?;
+    if !ok.mfa_required {
+        *state
+            .session
+            .lock()
+            .map_err(|_| "Sesi terkunci.".to_string())? = Some(ok.user.id as i64);
+    }
+    Ok(ok)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn mfa_challenge(
+    state: tauri::State<AppState>,
+    user_id: i32,
+    code: String,
+) -> Result<services::auth::LoginOk, String> {
+    let conn = pooled(&state)?;
+    let user = services::auth::verify_mfa(&conn, user_id as i64, &code)?;
     *state
         .session
         .lock()
-        .map_err(|_| "Sesi terkunci.".to_string())? = Some(ok.user.id as i64);
-    Ok(ok)
+        .map_err(|_| "Sesi terkunci.".to_string())? = Some(user.id as i64);
+    Ok(services::auth::LoginOk {
+        must_change_password: user.must_change_password,
+        mfa_required: false,
+        user,
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+fn mfa_setup(state: tauri::State<AppState>) -> Result<services::auth::MfaSetup, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::auth::mfa_setup(&conn, uid)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn mfa_enable(state: tauri::State<AppState>, code: String) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::auth::mfa_enable(&conn, uid, &code)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn mfa_disable(state: tauri::State<AppState>, password: String) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = current_actor(&state, &conn)?;
+    services::auth::mfa_disable(&conn, uid, &password)
 }
 
 #[tauri::command]
@@ -2746,6 +2792,10 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         change_password,
         request_password_reset,
         reset_password,
+        mfa_challenge,
+        mfa_setup,
+        mfa_enable,
+        mfa_disable,
         list_roles,
         create_role,
         update_role,

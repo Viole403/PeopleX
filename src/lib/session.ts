@@ -25,6 +25,24 @@ export function useLogin() {
     mutationFn: (v: { username: string; password: string }) =>
       unwrap(commands.login(v.username, v.password)),
     onSuccess: (data) => {
+      if (data.mfa_required) return;
+      queryClient.setQueryData(["session"], data.user);
+      toast.success(`Selamat datang, ${data.user.username}`);
+      void router.navigate({
+        to: data.must_change_password ? "/change-password" : "/",
+      });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+export function useMfaChallenge() {
+  const queryClient = useQueryClient();
+  const router = useRouter();
+  return useMutation({
+    mutationFn: (v: { userId: number; code: string }) =>
+      unwrap(commands.mfaChallenge(v.userId, v.code)),
+    onSuccess: (data) => {
       queryClient.setQueryData(["session"], data.user);
       toast.success(`Selamat datang, ${data.user.username}`);
       void router.navigate({

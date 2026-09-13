@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { useLogin, useSession } from "../lib/session";
+import { useLogin, useMfaChallenge, useSession } from "../lib/session";
 
 export const Route = createFileRoute("/login")({
   component: LoginPage,
@@ -12,6 +12,8 @@ function LoginPage() {
   const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const challenge = useMfaChallenge();
 
   useEffect(() => {
     if (!isPending && session) {
@@ -20,6 +22,47 @@ function LoginPage() {
       });
     }
   }, [isPending, session, navigate]);
+
+  if (login.data?.mfa_required) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-bg-secondary px-4">
+        <form
+          className="w-full max-w-sm space-y-4 rounded-2xl border border-border-secondary bg-bg-primary p-8 shadow-lg"
+          onSubmit={(e) => {
+            e.preventDefault();
+            challenge.mutate({ userId: login.data.user.id, code });
+          }}
+        >
+          <h1 className="text-display-xs font-semibold">Verifikasi MFA</h1>
+          <p className="text-sm text-text-tertiary">
+            Masukkan 6 digit kode dari aplikasi authenticator.
+          </p>
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium text-text-secondary">
+              Kode MFA
+            </span>
+            <input
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              autoFocus
+              required
+              inputMode="numeric"
+              maxLength={6}
+              className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm outline-none placeholder:text-text-placeholder focus:border-border-brand"
+              placeholder="123456"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={challenge.isPending}
+            className="w-full rounded-lg bg-bg-brand-solid px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-bg-brand-solid_hover disabled:opacity-60"
+          >
+            {challenge.isPending ? "Memeriksa…" : "Verifikasi"}
+          </button>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-bg-secondary px-4">

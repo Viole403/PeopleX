@@ -26,11 +26,12 @@ struct UserRow {
     failed_attempts: i64,
     locked_until: Option<String>,
     must_change_password: bool,
+    mfa_enabled: bool,
 }
 
 fn find_by_login(conn: &Connection, login: &str) -> Result<Option<UserRow>, String> {
     conn.query_row(
-        "SELECT id, username, password, status, failed_login_attempts, locked_until, must_change_password FROM users WHERE username = ?1 OR email = ?1 LIMIT 1",
+        "SELECT id, username, password, status, failed_login_attempts, locked_until, must_change_password, COALESCE(mfa_enabled, 0) FROM users WHERE username = ?1 OR email = ?1 LIMIT 1",
         params![login],
         |r| {
             Ok(UserRow {
@@ -41,6 +42,7 @@ fn find_by_login(conn: &Connection, login: &str) -> Result<Option<UserRow>, Stri
                 failed_attempts: r.get(4)?,
                 locked_until: r.get(5)?,
                 must_change_password: r.get::<_, i64>(6)? != 0,
+                mfa_enabled: r.get::<_, i64>(7)? != 0,
             })
         },
     )
@@ -67,6 +69,7 @@ fn record_login_activity(
 pub struct LoginOk {
     pub user: SessionUser,
     pub must_change_password: bool,
+    pub mfa_required: bool,
 }
 
 /// Muat profil sesi (peran + izin). None bila user tak aktif/ tak ada.
@@ -204,6 +207,7 @@ pub fn attempt_login(conn: &Connection, login: &str, password: &str) -> Result<L
     let session = load_session_user(conn, u.id)?.expect("sesi user aktif");
     Ok(LoginOk {
         must_change_password: u.must_change_password,
+        mfa_required: u.mfa_enabled,
         user: session,
     })
 }
@@ -233,6 +237,232 @@ fn sha256_hex(s: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(s.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+const MFA_SECRET_BYTES: usize = 20;
+const MFA_STEP_SECS: i64 = 30;
+
+/// base32 RFC 4648 tanpa padding.
+fn base32_encode(raw: &[u8]) -> String {
+    const ALPH: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let mut out = String::new();
+    let mut buf: u32 = 0;
+    let mut bits = 0;
+    for b in raw {
+        buf = (buf << 8) | *b as u32;
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(ALPH[((buf >> bits) & 31) as usize] as char);
+        }
+    }
+    if bits > 0 {
+        out.push(ALPH[((buf << (5 - bits)) & 31) as usize] as char);
+    }
+    out
+}
+
+fn base32_decode(s: &str) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let mut buf: u32 = 0;
+    let mut bits = 0;
+    for c in s.trim().chars() {
+        let v = match c {
+            'A'..='Z' => c as u32 - 'A' as u32,
+            '2'..='7' => c as u32 - '2' as u32 + 26,
+            '=' => continue,
+            _ => return Err("Secret MFA tidak valid.".to_string()),
+        };
+        buf = (buf << 5) | v;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xff) as u8);
+        }
+    }
+    Ok(out)
+}
+
+fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+    let hashed;
+    let k: &[u8] = if key.len() > 64 {
+        hashed = Sha256::digest(key).to_vec();
+        &hashed
+    } else {
+        key
+    };
+    let mut block = [0u8; 64];
+    block[..k.len()].copy_from_slice(k);
+    let mut inner = Sha256::new();
+    inner.update(block.map(|b| b ^ 0x36));
+    inner.update(msg);
+    let mid = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(block.map(|b| b ^ 0x5c));
+    outer.update(&mid);
+    let done = outer.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&done);
+    out
+}
+
+/// Kode TOTP 6 digit (langkah 30 detik, SHA256).
+fn totp_code(secret: &[u8], unix_secs: i64) -> String {
+    let counter = (unix_secs / MFA_STEP_SECS) as u64;
+    let mac = hmac_sha256(secret, &counter.to_be_bytes());
+    let off = (mac[31] & 0x0f) as usize;
+    let n = ((mac[off] as u32 & 0x7f) << 24)
+        | ((mac[off + 1] as u32) << 16)
+        | ((mac[off + 2] as u32) << 8)
+        | (mac[off + 3] as u32);
+    format!("{:06}", n % 1_000_000)
+}
+
+fn totp_valid(secret_b32: &str, code: &str, unix_secs: i64) -> Result<bool, String> {
+    let secret = base32_decode(secret_b32)?;
+    let code = code.trim();
+    if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
+        return Ok(false);
+    }
+    for step in [-1, 0, 1] {
+        if totp_code(&secret, unix_secs + step * MFA_STEP_SECS) == code {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Data enroll MFA untuk dipindai/diketik ke aplikasi authenticator.
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct MfaSetup {
+    pub secret: String,
+    pub otpauth_url: String,
+}
+
+/// Mulai enroll: simpan secret baru (belum aktif) dan kembalikan untuk dipindai.
+pub fn mfa_setup(conn: &Connection, user_id: i64) -> Result<MfaSetup, String> {
+    let username: Option<String> = conn
+        .query_row(
+            "SELECT username FROM users WHERE id = ?1 AND status = 'active'",
+            params![user_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("gagal memuat akun: {e}"))?
+        .flatten();
+    let Some(name) = username else {
+        return Err("Akun tidak ditemukan.".to_string());
+    };
+    let mut bytes = [0u8; MFA_SECRET_BYTES];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let secret = base32_encode(&bytes);
+    conn.execute(
+        "UPDATE users SET mfa_secret = ?1, mfa_enabled = 0 WHERE id = ?2",
+        params![secret, user_id],
+    )
+    .map_err(|e| format!("gagal menyimpan secret MFA: {e}"))?;
+    Ok(MfaSetup {
+        otpauth_url: format!(
+            "otpauth://totp/PeopleX:{name}?secret={secret}&issuer=PeopleX&algorithm=SHA256&digits=6&period=30"
+        ),
+        secret,
+    })
+}
+
+/// Aktifkan MFA setelah kode pertama terbukti benar.
+pub fn mfa_enable(conn: &Connection, user_id: i64, code: &str) -> Result<(), String> {
+    let secret: Option<String> = conn
+        .query_row(
+            "SELECT mfa_secret FROM users WHERE id = ?1",
+            params![user_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("gagal memuat MFA: {e}"))?
+        .flatten();
+    let Some(sec) = secret else {
+        return Err("MFA belum disiapkan.".to_string());
+    };
+    let now = Local::now().timestamp();
+    if !totp_valid(&sec, code, now)? {
+        return Err("Kode MFA salah.".to_string());
+    }
+    conn.execute(
+        "UPDATE users SET mfa_enabled = 1 WHERE id = ?1",
+        params![user_id],
+    )
+    .map_err(|e| format!("gagal mengaktifkan MFA: {e}"))?;
+    audit::log(
+        conn,
+        Some(user_id),
+        "UPDATE",
+        "mfa",
+        Some(&user_id.to_string()),
+        None,
+        None,
+        Some("MFA diaktifkan"),
+    )?;
+    Ok(())
+}
+
+/// Matikan MFA dengan verifikasi password.
+pub fn mfa_disable(conn: &Connection, user_id: i64, password: &str) -> Result<(), String> {
+    let hash: Option<String> = conn
+        .query_row(
+            "SELECT password FROM users WHERE id = ?1",
+            params![user_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("gagal memuat akun: {e}"))?
+        .flatten();
+    let Some(h) = hash else {
+        return Err("Akun tidak ditemukan.".to_string());
+    };
+    if !bcrypt::verify(password, &h).map_err(|e| format!("gagal verifikasi password: {e}"))? {
+        return Err("Password salah.".to_string());
+    }
+    conn.execute(
+        "UPDATE users SET mfa_secret = NULL, mfa_enabled = 0 WHERE id = ?1",
+        params![user_id],
+    )
+    .map_err(|e| format!("gagal mematikan MFA: {e}"))?;
+    audit::log(
+        conn,
+        Some(user_id),
+        "UPDATE",
+        "mfa",
+        Some(&user_id.to_string()),
+        None,
+        None,
+        Some("MFA dimatikan"),
+    )?;
+    Ok(())
+}
+
+/// Verifikasi kode tahap kedua dan kembalikan profil sesi.
+pub fn verify_mfa(conn: &Connection, user_id: i64, code: &str) -> Result<SessionUser, String> {
+    let row: Option<(Option<String>, i64)> = conn
+        .query_row(
+            "SELECT mfa_secret, mfa_enabled FROM users WHERE id = ?1 AND status = 'active'",
+            params![user_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("gagal memuat MFA: {e}"))?;
+    let Some((Some(sec), enabled)) = row else {
+        return Err("MFA tidak aktif untuk akun ini.".to_string());
+    };
+    if enabled == 0 {
+        return Err("MFA tidak aktif untuk akun ini.".to_string());
+    }
+    let now = Local::now().timestamp();
+    if !totp_valid(&sec, code, now)? {
+        record_login_activity(conn, Some(user_id), "", "failed")?;
+        return Err("Kode MFA salah.".to_string());
+    }
+    record_login_activity(conn, Some(user_id), "", "success")?;
+    load_session_user(conn, user_id)?.ok_or("Sesi berakhir. Masuk kembali.".to_string())
 }
 
 /// Minta reset: simpan hash token + kedaluwarsa 1 jam.
@@ -391,6 +621,30 @@ mod tests {
         assert!(ok.must_change_password);
         assert!(ok.user.is_super_admin);
         assert!(!ok.user.permissions.is_empty());
+    }
+
+    #[test]
+    fn mfa_enroll_aktif_lalu_challenge() {
+        let (_dir, pool) = live();
+        let conn = pool.get().expect("get");
+        let uid = admin_id(&conn);
+        let setup = mfa_setup(&conn, uid).expect("setup");
+        assert_eq!(setup.secret.len(), 32);
+        assert!(setup.otpauth_url.starts_with("otpauth://totp/"));
+        assert!(mfa_enable(&conn, uid, "000000").is_err());
+        let now = Local::now().timestamp();
+        let secret = base32_decode(&setup.secret).expect("decode");
+        let code = totp_code(&secret, now);
+        mfa_enable(&conn, uid, &code).expect("enable");
+        let ok = attempt_login(&conn, "admin", "Admin@123").expect("login");
+        assert!(ok.mfa_required);
+        assert!(verify_mfa(&conn, uid, "000000").is_err());
+        let user = verify_mfa(&conn, uid, &code).expect("challenge");
+        assert_eq!(user.id as i64, uid);
+        mfa_disable(&conn, uid, "salah").expect_err("password salah");
+        mfa_disable(&conn, uid, "Admin@123").expect("disable");
+        let ok = attempt_login(&conn, "admin", "Admin@123").expect("login lagi");
+        assert!(!ok.mfa_required);
     }
 
     #[test]

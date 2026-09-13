@@ -13,6 +13,7 @@ const TABS = [
   { id: "umum", label: "Umum" },
   { id: "perusahaan", label: "Perusahaan" },
   { id: "persetujuan", label: "Alur Persetujuan" },
+  { id: "keamanan", label: "Keamanan" },
 ] as const;
 
 function SettingsPage() {
@@ -39,6 +40,7 @@ function SettingsPage() {
       {tab === "umum" && <GeneralTab />}
       {tab === "perusahaan" && <CompanyTab />}
       {tab === "persetujuan" && <WorkflowTab />}
+      {tab === "keamanan" && <SecurityTab />}
     </div>
   );
 }
@@ -377,6 +379,110 @@ function StepDialog({
             Tambah
           </button>
         </div>
+      </form>
+    </div>
+  );
+}
+
+function SecurityTab() {
+  const [secret, setSecret] = useState<string | null>(null);
+  const [url, setUrl] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const [password, setPassword] = useState("");
+
+  const setup = useMutation({
+    mutationFn: () => unwrap(commands.mfaSetup()),
+    onSuccess: (d) => {
+      setSecret(d.secret);
+      setUrl(d.otpauth_url);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+  const enable = useMutation({
+    mutationFn: (c: string) => unwrap(commands.mfaEnable(c)),
+    onSuccess: () => {
+      toast.success("MFA aktif. Login berikutnya meminta kode.");
+      setSecret(null);
+      setUrl(null);
+      setCode("");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+  const disable = useMutation({
+    mutationFn: (p: string) => unwrap(commands.mfaDisable(p)),
+    onSuccess: () => {
+      toast.success("MFA dimatikan.");
+      setPassword("");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  return (
+    <div className="space-y-4 rounded-xl border border-border-secondary bg-bg-primary p-4">
+      <h2 className="text-sm font-semibold">Autentikasi dua faktor (MFA)</h2>
+      <p className="text-sm text-text-tertiary">
+        Aktifkan TOTP memakai aplikasi authenticator. Simpan secret di tempat aman.
+      </p>
+      <button
+        type="button"
+        onClick={() => setup.mutate()}
+        disabled={setup.isPending}
+        className="rounded-lg border border-border-primary px-4 py-2 text-sm font-medium disabled:opacity-60"
+      >
+        Buat secret baru
+      </button>
+      {secret && (
+        <div className="space-y-2">
+          <p className="break-all rounded-lg bg-bg-secondary p-3 font-mono text-xs">{secret}</p>
+          {url && <p className="break-all text-xs text-text-tertiary">{url}</p>}
+          <form
+            className="flex gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              enable.mutate(code);
+            }}
+          >
+            <input
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              required
+              inputMode="numeric"
+              maxLength={6}
+              placeholder="Kode 6 digit"
+              className="w-40 rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm"
+            />
+            <button
+              type="submit"
+              disabled={enable.isPending}
+              className="rounded-lg bg-bg-brand-solid px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+            >
+              Aktifkan
+            </button>
+          </form>
+        </div>
+      )}
+      <form
+        className="flex gap-2 border-t border-border-secondary pt-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          disable.mutate(password);
+        }}
+      >
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+          placeholder="Password untuk mematikan MFA"
+          className="w-64 rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm"
+        />
+        <button
+          type="submit"
+          disabled={disable.isPending}
+          className="rounded-lg border border-red-300 px-4 py-2 text-sm font-medium text-red-600 disabled:opacity-60"
+        >
+          Matikan MFA
+        </button>
       </form>
     </div>
   );

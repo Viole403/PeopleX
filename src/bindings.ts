@@ -18,6 +18,10 @@ export const commands = {
 	changePassword: (currentPassword: string, newPassword: string) => typedError<null, string>(__TAURI_INVOKE("change_password", { currentPassword, newPassword })),
 	requestPasswordReset: (email: string) => typedError<string | null, string>(__TAURI_INVOKE("request_password_reset", { email })),
 	resetPassword: (token: string, newPassword: string) => typedError<null, string>(__TAURI_INVOKE("reset_password", { token, newPassword })),
+	mfaChallenge: (userId: number, code: string) => typedError<LoginOk, string>(__TAURI_INVOKE("mfa_challenge", { userId, code })),
+	mfaSetup: () => typedError<MfaSetup, string>(__TAURI_INVOKE("mfa_setup")),
+	mfaEnable: (code: string) => typedError<null, string>(__TAURI_INVOKE("mfa_enable", { code })),
+	mfaDisable: (password: string) => typedError<null, string>(__TAURI_INVOKE("mfa_disable", { password })),
 	listRoles: () => typedError<Role[], string>(__TAURI_INVOKE("list_roles")),
 	createRole: (slug: string, name: string, description: string | null) => typedError<number, string>(__TAURI_INVOKE("create_role", { slug, name, description })),
 	updateRole: (roleId: number, name: string, description: string | null) => typedError<null, string>(__TAURI_INVOKE("update_role", { roleId, name, description })),
@@ -1182,6 +1186,7 @@ export type LeaveTypeInput = {
 export type LoginOk = {
 	user: SessionUser,
 	must_change_password: boolean,
+	mfa_required: boolean,
 };
 
 export type Maintenance = {
@@ -1206,6 +1211,12 @@ export type ManualInput = {
 	clock_out: string | null,
 	status: string,
 	notes: string | null,
+};
+
+/**  Data enroll MFA untuk dipindai/diketik ke aplikasi authenticator. */
+export type MfaSetup = {
+	secret: string,
+	otpauth_url: string,
 };
 
 export type MyAsset = {
