@@ -20,6 +20,7 @@ pub mod permission;
 pub mod rbac;
 pub mod recruitment;
 pub mod reports;
+pub mod repository;
 pub mod settings;
 pub mod training;
 pub mod travel;

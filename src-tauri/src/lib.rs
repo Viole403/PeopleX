@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::Manager;
 
+use crate::services::repository::SettingsRepo;
+
 /// State global: koneksi database, direktori data, dan sesi login (user id).
 pub struct AppState {
     pub db: db::DbPool,
@@ -391,7 +393,7 @@ fn audit_list(
 fn get_settings(state: tauri::State<AppState>) -> Result<Vec<services::settings::Setting>, String> {
     let conn = pooled(&state)?;
     require(&state, &conn, &["settings.manage"])?;
-    services::settings::all_settings(&conn)
+    services::repository::SqliteSettings(&conn).all_settings()
 }
 
 #[tauri::command]
@@ -402,7 +404,7 @@ fn save_settings(
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
     let (uid, _) = require(&state, &conn, &["settings.manage"])?;
-    services::settings::save_settings(&conn, uid, &items)
+    services::repository::SqliteSettings(&conn).save_settings(uid, &items)
 }
 
 #[tauri::command]
@@ -412,7 +414,7 @@ fn get_company(
 ) -> Result<Option<services::settings::Company>, String> {
     let conn = pooled(&state)?;
     require(&state, &conn, &["settings.manage"])?;
-    services::settings::get_company(&conn)
+    services::repository::SqliteSettings(&conn).get_company()
 }
 
 #[tauri::command]
@@ -423,7 +425,7 @@ fn save_company(
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
     let (uid, _) = require(&state, &conn, &["settings.manage"])?;
-    services::settings::save_company(&conn, uid, &input)
+    services::repository::SqliteSettings(&conn).save_company(uid, &input)
 }
 
 #[tauri::command]
