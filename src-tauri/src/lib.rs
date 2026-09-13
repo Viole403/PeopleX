@@ -87,6 +87,15 @@ fn current_actor(
     Ok((uid, user))
 }
 
+/// Cek permission literal untuk wrapper yang juga memakai otorisasi dinamis.
+fn privileged(user: &SessionUser, perm: &str) -> bool {
+    user.is_super_admin
+        || user
+            .permissions
+            .iter()
+            .any(|p| p == perm || p == "system.manage")
+}
+
 /// Gerbang izin: super-admin lolos semua; selain itu salah satu izin cukup.
 fn require(
     state: &tauri::State<AppState>,
@@ -1327,11 +1336,7 @@ fn permission_pending(
 ) -> Result<Vec<services::permission::PermissionRequest>, String> {
     let conn = pooled(&state)?;
     let (uid, user) = current_actor(&state, &conn)?;
-    let privileged = user.is_super_admin
-        || user
-            .permissions
-            .iter()
-            .any(|p| p == "permission.approve" || p == "system.manage");
+    let privileged = privileged(&user, "permission.approve");
     services::permission::pending_for(&conn, uid, privileged)
 }
 
