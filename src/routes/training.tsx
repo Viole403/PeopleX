@@ -51,6 +51,7 @@ function TrainingPage() {
 function CatalogTab() {
   const queryClient = useQueryClient();
   const [detailId, setDetailId] = useState<number | null>(null);
+  const [materialId, setMaterialId] = useState<number | null>(null);
   const [form, setForm] = useState<Training | "new" | null>(null);
   const list = useQuery({ queryKey: ["trainings"], queryFn: () => unwrap(commands.trainingList()) });
   const refresh = () => void queryClient.invalidateQueries({ queryKey: ["trainings"] });
@@ -90,6 +91,9 @@ function CatalogTab() {
               <button type="button" onClick={() => setDetailId(t.id)} className="font-medium text-text-brand-secondary hover:underline">
                 Peserta
               </button>
+              <button type="button" onClick={() => setMaterialId(t.id)} className="font-medium text-text-brand-secondary hover:underline">
+                Materi
+              </button>
               <button type="button" onClick={() => setForm(t)} className="font-medium text-text-brand-secondary hover:underline">
                 Ubah
               </button>
@@ -123,6 +127,9 @@ function CatalogTab() {
             refresh();
           }}
         />
+      )}
+      {materialId !== null && (
+        <MaterialDialog id={materialId} onClose={() => setMaterialId(null)} />
       )}
     </div>
   );
@@ -299,6 +306,106 @@ function ParticipantDialog({ id, onClose }: { id: number; onClose: () => void })
           ))}
           {list.data && list.data.length === 0 && (
             <li className="text-sm text-text-tertiary">Belum ada peserta.</li>
+          )}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+const MATERIAL_KINDS = ["tautan", "dokumen", "teks"] as const;
+
+function MaterialDialog({ id, onClose }: { id: number; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const list = useQuery({
+    queryKey: ["materials", id],
+    queryFn: () => unwrap(commands.trainingMaterials(id)),
+  });
+  const [title, setTitle] = useState("");
+  const [kind, setKind] = useState<string>("tautan");
+  const [url, setUrl] = useState("");
+  const refresh = () => void queryClient.invalidateQueries({ queryKey: ["materials", id] });
+
+  const add = useMutation({
+    mutationFn: () => unwrap(commands.trainingMaterialAdd(id, title, kind, url || null)),
+    onSuccess: () => {
+      toast.success("Materi ditambahkan.");
+      setTitle("");
+      setUrl("");
+      refresh();
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+  const remove = useMutation({
+    mutationFn: (mid: number) => unwrap(commands.trainingMaterialDelete(mid)),
+    onSuccess: () => {
+      toast.success("Materi dihapus.");
+      refresh();
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg-overlay/60 p-4">
+      <div className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-bg-primary p-6 shadow-2xl">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-display-xs font-semibold">Materi</h2>
+          <button type="button" onClick={onClose} className="rounded-lg border border-border-primary px-3 py-1.5 text-sm">Tutup</button>
+        </div>
+        <form
+          className="mb-3 space-y-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            add.mutate();
+          }}
+        >
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            required
+            placeholder="Judul materi…"
+            className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm"
+          />
+          <div className="flex gap-2">
+            <select value={kind} onChange={(e) => setKind(e.target.value)} className="rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm">
+              {MATERIAL_KINDS.map((k) => (
+                <option key={k} value={k}>{k}</option>
+              ))}
+            </select>
+            <input
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="Tautan (opsional)…"
+              className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm"
+            />
+            <button type="submit" className="shrink-0 rounded-lg bg-bg-brand-solid px-4 py-2 text-sm font-semibold text-white">
+              Tambah
+            </button>
+          </div>
+        </form>
+        <ul className="space-y-1">
+          {(list.data ?? []).map((m) => (
+            <li key={m.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-bg-secondary px-3 py-2 text-sm">
+              <span>
+                <span className="font-medium">{m.title}</span>
+                <span className="text-text-tertiary"> • {m.kind}</span>
+                {m.url && (
+                  <span className="text-text-tertiary"> • {m.url}</span>
+                )}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm(`Hapus materi ${m.title}?`)) remove.mutate(m.id);
+                }}
+                className="font-medium text-text-error-primary hover:underline"
+              >
+                Hapus
+              </button>
+            </li>
+          ))}
+          {list.data && list.data.length === 0 && (
+            <li className="text-sm text-text-tertiary">Belum ada materi.</li>
           )}
         </ul>
       </div>

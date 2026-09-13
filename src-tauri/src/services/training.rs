@@ -580,6 +580,116 @@ pub fn set_skill(
     Ok(())
 }
 
+// ---------------- Materi ----------------
+
+/// Satu materi e-learning milik training.
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct Material {
+    pub id: i32,
+    pub training_id: i32,
+    pub title: String,
+    pub kind: String,
+    pub url: Option<String>,
+}
+
+pub fn material_list(conn: &Connection, training_id: i64) -> Result<Vec<Material>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, training_id, title, kind, url FROM training_materials WHERE training_id = ?1 ORDER BY sort_order ASC, id ASC")
+        .map_err(|e| format!("gagal menyiapkan materi: {e}"))?;
+    let rows = stmt
+        .query_map(params![training_id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
+        })
+        .map_err(|e| format!("gagal membaca materi: {e}"))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, tid, title, kind, url) =
+            row.map_err(|e| format!("gagal membaca baris materi: {e}"))?;
+        out.push(Material {
+            id: to_dto_int(id, "training.material")?,
+            training_id: to_dto_int(tid, "training.id")?,
+            title,
+            kind,
+            url,
+        });
+    }
+    Ok(out)
+}
+
+pub fn material_add(
+    conn: &Connection,
+    actor_id: i64,
+    training_id: i64,
+    title: &str,
+    kind: &str,
+    url: Option<&str>,
+) -> Result<i32, String> {
+    let exists: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM trainings WHERE id = ?1 AND deleted_at IS NULL",
+            params![training_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("gagal memeriksa training: {e}"))?;
+    if exists.is_none() {
+        return Err("Training tidak ditemukan.".to_string());
+    }
+    if title.trim().is_empty() {
+        return Err("Judul materi wajib diisi.".to_string());
+    }
+    if title.len() > 150 {
+        return Err("Judul materi maksimal 150 karakter.".to_string());
+    }
+    if !["tautan", "dokumen", "teks"].contains(&kind) {
+        return Err("Jenis materi tidak valid.".to_string());
+    }
+    let clean_url = url.map(str::trim).filter(|s| !s.is_empty());
+    conn.execute(
+        "INSERT INTO training_materials (training_id, title, kind, url) VALUES (?1, ?2, ?3, ?4)",
+        params![training_id, title.trim(), kind, clean_url],
+    )
+    .map_err(|e| format!("gagal menambah materi: {e}"))?;
+    let rid = conn.last_insert_rowid();
+    audit::log(
+        conn,
+        Some(actor_id),
+        "CREATE",
+        "training.material",
+        Some(&rid.to_string()),
+        None,
+        None,
+        None,
+    )?;
+    to_dto_int(rid, "training.material")
+}
+
+pub fn material_delete(conn: &Connection, actor_id: i64, id: i64) -> Result<(), String> {
+    let n = conn
+        .execute("DELETE FROM training_materials WHERE id = ?1", params![id])
+        .map_err(|e| format!("gagal menghapus materi: {e}"))?;
+    if n == 0 {
+        return Err("Materi tidak ditemukan.".to_string());
+    }
+    audit::log(
+        conn,
+        Some(actor_id),
+        "DELETE",
+        "training.material",
+        Some(&id.to_string()),
+        None,
+        None,
+        None,
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -608,6 +718,37 @@ mod tests {
             |r| r.get(0),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn materi_tersimpan_per_training() {
+        let (_d, pool) = live();
+        let conn = pool.get().expect("get");
+        let actor = admin(&conn);
+        conn.execute(
+            "INSERT INTO trainings (title, start_date, end_date, status) VALUES ('Dasar K3', '2026-01-01', '2026-01-02', 'scheduled')",
+            [],
+        )
+        .unwrap();
+        let tid = conn.last_insert_rowid();
+        assert!(material_add(&conn, actor, 999999, "X", "tautan", None).is_err());
+        assert!(material_add(&conn, actor, tid, "  ", "tautan", None).is_err());
+        assert!(material_add(&conn, actor, tid, "Modul 1", "video", None).is_err());
+        let mid = material_add(
+            &conn,
+            actor,
+            tid,
+            "Modul 1",
+            "tautan",
+            Some("https://x.local/1"),
+        )
+        .expect("tambah") as i64;
+        let items = material_list(&conn, tid).expect("daftar");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "Modul 1");
+        material_delete(&conn, actor, mid).expect("hapus");
+        assert!(material_list(&conn, tid).expect("daftar").is_empty());
+        assert!(material_delete(&conn, actor, mid).is_err());
     }
 
     #[test]

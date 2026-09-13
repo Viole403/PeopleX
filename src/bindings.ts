@@ -371,6 +371,9 @@ export const commands = {
 	trainingParticipantStatus: (participantId: number, status: string) => typedError<null, string>(__TAURI_INVOKE("training_participant_status", { participantId, status })),
 	trainingCertifications: () => typedError<Certification[], string>(__TAURI_INVOKE("training_certifications")),
 	trainingCertificationAdd: (input: CertificationInput) => typedError<number, string>(__TAURI_INVOKE("training_certification_add", { input })),
+	trainingMaterials: (trainingId: number) => typedError<Material[], string>(__TAURI_INVOKE("training_materials", { trainingId })),
+	trainingMaterialAdd: (trainingId: number, title: string, kind: string, url: string | null) => typedError<number, string>(__TAURI_INVOKE("training_material_add", { trainingId, title, kind, url })),
+	trainingMaterialDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("training_material_delete", { id })),
 	trainingSkillMatrix: () => typedError<SkillCell[], string>(__TAURI_INVOKE("training_skill_matrix")),
 	trainingSkillSet: (employeeId: number, skillName: string, level: number) => typedError<null, string>(__TAURI_INVOKE("training_skill_set", { employeeId, skillName, level })),
 	assetCategories: () => typedError<Category[], string>(__TAURI_INVOKE("asset_categories")),
@@ -1223,6 +1226,15 @@ export type ManualInput = {
 	clock_out: string | null,
 	status: string,
 	notes: string | null,
+};
+
+/**  Satu materi e-learning milik training. */
+export type Material = {
+	id: number,
+	training_id: number,
+	title: string,
+	kind: string,
+	url: string | null,
 };
 
 /**  Data enroll MFA untuk dipindai/diketik ke aplikasi authenticator. */

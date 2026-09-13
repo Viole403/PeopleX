@@ -2160,6 +2160,50 @@ fn training_certification_add(
 
 #[tauri::command]
 #[specta::specta]
+fn training_materials(
+    state: tauri::State<AppState>,
+    training_id: i32,
+) -> Result<Vec<services::training::Material>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["training.view", "system.manage"])?;
+    services::training::material_list(&conn, training_id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn training_material_add(
+    state: tauri::State<AppState>,
+    training_id: i32,
+    title: String,
+    kind: String,
+    url: Option<String>,
+) -> Result<i32, String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["training.create", "training.update", "system.manage"],
+    )?;
+    services::training::material_add(
+        &conn,
+        uid,
+        training_id as i64,
+        &title,
+        &kind,
+        url.as_deref(),
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+fn training_material_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(&state, &conn, &["training.delete", "system.manage"])?;
+    services::training::material_delete(&conn, uid, id as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
 fn training_skill_matrix(
     state: tauri::State<AppState>,
 ) -> Result<Vec<services::training::SkillCell>, String> {
@@ -2971,6 +3015,9 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         training_participant_status,
         training_certifications,
         training_certification_add,
+        training_materials,
+        training_material_add,
+        training_material_delete,
         training_skill_matrix,
         training_skill_set,
         asset_categories,
