@@ -925,6 +925,7 @@ fn seed_settings(conn: &Connection) -> Result<(), String> {
         ("thr_holiday_date", ""),
         ("backup_schedule", "off"),
         ("backup_last_at", ""),
+        ("training_pass_score", "70"),
     ];
     for (key, value) in settings {
         insert_ignore(
@@ -995,7 +996,7 @@ mod tests {
         assert_eq!(c["leave_types"], 8);
         assert_eq!(c["salary_components"], 16);
         assert_eq!(c["approval_workflows"], 5);
-        assert_eq!(c["system_settings"], 17);
+        assert_eq!(c["system_settings"], 18);
         let super_perms: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM role_permissions rp JOIN roles r ON r.id = rp.role_id WHERE r.slug = 'super-administrator'",

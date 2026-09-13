@@ -601,6 +601,35 @@ pub fn set_quiz_score(
     if n == 0 {
         return Err("Peserta tidak ditemukan.".to_string());
     }
+    let pass: f64 = conn
+        .query_row(
+            "SELECT setting_value FROM system_settings WHERE setting_key = 'training_pass_score'",
+            [],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|e| format!("gagal memuat ambang lulus: {e}"))?
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(70.0);
+    if score >= pass {
+        let info: Option<(i64, String)> = conn
+            .query_row(
+                "SELECT tp.employee_id, t.title FROM training_participants tp INNER JOIN trainings t ON t.id = tp.training_id WHERE tp.id = ?1",
+                params![participant_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| format!("gagal memuat kelulusan: {e}"))?;
+        if let Some((eid, title)) = info {
+            let name = format!("Lulus: {title}");
+            conn.execute(
+                "INSERT INTO certifications (employee_id, name, issued_date) SELECT ?1, ?2, date('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM certifications WHERE employee_id = ?1 AND name = ?2)",
+                params![eid, name],
+            )
+            .map_err(|e| format!("gagal menerbitkan sertifikat: {e}"))?;
+        }
+    }
     audit::log(
         conn,
         Some(actor_id),
@@ -804,6 +833,34 @@ mod tests {
         let items = detail_participants(&conn, tid).expect("daftar");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].quiz_score, Some(85.5));
+    }
+
+    #[test]
+    fn sertifikat_terbit_otomatis_saat_lulus() {
+        let (_d, pool) = live();
+        let conn = pool.get().expect("get");
+        let actor = admin(&conn);
+        conn.execute(
+            "INSERT INTO trainings (title, start_date, end_date, status) VALUES ('Kuis Lulus', '2026-01-01', '2026-01-02', 'scheduled')",
+            [],
+        )
+        .unwrap();
+        let tid = conn.last_insert_rowid();
+        let pid = add_participant(&conn, actor, tid, emp(&conn)).expect("peserta") as i64;
+        let certs = || -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM certifications WHERE name = 'Lulus: Kuis Lulus'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        set_quiz_score(&conn, actor, pid, 60.0).expect("simpan");
+        assert_eq!(certs(), 0);
+        set_quiz_score(&conn, actor, pid, 85.0).expect("lulus");
+        assert_eq!(certs(), 1);
+        set_quiz_score(&conn, actor, pid, 90.0).expect("ulang");
+        assert_eq!(certs(), 1);
     }
 
     #[test]
