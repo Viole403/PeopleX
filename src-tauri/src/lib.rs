@@ -391,14 +391,14 @@ fn admin_reset_password(
 
 #[tauri::command]
 #[specta::specta]
-fn audit_list(
-    state: tauri::State<AppState>,
+async fn audit_list(
+    state: tauri::State<'_, AppState>,
     module: Option<String>,
     limit: Option<i32>,
 ) -> Result<Vec<services::audit::AuditEntry>, String> {
     let conn = pooled(&state)?;
     require(&state, &conn, &["audit.view", "system.manage"])?;
-    services::audit::list(&conn, module.as_deref(), limit.unwrap_or(100) as i64)
+    services::audit::list_sea(&state.sea, module.as_deref(), limit.unwrap_or(100) as i64).await
 }
 
 #[tauri::command]
@@ -431,8 +431,8 @@ async fn save_settings(
             .collect::<std::collections::BTreeMap<_, _>>(),
     )
     .unwrap_or_default();
-    services::audit::log(
-        &conn,
+    services::audit::log_sea(
+        &state.sea,
         Some(uid),
         "UPDATE",
         "system_settings",
@@ -440,7 +440,8 @@ async fn save_settings(
         None,
         Some(&after),
         Some("Memperbarui pengaturan sistem"),
-    )?;
+    )
+    .await?;
     Ok(())
 }
 
@@ -469,8 +470,8 @@ async fn save_company(
     let after = repo.save_company(&input).await?;
     let before_json = serde_json::to_string(&before).unwrap_or_default();
     let after_json = serde_json::to_string(&after).unwrap_or_default();
-    services::audit::log(
-        &conn,
+    services::audit::log_sea(
+        &state.sea,
         Some(uid),
         "UPDATE",
         "company",
@@ -478,7 +479,8 @@ async fn save_company(
         Some(&before_json),
         Some(&after_json),
         None,
-    )?;
+    )
+    .await?;
     Ok(())
 }
 
@@ -2718,8 +2720,8 @@ async fn announcement_create(
     let conn = pooled(&state)?;
     let (uid, _) = require(&state, &conn, &["announcement.create", "system.manage"])?;
     let id = services::announcements::create(&state.sea, uid, &input).await?;
-    services::audit::log(
-        &conn,
+    services::audit::log_sea(
+        &state.sea,
         Some(uid),
         "CREATE",
         "announcement",
@@ -2727,7 +2729,8 @@ async fn announcement_create(
         None,
         None,
         None,
-    )?;
+    )
+    .await?;
     Ok(id)
 }
 
@@ -2737,8 +2740,8 @@ async fn announcement_delete(state: tauri::State<'_, AppState>, id: i32) -> Resu
     let conn = pooled(&state)?;
     let (uid, _) = require(&state, &conn, &["announcement.delete", "system.manage"])?;
     services::announcements::delete(&state.sea, id as i64).await?;
-    services::audit::log(
-        &conn,
+    services::audit::log_sea(
+        &state.sea,
         Some(uid),
         "DELETE",
         "announcement",
@@ -2746,7 +2749,8 @@ async fn announcement_delete(state: tauri::State<'_, AppState>, id: i32) -> Resu
         None,
         None,
         None,
-    )?;
+    )
+    .await?;
     Ok(())
 }
 

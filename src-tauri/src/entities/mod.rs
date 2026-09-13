@@ -292,3 +292,29 @@ pub mod role {
 
     impl ActiveModelBehavior for ActiveModel {}
 }
+
+pub mod audit_log {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "audit_logs")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        pub user_id: Option<i32>,
+        pub action: String,
+        pub module: String,
+        pub record_id: Option<String>,
+        pub description: Option<String>,
+        pub before_data: Option<String>,
+        pub after_data: Option<String>,
+        pub ip_address: Option<String>,
+        pub user_agent: Option<String>,
+        pub created_at: String,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
