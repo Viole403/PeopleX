@@ -45,6 +45,37 @@ pub mod user {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
+pub mod company {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "companies")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        pub code: String,
+        pub name: String,
+        pub legal_name: Option<String>,
+        pub address: Option<String>,
+        pub city: Option<String>,
+        pub province: Option<String>,
+        pub postal_code: Option<String>,
+        pub phone: Option<String>,
+        pub email: Option<String>,
+        pub logo: Option<String>,
+        pub npwp: Option<String>,
+        pub established_date: Option<String>,
+        pub created_at: Option<String>,
+        pub updated_at: Option<String>,
+        pub deleted_at: Option<String>,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::system_setting::Entity as SettingEntity;

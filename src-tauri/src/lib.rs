@@ -9,8 +9,6 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::Manager;
 
-use crate::services::repository::SettingsRepo;
-
 /// State global: koneksi database, direktori data, dan sesi login (user id).
 pub struct AppState {
     pub db: db::DbPool,
@@ -405,42 +403,83 @@ fn audit_list(
 
 #[tauri::command]
 #[specta::specta]
-fn get_settings(state: tauri::State<AppState>) -> Result<Vec<services::settings::Setting>, String> {
+async fn get_settings(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::settings::Setting>, String> {
     let conn = pooled(&state)?;
     require(&state, &conn, &["settings.manage"])?;
-    services::repository::SqliteSettings(&conn).all_settings()
+    services::repository::SeaOrmSettings(&state.sea)
+        .all_settings()
+        .await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn save_settings(
-    state: tauri::State<AppState>,
+async fn save_settings(
+    state: tauri::State<'_, AppState>,
     items: Vec<(String, String)>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
     let (uid, _) = require(&state, &conn, &["settings.manage"])?;
-    services::repository::SqliteSettings(&conn).save_settings(uid, &items)
+    services::repository::SeaOrmSettings(&state.sea)
+        .save_settings(&items)
+        .await?;
+    let after = serde_json::to_string(
+        &items
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>(),
+    )
+    .unwrap_or_default();
+    services::audit::log(
+        &conn,
+        Some(uid),
+        "UPDATE",
+        "system_settings",
+        None,
+        None,
+        Some(&after),
+        Some("Memperbarui pengaturan sistem"),
+    )?;
+    Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
-fn get_company(
-    state: tauri::State<AppState>,
+async fn get_company(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Option<services::settings::Company>, String> {
     let conn = pooled(&state)?;
     require(&state, &conn, &["settings.manage"])?;
-    services::repository::SqliteSettings(&conn).get_company()
+    services::repository::SeaOrmSettings(&state.sea)
+        .get_company()
+        .await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn save_company(
-    state: tauri::State<AppState>,
+async fn save_company(
+    state: tauri::State<'_, AppState>,
     input: services::settings::CompanyInput,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
     let (uid, _) = require(&state, &conn, &["settings.manage"])?;
-    services::repository::SqliteSettings(&conn).save_company(uid, &input)
+    let repo = services::repository::SeaOrmSettings(&state.sea);
+    let before = repo.get_company().await?;
+    let after = repo.save_company(&input).await?;
+    let before_json = serde_json::to_string(&before).unwrap_or_default();
+    let after_json = serde_json::to_string(&after).unwrap_or_default();
+    services::audit::log(
+        &conn,
+        Some(uid),
+        "UPDATE",
+        "company",
+        before.as_ref().map(|c| c.id.to_string()).as_deref(),
+        Some(&before_json),
+        Some(&after_json),
+        None,
+    )?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2839,13 +2878,19 @@ fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
         services::backup::ensure_scheduled(&conn, &services::backup::backup_dir(&data_dir));
     }
     let url = cfg.sea_url(&data_dir)?;
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("gagal membuat runtime async: {e}"))?;
-    let sea = rt
-        .block_on(sea_orm::Database::connect(&url))
-        .map_err(|e| format!("gagal konek SeaORM: {e}"))?;
+    // Konek di thread terpisah agar aman dipanggil dari dalam runtime async (mis. test).
+    let sea = std::thread::scope(|s| {
+        s.spawn(|| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("gagal membuat runtime async: {e}"))?;
+            rt.block_on(sea_orm::Database::connect(&url))
+                .map_err(|e| format!("gagal konek SeaORM: {e}"))
+        })
+        .join()
+        .map_err(|_| "thread koneksi SeaORM panik.".to_string())?
+    })?;
     Ok(AppState {
         db: pool,
         sea,
