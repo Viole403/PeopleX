@@ -487,6 +487,7 @@ pub fn generate(conn: &mut Connection, actor_id: i64, period_id: i64) -> Result<
     let (pname, pstart, pend) = period;
     let health_pct = setting_pct(conn, "bpjs_health_employee_percent", 1.0) / 100.0;
     let emp_pct = setting_pct(conn, "bpjs_employment_employee_percent", 2.0) / 100.0;
+    let jp_pct = setting_pct(conn, "bpjs_jp_employee_percent", 1.0) / 100.0;
     let tx = conn
         .transaction()
         .map_err(|e| format!("gagal memulai transaksi: {e}"))?;
@@ -510,7 +511,9 @@ pub fn generate(conn: &mut Connection, actor_id: i64, period_id: i64) -> Result<
         ids
     };
     for eid in ids {
-        generate_one(&tx, eid, period_id, &pstart, &pend, health_pct, emp_pct)?;
+        generate_one(
+            &tx, eid, period_id, &pstart, &pend, health_pct, emp_pct, jp_pct,
+        )?;
     }
     tx.execute(
         "UPDATE payroll_periods SET status = 'review' WHERE id = ?1",
@@ -571,6 +574,7 @@ fn generate_one(
     pend: &str,
     health_pct: f64,
     emp_pct: f64,
+    jp_pct: f64,
 ) -> Result<(), String> {
     let salary: Option<(i64, f64)> = conn
         .query_row(
@@ -646,6 +650,7 @@ fn generate_one(
     }
     let bpjs_h = (basic * health_pct).round();
     let bpjs_e = (basic * emp_pct).round();
+    let bpjs_jp = (basic * jp_pct).round();
     if bpjs_h > 0.0 {
         deductions.push(MoneyLine {
             name: "BPJS Kesehatan".to_string(),
@@ -656,9 +661,17 @@ fn generate_one(
     }
     if bpjs_e > 0.0 {
         deductions.push(MoneyLine {
-            name: "BPJS Ketenagakerjaan".to_string(),
+            name: "BPJS Jaminan Hari Tua".to_string(),
             component_id: None,
             amount: bpjs_e,
+            loan_id: None,
+        });
+    }
+    if bpjs_jp > 0.0 {
+        deductions.push(MoneyLine {
+            name: "BPJS Jaminan Pensiun".to_string(),
+            component_id: None,
+            amount: bpjs_jp,
             loan_id: None,
         });
     }
@@ -1263,7 +1276,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         let r = &rows[0];
         assert_eq!(r.total_income, 5_086_705.0);
-        assert_eq!(r.net_salary, 4_392_814.0);
+        assert_eq!(r.net_salary, 4_342_814.0);
         let det = payroll_detail(&conn2, r.id as i64)
             .expect("det")
             .expect("ada");
