@@ -2320,6 +2320,19 @@ pub fn set_salary(
     if !(basic_salary >= 0.0) {
         return Err("Gaji pokok minimal 0.".to_string());
     }
+    let band: Option<(Option<f64>, Option<f64>, String)> = conn
+        .query_row(
+            "SELECT g.min_salary, g.max_salary, g.name FROM job_grades g INNER JOIN employees e ON e.job_grade_id = g.id WHERE e.id = ?1",
+            params![employee_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("gagal memuat band gaji: {e}"))?;
+    if let Some((min, max, name)) = band {
+        if min.is_some_and(|m| basic_salary < m) || max.is_some_and(|m| basic_salary > m) {
+            return Err(format!("Gaji pokok di luar band {name}."));
+        }
+    }
     chrono::NaiveDate::parse_from_str(effective_date.trim(), "%Y-%m-%d")
         .map_err(|_| "Tanggal efektif harus valid (YYYY-MM-DD).".to_string())?;
     conn.execute(
@@ -2509,6 +2522,30 @@ mod tests {
         let dd = dropdowns(&conn).expect("dropdown");
         assert!(dd.job_levels.iter().any(|o| o.name == "Level 9"));
         assert!(dd.job_grades.iter().any(|o| o.name == "Grade 9"));
+    }
+
+    #[test]
+    fn gaji_divalidasi_masuk_band_grade() {
+        let (_dir, pool, files) = live();
+        let conn = pool.get().expect("get");
+        let _ = files;
+        let actor = actor(&conn);
+        conn.execute(
+            "INSERT INTO job_grades (code, name, grade_order, min_salary, max_salary) VALUES ('GB', 'Grade Band', 1, 5000000, 10000000)",
+            [],
+        )
+        .unwrap();
+        let grade_id: i64 = conn
+            .query_row("SELECT id FROM job_grades WHERE code = 'GB'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let mut input = base_input(&conn);
+        input.job_grade_id = Some(grade_id as i32);
+        let id = create(&conn, files.path(), actor, &input, None).expect("buat") as i64;
+        assert!(set_salary(&conn, actor, id, 4_000_000.0, "2026-01-01", &[]).is_err());
+        assert!(set_salary(&conn, actor, id, 12_000_000.0, "2026-01-01", &[]).is_err());
+        assert!(set_salary(&conn, actor, id, 7_000_000.0, "2026-01-01", &[]).is_ok());
     }
 
     #[test]
