@@ -319,13 +319,20 @@ pub fn pph21_annual(conn: &Connection, year: i32) -> Result<ReportTable, String>
         .map_err(|e| format!("gagal menyiapkan PPh tahunan: {e}"))?;
     let rows = stmt
         .query_map(params![y], |r| {
+            let bruto = r.get::<_, Option<f64>>(4)?.unwrap_or(0.0);
+            let dipotong = r.get::<_, Option<f64>>(5)?.unwrap_or(0.0);
+            let ptkp_status = r.get::<_, String>(3)?;
+            let terutang =
+                crate::services::payroll::pph21_monthly(bruto / 12.0, &ptkp_status) * 12.0;
             Ok(vec![
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                num(r.get::<_, Option<f64>>(4)?.unwrap_or(0.0)),
-                num(r.get::<_, Option<f64>>(5)?.unwrap_or(0.0)),
+                ptkp_status,
+                num(bruto),
+                num(dipotong),
+                num(terutang),
+                num(terutang - dipotong),
             ])
         })
         .map_err(|e| format!("gagal membaca PPh tahunan: {e}"))?;
@@ -342,6 +349,8 @@ pub fn pph21_annual(conn: &Connection, year: i32) -> Result<ReportTable, String>
             "PTKP",
             "Bruto Setahun",
             "PPh 21 Setahun",
+            "PPh Terutang Setahun",
+            "Selisih",
         ]),
         rows: out,
     })
@@ -694,9 +703,13 @@ mod tests {
         pay::generate(&mut c, actor, pid).expect("generate");
         pay::approve_period(&c, actor, pid).expect("approve");
         let t = pph21_annual(&c, 2026).expect("tahunan");
-        assert_eq!(t.headers.len(), 6);
+        assert_eq!(t.headers.len(), 8);
         assert_eq!(t.rows.len(), 1);
         assert_eq!(t.rows[0][4], "20000000");
+        let terutang: f64 = t.rows[0][6].parse().unwrap();
+        let dipotong: f64 = t.rows[0][5].parse().unwrap();
+        let selisih: f64 = t.rows[0][7].parse().unwrap();
+        assert_eq!(selisih, terutang - dipotong);
         assert!(pph21_annual(&c, 1999).is_err());
     }
 
