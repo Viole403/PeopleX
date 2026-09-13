@@ -35,6 +35,9 @@ export const commands = {
 	toggleUserStatus: (userId: number, status: string) => typedError<null, string>(__TAURI_INVOKE("toggle_user_status", { userId, status })),
 	adminResetPassword: (userId: number, newPassword: string) => typedError<null, string>(__TAURI_INVOKE("admin_reset_password", { userId, newPassword })),
 	auditList: (module: string | null, limit: number | null) => typedError<AuditEntry[], string>(__TAURI_INVOKE("audit_list", { module, limit })),
+	backupNow: () => typedError<string, string>(__TAURI_INVOKE("backup_now")),
+	backupList: () => typedError<BackupFile[], string>(__TAURI_INVOKE("backup_list")),
+	backupRestore: (name: string) => typedError<null, string>(__TAURI_INVOKE("backup_restore", { name })),
 	getSettings: () => typedError<Setting[], string>(__TAURI_INVOKE("get_settings")),
 	saveSettings: (items: ([string, string])[]) => typedError<null, string>(__TAURI_INVOKE("save_settings", { items })),
 	getCompany: () => typedError<{
@@ -587,6 +590,13 @@ export type AuditEntry = {
 	record_id: string | null,
 	description: string | null,
 	created_at: string,
+};
+
+/**  Satu berkas cadangan. */
+export type BackupFile = {
+	name: string,
+	size_bytes: number,
+	modified_at: string,
 };
 
 export type Balance = {

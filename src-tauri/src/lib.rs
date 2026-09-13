@@ -2774,12 +2774,41 @@ fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
             .map_err(|e| format!("gagal mengambil koneksi database: {e}"))?;
         db::migrate(&mut conn)?;
         seed::seed(&mut conn)?;
+        services::backup::ensure_scheduled(&conn, &services::backup::backup_dir(&data_dir));
     }
     Ok(AppState {
         db: pool,
         data_dir,
         session: Mutex::new(None),
     })
+}
+
+#[tauri::command]
+#[specta::specta]
+fn backup_now(state: tauri::State<AppState>) -> Result<String, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["system.manage"])?;
+    services::backup::backup_now(&conn, &services::backup::backup_dir(&state.data_dir))
+}
+
+#[tauri::command]
+#[specta::specta]
+fn backup_list(state: tauri::State<AppState>) -> Result<Vec<services::backup::BackupFile>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["system.manage"])?;
+    services::backup::backup_list(&services::backup::backup_dir(&state.data_dir))
+}
+
+#[tauri::command]
+#[specta::specta]
+fn backup_restore(state: tauri::State<AppState>, name: String) -> Result<(), String> {
+    let mut conn = pooled(&state)?;
+    require(&state, &conn, &["system.manage"])?;
+    services::backup::backup_restore(
+        &mut conn,
+        &services::backup::backup_dir(&state.data_dir),
+        &name,
+    )
 }
 
 /// Builder specta: satu-satunya daftar command yang diekspos ke frontend.
@@ -2809,6 +2838,9 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         toggle_user_status,
         admin_reset_password,
         audit_list,
+        backup_now,
+        backup_list,
+        backup_restore,
         get_settings,
         save_settings,
         get_company,
