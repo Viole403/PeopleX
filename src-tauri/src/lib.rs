@@ -1837,11 +1837,7 @@ fn offboarding_decide(
     let conn = pooled(&state)?;
     let (uid, user) = current_actor(&state, &conn)?;
     let actor_emp = my_employee(&conn, uid).ok();
-    let privileged = user.is_super_admin
-        || user
-            .permissions
-            .iter()
-            .any(|p| p == "offboarding.approve" || p == "system.manage");
+    let privileged = privileged(&user, "offboarding.approve");
     services::offboarding::decide(&conn, uid, actor_emp, privileged, id as i64, &action, None)
 }
 
