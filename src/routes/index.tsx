@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { commands, type HrDashboard, type MySummary } from "../bindings";
+import { formatDate } from "../lib/format";
 import { unwrap } from "../lib/query";
 import { can, useSession } from "../lib/session";
 
@@ -60,6 +61,48 @@ function Dashboard() {
   );
 }
 
+function ExpiringContracts() {
+  const session = useSession();
+  const allowed = can(session.data, "contract.view", "system.manage");
+  const list = useQuery({
+    queryKey: ["contractsExpiring", 30],
+    queryFn: () => unwrap(commands.contractExpiring(30)),
+    enabled: allowed,
+  });
+  if (!allowed) return null;
+  if (list.isPending)
+    return <p className="text-sm text-text-tertiary">Memuat kontrak jatuh tempo…</p>;
+  const rows = list.data ?? [];
+  const urgent = rows.filter((r) => r.days_left <= 7);
+  return (
+    <Section
+      title="Kontrak jatuh tempo ≤ 30 hari"
+      action={
+        urgent.length > 0 ? (
+          <span className="text-xs font-semibold text-red-600">
+            {urgent.length} mendesak ≤ 7 hari
+          </span>
+        ) : undefined
+      }
+    >
+      {rows.length === 0 ? (
+        <p className="text-sm text-text-tertiary">Tidak ada.</p>
+      ) : (
+        <ul className="space-y-1.5 text-sm">
+          {rows.map((r) => (
+            <li key={r.id} className="flex items-center justify-between gap-2">
+              <span>
+                {r.employee_name} • {r.contract_number} • berakhir {formatDate(r.end_date)}
+              </span>
+              <span className="shrink-0 font-medium">H-{r.days_left}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  );
+}
+
 function HrView({ data, loading }: { data: HrDashboard | undefined; loading: boolean }) {
   if (loading) return <p className="text-sm text-text-tertiary">Memuat…</p>;
   if (!data) return <p className="text-sm text-text-tertiary">Data tidak tersedia.</p>;
@@ -76,6 +119,7 @@ function HrView({ data, loading }: { data: HrDashboard | undefined; loading: boo
         <Stat label="Kontrak aktif" value={data.active_contracts} />
         <Stat label="Kontrak berakhir ≤ 60 hari" value={data.expiring_contracts} />
       </div>
+      <ExpiringContracts />
       <div className="grid gap-4 md:grid-cols-2">
         <Section title="Headcount per departemen">
           <table className="w-full text-left text-sm">

@@ -642,6 +642,17 @@ fn employee_child_delete(
 
 #[tauri::command]
 #[specta::specta]
+fn contract_expiring(
+    state: tauri::State<AppState>,
+    days: i32,
+) -> Result<Vec<services::employees::ContractAlert>, String> {
+    let conn = pooled(&state)?;
+    require(&state, &conn, &["contract.view", "system.manage"])?;
+    services::employees::expiring_contracts(&conn, days as i64)
+}
+
+#[tauri::command]
+#[specta::specta]
 fn employee_addresses(
     state: tauri::State<AppState>,
     employee_id: i32,
@@ -2761,6 +2772,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         employee_child_list,
         employee_child_save,
         employee_child_delete,
+        contract_expiring,
         employee_addresses,
         employee_address_save,
         employee_documents,

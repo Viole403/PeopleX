@@ -734,6 +734,65 @@ fn child_def(slug: &str) -> Result<&'static ChildDef, String> {
 }
 
 /// Metadata tipe child untuk form dinamis.
+/// Kontrak aktif yang berakhir dalam N hari ke depan (untuk alert jatuh tempo).
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct ContractAlert {
+    pub id: i32,
+    pub employee_id: i32,
+    pub employee_name: String,
+    pub employee_number: String,
+    pub contract_number: String,
+    pub contract_type: String,
+    pub end_date: String,
+    pub days_left: i32,
+}
+
+pub fn expiring_contracts(conn: &Connection, days: i64) -> Result<Vec<ContractAlert>, String> {
+    if days < 1 || days > 365 {
+        return Err("Rentang hari harus 1 sampai 365.".to_string());
+    }
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let mut stmt = conn
+        .prepare("SELECT c.id, c.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), e.employee_number, c.contract_number, c.type, c.end_date FROM employee_contracts c INNER JOIN employees e ON e.id = c.employee_id WHERE c.status = 'active' AND c.deleted_at IS NULL AND c.end_date IS NOT NULL AND c.end_date >= ?1 ORDER BY c.end_date ASC")
+        .map_err(|e| format!("gagal menyiapkan kontrak jatuh tempo: {e}"))?;
+    let rows = stmt
+        .query_map(params![today], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+            ))
+        })
+        .map_err(|e| format!("gagal membaca kontrak: {e}"))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, emp, name, number, cnum, ctype, end) =
+            row.map_err(|e| format!("gagal membaca baris kontrak: {e}"))?;
+        let left = (chrono::NaiveDate::parse_from_str(&end, "%Y-%m-%d")
+            .map_err(|_| "Tanggal kontrak rusak.".to_string())?
+            - chrono::NaiveDate::parse_from_str(&today, "%Y-%m-%d")
+                .map_err(|_| "Tanggal hari ini rusak.".to_string())?)
+        .num_days();
+        if left <= days {
+            out.push(ContractAlert {
+                id: to_dto_int(id, "contract.id")?,
+                employee_id: to_dto_int(emp, "contract.emp")?,
+                employee_name: name,
+                employee_number: number,
+                contract_number: cnum,
+                contract_type: ctype,
+                end_date: end,
+                days_left: left as i32,
+            });
+        }
+    }
+    Ok(out)
+}
+
 pub fn child_types() -> Vec<ChildMeta> {
     CHILD_TYPES
         .iter()
@@ -2354,6 +2413,40 @@ mod tests {
         assert!(child_save(&conn, actor, "contracts", id, None, &vals("K-001", "pkwt")).is_ok());
         assert!(child_save(&conn, actor, "contracts", id, None, &vals("K-002", "pkwtt")).is_ok());
         assert!(child_save(&conn, actor, "contracts", id, None, &vals("K-003", "tetap")).is_err());
+    }
+
+    #[test]
+    fn kontrak_jatuh_tempo_terbatas_hari() {
+        let (_dir, pool, files) = live();
+        let conn = pool.get().expect("get");
+        let _ = files;
+        let actor = actor(&conn);
+        let id = create(&conn, files.path(), actor, &base_input(&conn), None).expect("buat") as i64;
+        let today = chrono::Local::now().date_naive();
+        let soon = (today + chrono::Duration::days(10))
+            .format("%Y-%m-%d")
+            .to_string();
+        let far = (today + chrono::Duration::days(100))
+            .format("%Y-%m-%d")
+            .to_string();
+        let vals = |number: &str, end: &str| {
+            BTreeMap::from([
+                ("contract_number".to_string(), number.to_string()),
+                ("type".to_string(), "pkwt".to_string()),
+                ("start_date".to_string(), "2026-01-05".to_string()),
+                ("end_date".to_string(), end.to_string()),
+                ("status".to_string(), "active".to_string()),
+            ])
+        };
+        child_save(&conn, actor, "contracts", id, None, &vals("K-101", &soon)).expect("dekat");
+        child_save(&conn, actor, "contracts", id, None, &vals("K-102", &far)).expect("jauh");
+        assert!(expiring_contracts(&conn, 0).is_err());
+        let near = expiring_contracts(&conn, 30).expect("30 hari");
+        assert_eq!(near.len(), 1);
+        assert_eq!(near[0].contract_number, "K-101");
+        assert_eq!(near[0].days_left, 10);
+        let wide = expiring_contracts(&conn, 120).expect("120 hari");
+        assert_eq!(wide.len(), 2);
     }
 
     #[test]

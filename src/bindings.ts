@@ -126,6 +126,7 @@ export const commands = {
 	employeeChildList: (child: string, employeeId: number) => typedError<{ [key in string]: string }[], string>(__TAURI_INVOKE("employee_child_list", { child, employeeId })),
 	employeeChildSave: (child: string, employeeId: number, id: number | null, values: { [key in string]: string }) => typedError<number, string>(__TAURI_INVOKE("employee_child_save", { child, employeeId, id, values })),
 	employeeChildDelete: (child: string, employeeId: number, id: number) => typedError<null, string>(__TAURI_INVOKE("employee_child_delete", { child, employeeId, id })),
+	contractExpiring: (days: number) => typedError<ContractAlert[], string>(__TAURI_INVOKE("contract_expiring", { days })),
 	employeeAddresses: (employeeId: number) => typedError<Addresses, string>(__TAURI_INVOKE("employee_addresses", { employeeId })),
 	employeeAddressSave: (employeeId: number, addressType: string, values: { [key in string]: string }) => typedError<null, string>(__TAURI_INVOKE("employee_address_save", { employeeId, addressType, values })),
 	employeeDocuments: (employeeId: number) => typedError<Document[], string>(__TAURI_INVOKE("employee_documents", { employeeId })),
@@ -771,6 +772,21 @@ export type ComponentInput = {
 	calculation_type: string,
 	is_taxable: boolean,
 	is_active: boolean,
+};
+
+/**
+ *  Metadata tipe child untuk form dinamis.
+ *  Kontrak aktif yang berakhir dalam N hari ke depan (untuk alert jatuh tempo).
+ */
+export type ContractAlert = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	employee_number: string,
+	contract_number: string,
+	contract_type: string,
+	end_date: string,
+	days_left: number,
 };
 
 export type Correction = {
