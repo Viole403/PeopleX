@@ -2337,6 +2337,26 @@ mod tests {
     }
 
     #[test]
+    fn kontrak_pkwt_pkwtt_valid_tipe_lain_ditolak() {
+        let (_dir, pool, files) = live();
+        let conn = pool.get().expect("get");
+        let _ = files;
+        let actor = actor(&conn);
+        let id = create(&conn, files.path(), actor, &base_input(&conn), None).expect("buat") as i64;
+        let vals = |number: &str, kind: &str| {
+            BTreeMap::from([
+                ("contract_number".to_string(), number.to_string()),
+                ("type".to_string(), kind.to_string()),
+                ("start_date".to_string(), "2026-01-05".to_string()),
+                ("status".to_string(), "active".to_string()),
+            ])
+        };
+        assert!(child_save(&conn, actor, "contracts", id, None, &vals("K-001", "pkwt")).is_ok());
+        assert!(child_save(&conn, actor, "contracts", id, None, &vals("K-002", "pkwtt")).is_ok());
+        assert!(child_save(&conn, actor, "contracts", id, None, &vals("K-003", "tetap")).is_err());
+    }
+
+    #[test]
     fn buat_cari_ubah_hapus_berurutan() {
         let (_dir, pool, files) = live();
         let conn = pool.get().expect("get");
