@@ -1489,12 +1489,7 @@ fn payroll_payslip_file(
         .optional()
         .map_err(|e| format!("gagal memuat payroll: {e}"))?;
     let mine = my_employee(&conn, uid).ok();
-    let allowed = user.is_super_admin
-        || user
-            .permissions
-            .iter()
-            .any(|p| p == "payroll.view" || p == "system.manage")
-        || (mine.is_some() && owner == mine);
+    let allowed = privileged(&user, "payroll.view") || (mine.is_some() && owner == mine);
     if !allowed {
         return Err("Akses ditolak.".to_string());
     }
