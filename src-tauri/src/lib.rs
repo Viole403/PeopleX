@@ -1371,11 +1371,7 @@ fn permission_decide(
     let conn = pooled(&state)?;
     let (uid, user) = current_actor(&state, &conn)?;
     let actor_emp = my_employee(&conn, uid).ok();
-    let privileged = user.is_super_admin
-        || user
-            .permissions
-            .iter()
-            .any(|p| p == "permission.approve" || p == "system.manage");
+    let privileged = privileged(&user, "permission.approve");
     services::permission::decide(&conn, uid, actor_emp, privileged, id as i64, &decision)
 }
 
