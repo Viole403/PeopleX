@@ -2474,6 +2474,44 @@ mod tests {
     }
 
     #[test]
+    fn grade_level_tersimpan_di_profil() {
+        let (_dir, pool, files) = live();
+        let conn = pool.get().expect("get");
+        let _ = files;
+        let actor = actor(&conn);
+        conn.execute(
+            "INSERT INTO job_levels (code, name, level_order) VALUES ('L9', 'Level 9', 9)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO job_grades (code, name, grade_order) VALUES ('G9', 'Grade 9', 9)",
+            [],
+        )
+        .unwrap();
+        let mut input = base_input(&conn);
+        let level_id: i64 = conn
+            .query_row("SELECT id FROM job_levels WHERE code = 'L9'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let grade_id: i64 = conn
+            .query_row("SELECT id FROM job_grades WHERE code = 'G9'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        input.job_level_id = Some(level_id as i32);
+        input.job_grade_id = Some(grade_id as i32);
+        let id = create(&conn, files.path(), actor, &input, None).expect("buat") as i64;
+        let det = detail(&conn, id).expect("detail").expect("ada");
+        assert_eq!(det.job_level_name.as_deref(), Some("Level 9"));
+        assert_eq!(det.job_grade_name.as_deref(), Some("Grade 9"));
+        let dd = dropdowns(&conn).expect("dropdown");
+        assert!(dd.job_levels.iter().any(|o| o.name == "Level 9"));
+        assert!(dd.job_grades.iter().any(|o| o.name == "Grade 9"));
+    }
+
+    #[test]
     fn buat_cari_ubah_hapus_berurutan() {
         let (_dir, pool, files) = live();
         let conn = pool.get().expect("get");
