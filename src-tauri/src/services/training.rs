@@ -41,6 +41,7 @@ pub struct Participant {
     pub employee_name: String,
     pub employee_number: String,
     pub status: String,
+    pub quiz_score: Option<f64>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
@@ -125,7 +126,7 @@ pub fn detail_participants(
     training_id: i64,
 ) -> Result<Vec<Participant>, String> {
     let mut stmt = conn
-        .prepare("SELECT tp.id, tp.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), e.employee_number, tp.status FROM training_participants tp INNER JOIN employees e ON e.id = tp.employee_id WHERE tp.training_id = ?1 ORDER BY e.first_name")
+        .prepare("SELECT tp.id, tp.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), e.employee_number, tp.status, tp.quiz_score FROM training_participants tp INNER JOIN employees e ON e.id = tp.employee_id WHERE tp.training_id = ?1 ORDER BY e.first_name")
         .map_err(|e| format!("gagal menyiapkan peserta: {e}"))?;
     let rows = stmt
         .query_map(params![training_id], |r| {
@@ -135,12 +136,13 @@ pub fn detail_participants(
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?,
+                r.get::<_, Option<f64>>(5)?,
             ))
         })
         .map_err(|e| format!("gagal membaca peserta: {e}"))?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, emp, name, number, status) =
+        let (id, emp, name, number, status, quiz) =
             row.map_err(|e| format!("gagal membaca baris: {e}"))?;
         out.push(Participant {
             id: to_dto_int(id, "participant.id")?,
@@ -148,6 +150,7 @@ pub fn detail_participants(
             employee_name: name,
             employee_number: number,
             status,
+            quiz_score: quiz,
         });
     }
     Ok(out)
@@ -580,6 +583,37 @@ pub fn set_skill(
     Ok(())
 }
 
+pub fn set_quiz_score(
+    conn: &Connection,
+    actor_id: i64,
+    participant_id: i64,
+    score: f64,
+) -> Result<(), String> {
+    if !(0.0..=100.0).contains(&score) {
+        return Err("Nilai kuis harus 0 sampai 100.".to_string());
+    }
+    let n = conn
+        .execute(
+            "UPDATE training_participants SET quiz_score = ?1 WHERE id = ?2",
+            params![score, participant_id],
+        )
+        .map_err(|e| format!("gagal menyimpan nilai: {e}"))?;
+    if n == 0 {
+        return Err("Peserta tidak ditemukan.".to_string());
+    }
+    audit::log(
+        conn,
+        Some(actor_id),
+        "UPDATE",
+        "training.quiz",
+        Some(&participant_id.to_string()),
+        None,
+        None,
+        Some(&format!("Nilai kuis {score}")),
+    )?;
+    Ok(())
+}
+
 // ---------------- Materi ----------------
 
 /// Satu materi e-learning milik training.
@@ -749,6 +783,27 @@ mod tests {
         material_delete(&conn, actor, mid).expect("hapus");
         assert!(material_list(&conn, tid).expect("daftar").is_empty());
         assert!(material_delete(&conn, actor, mid).is_err());
+    }
+
+    #[test]
+    fn nilai_kuis_tersimpan_per_peserta() {
+        let (_d, pool) = live();
+        let conn = pool.get().expect("get");
+        let actor = admin(&conn);
+        conn.execute(
+            "INSERT INTO trainings (title, start_date, end_date, status) VALUES ('Kuis K3', '2026-01-01', '2026-01-02', 'scheduled')",
+            [],
+        )
+        .unwrap();
+        let tid = conn.last_insert_rowid();
+        let pid = add_participant(&conn, actor, tid, emp(&conn)).expect("peserta") as i64;
+        assert!(set_quiz_score(&conn, actor, pid, 101.0).is_err());
+        assert!(set_quiz_score(&conn, actor, pid, -1.0).is_err());
+        assert!(set_quiz_score(&conn, actor, 999999, 80.0).is_err());
+        set_quiz_score(&conn, actor, pid, 85.5).expect("simpan");
+        let items = detail_participants(&conn, tid).expect("daftar");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].quiz_score, Some(85.5));
     }
 
     #[test]

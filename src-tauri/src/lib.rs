@@ -2205,6 +2205,22 @@ fn training_material_delete(state: tauri::State<AppState>, id: i32) -> Result<()
 
 #[tauri::command]
 #[specta::specta]
+fn training_quiz_score(
+    state: tauri::State<AppState>,
+    participant_id: i32,
+    score: f64,
+) -> Result<(), String> {
+    let conn = pooled(&state)?;
+    let (uid, _) = require(
+        &state,
+        &conn,
+        &["training.create", "training.update", "system.manage"],
+    )?;
+    services::training::set_quiz_score(&conn, uid, participant_id as i64, score)
+}
+
+#[tauri::command]
+#[specta::specta]
 fn training_skill_matrix(
     state: tauri::State<AppState>,
 ) -> Result<Vec<services::training::SkillCell>, String> {
@@ -3019,6 +3035,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         training_materials,
         training_material_add,
         training_material_delete,
+        training_quiz_score,
         training_skill_matrix,
         training_skill_set,
         asset_categories,

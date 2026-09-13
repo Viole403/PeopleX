@@ -16,7 +16,7 @@ use std::sync::LazyLock;
 pub type DbPool = Pool<SqliteConnectionManager>;
 pub type DbConn = PooledConnection<SqliteConnectionManager>;
 
-/// Migrasi versioned. M01 = skema awal (87 tabel). M02 = jenjang pendidikan. M03 = MFA. M04 = skor exit. M05 = band gaji. M06 = materi training.
+/// Migrasi versioned. M01 = skema awal (87 tabel). M02 = jenjang pendidikan. M03 = MFA. M04 = skor exit. M05 = band gaji. M06 = materi training. M07 = nilai kuis.
 pub static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
     Migrations::new(vec![
         M::up(include_str!("schema_sqlite.sql")),
@@ -25,6 +25,7 @@ pub static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
         M::up(include_str!("migrations/m04_exit_score.sql")),
         M::up(include_str!("migrations/m05_salary_band.sql")),
         M::up(include_str!("migrations/m06_training_materials.sql")),
+        M::up(include_str!("migrations/m07_quiz_score.sql")),
     ])
 });
 

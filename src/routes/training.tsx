@@ -264,6 +264,15 @@ function ParticipantDialog({ id, onClose }: { id: number; onClose: () => void })
     },
     onError: (e: Error) => toast.error(e.message),
   });
+  const setScore = useMutation({
+    mutationFn: (v: { pid: number; score: number }) =>
+      unwrap(commands.trainingQuizScore(v.pid, v.score)),
+    onSuccess: () => {
+      toast.success("Nilai kuis disimpan.");
+      refresh();
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg-overlay/60 p-4">
@@ -293,7 +302,21 @@ function ParticipantDialog({ id, onClose }: { id: number; onClose: () => void })
           {(list.data ?? []).map((p) => (
             <li key={p.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-bg-secondary px-3 py-2 text-sm">
               <span className="font-medium">{p.employee_name}</span>
-              <select
+              <span className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  defaultValue={p.quiz_score ?? ""}
+                  placeholder="Nilai"
+                  aria-label={`Nilai kuis ${p.employee_name}`}
+                  onBlur={(e) => {
+                    if (e.target.value === "") return;
+                    setScore.mutate({ pid: p.id, score: Number(e.target.value) });
+                  }}
+                  className="w-20 rounded-lg border border-border-primary bg-bg-primary px-2 py-1 text-[13px]"
+                />
+                <select
                 value={p.status}
                 onChange={(e) => setStatus.mutate({ pid: p.id, status: e.target.value })}
                 className="rounded-lg border border-border-primary bg-bg-primary px-2 py-1 text-[13px]"
@@ -301,7 +324,8 @@ function ParticipantDialog({ id, onClose }: { id: number; onClose: () => void })
                 {["registered", "attended", "absent", "completed"].map((s) => (
                   <option key={s} value={s}>{STATUS_LABEL[s]}</option>
                 ))}
-              </select>
+                </select>
+              </span>
             </li>
           ))}
           {list.data && list.data.length === 0 && (

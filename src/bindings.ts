@@ -374,6 +374,7 @@ export const commands = {
 	trainingMaterials: (trainingId: number) => typedError<Material[], string>(__TAURI_INVOKE("training_materials", { trainingId })),
 	trainingMaterialAdd: (trainingId: number, title: string, kind: string, url: string | null) => typedError<number, string>(__TAURI_INVOKE("training_material_add", { trainingId, title, kind, url })),
 	trainingMaterialDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("training_material_delete", { id })),
+	trainingQuizScore: (participantId: number, score: number | null) => typedError<null, string>(__TAURI_INVOKE("training_quiz_score", { participantId, score })),
 	trainingSkillMatrix: () => typedError<SkillCell[], string>(__TAURI_INVOKE("training_skill_matrix")),
 	trainingSkillSet: (employeeId: number, skillName: string, level: number) => typedError<null, string>(__TAURI_INVOKE("training_skill_set", { employeeId, skillName, level })),
 	assetCategories: () => typedError<Category[], string>(__TAURI_INVOKE("asset_categories")),
@@ -1379,6 +1380,7 @@ export type Participant = {
 	employee_name: string,
 	employee_number: string,
 	status: string,
+	quiz_score: number | null,
 };
 
 export type PayrollDetail = {
