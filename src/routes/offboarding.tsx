@@ -161,6 +161,8 @@ function DetailDialog({ id, onClose }: { id: number; onClose: () => void }) {
   });
   const [feedback, setFeedback] = useState("");
   const [recommend, setRecommend] = useState(true);
+  const [category, setCategory] = useState("");
+  const [score, setScore] = useState("");
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["offboarding", id] });
     void queryClient.invalidateQueries({ queryKey: ["offboarding"] });
@@ -185,8 +187,9 @@ function DetailDialog({ id, onClose }: { id: number; onClose: () => void }) {
       unwrap(
         commands.offboardingExitSave(id, {
           feedback: feedback || null,
-          reason_category: null,
+          reason_category: category || null,
           would_recommend: recommend,
+          satisfaction_score: score ? Number(score) : null,
         }),
       ),
     onSuccess: () => {
@@ -258,8 +261,16 @@ function DetailDialog({ id, onClose }: { id: number; onClose: () => void }) {
             </div>
             <div className="rounded-xl border border-border-secondary p-4">
               <h3 className="mb-2 text-sm font-semibold">Exit interview</h3>
-              {d.exit_interview?.feedback ? (
-                <p className="text-sm">{d.exit_interview.feedback}</p>
+              {d.exit_interview?.feedback || d.exit_interview?.satisfaction_score != null ? (
+                <div className="space-y-1 text-sm">
+                  {d.exit_interview?.feedback && <p>{d.exit_interview.feedback}</p>}
+                  {d.exit_interview?.reason_category && (
+                    <p className="text-text-tertiary">Alasan: {d.exit_interview.reason_category}</p>
+                  )}
+                  {d.exit_interview?.satisfaction_score != null && (
+                    <p className="text-text-tertiary">Skor kepuasan: {d.exit_interview.satisfaction_score}/5</p>
+                  )}
+                </div>
               ) : (
                 <div className="flex flex-wrap items-end gap-2">
                   <input
@@ -268,6 +279,26 @@ function DetailDialog({ id, onClose }: { id: number; onClose: () => void }) {
                     placeholder="Masukan karyawan…"
                     className="min-w-0 flex-1 rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm"
                   />
+                  <select
+                    value={category}
+                    onChange={(e) => setCategory(e.target.value)}
+                    className="rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm"
+                  >
+                    <option value="">Alasan…</option>
+                    {["karier", "gaji", "atasan", "lingkungan", "beban kerja", "lokasi", "lainnya"].map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={score}
+                    onChange={(e) => setScore(e.target.value)}
+                    className="rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm"
+                  >
+                    <option value="">Skor…</option>
+                    {[1, 2, 3, 4, 5].map((s) => (
+                      <option key={s} value={s}>{s}/5</option>
+                    ))}
+                  </select>
                   <label className="flex items-center gap-2 text-sm">
                     <input type="checkbox" checked={recommend} onChange={(e) => setRecommend(e.target.checked)} className="size-4 accent-brand-600" />
                     Rekomendasikan

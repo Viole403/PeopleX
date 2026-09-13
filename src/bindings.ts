@@ -1039,12 +1039,14 @@ export type ExitInterview = {
 	feedback: string | null,
 	reason_category: string | null,
 	would_recommend: boolean | null,
+	satisfaction_score: number | null,
 };
 
 export type ExitInterviewInput = {
 	feedback: string | null,
 	reason_category: string | null,
 	would_recommend: boolean | null,
+	satisfaction_score: number | null,
 };
 
 export type ExportFile = {

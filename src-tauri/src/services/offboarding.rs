@@ -39,6 +39,7 @@ pub struct ExitInterview {
     pub feedback: Option<String>,
     pub reason_category: Option<String>,
     pub would_recommend: Option<bool>,
+    pub satisfaction_score: Option<i32>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
@@ -79,6 +80,7 @@ pub struct ExitInterviewInput {
     pub feedback: Option<String>,
     pub reason_category: Option<String>,
     pub would_recommend: Option<bool>,
+    pub satisfaction_score: Option<i32>,
 }
 
 fn now_str() -> String {
@@ -147,11 +149,11 @@ pub fn find(conn: &Connection, id: i64) -> Result<Option<OffboardingDetail>, Str
     let Some((oid, emp, name, number, sup, resign, last, reason, status, step)) = row else {
         return Ok(None);
     };
-    let exit: Option<(Option<String>, Option<String>, Option<i64>)> = conn
+    let exit: Option<(Option<String>, Option<String>, Option<i64>, Option<i64>)> = conn
         .query_row(
-            "SELECT feedback, reason_category, would_recommend FROM exit_interviews WHERE offboarding_id = ?1",
+            "SELECT feedback, reason_category, would_recommend, satisfaction_score FROM exit_interviews WHERE offboarding_id = ?1",
             params![oid],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()
         .map_err(|e| format!("gagal memuat exit interview: {e}"))?;
@@ -195,11 +197,16 @@ pub fn find(conn: &Connection, id: i64) -> Result<Option<OffboardingDetail>, Str
         reason,
         status,
         current_step: to_dto_int(step, "off.step")?,
-        exit_interview: exit.map(|(f, r, w)| ExitInterview {
-            feedback: f,
-            reason_category: r,
-            would_recommend: w.map(|v| v != 0),
-        }),
+        exit_interview: exit
+            .map(|(f, r, w, s)| {
+                Ok::<_, String>(ExitInterview {
+                    feedback: f,
+                    reason_category: r,
+                    would_recommend: w.map(|v| v != 0),
+                    satisfaction_score: s.map(|v| to_dto_int(v, "off.ref")).transpose()?,
+                })
+            })
+            .transpose()?,
         clearance_items: items,
     }))
 }
@@ -403,6 +410,11 @@ pub fn save_exit_interview(
     if exists.is_none() {
         return Err("Proses resign tidak ditemukan.".to_string());
     }
+    if let Some(score) = input.satisfaction_score {
+        if score < 1 || score > 5 {
+            return Err("Skor kepuasan harus 1 sampai 5.".to_string());
+        }
+    }
     let existing: Option<i64> = conn
         .query_row(
             "SELECT id FROM exit_interviews WHERE offboarding_id = ?1",
@@ -415,11 +427,12 @@ pub fn save_exit_interview(
     match existing {
         Some(eid) => {
             conn.execute(
-                "UPDATE exit_interviews SET feedback = ?1, reason_category = ?2, would_recommend = ?3, conducted_by = ?4 WHERE id = ?5",
+                "UPDATE exit_interviews SET feedback = ?1, reason_category = ?2, would_recommend = ?3, satisfaction_score = ?4, conducted_by = ?5 WHERE id = ?6",
                 params![
                     input.feedback.as_deref().map(str::trim).filter(|s| !s.is_empty()),
                     input.reason_category.as_deref().map(str::trim).filter(|s| !s.is_empty()),
                     rec,
+                    input.satisfaction_score.map(|v| v as i64),
                     actor_id,
                     eid
                 ],
@@ -428,13 +441,14 @@ pub fn save_exit_interview(
         }
         None => {
             conn.execute(
-                "INSERT INTO exit_interviews (offboarding_id, conducted_by, feedback, reason_category, would_recommend) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO exit_interviews (offboarding_id, conducted_by, feedback, reason_category, would_recommend, satisfaction_score) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     offboarding_id,
                     actor_id,
                     input.feedback.as_deref().map(str::trim).filter(|s| !s.is_empty()),
                     input.reason_category.as_deref().map(str::trim).filter(|s| !s.is_empty()),
                     rec,
+                    input.satisfaction_score.map(|v| v as i64),
                 ],
             )
             .map_err(|e| format!("gagal menyimpan interview: {e}"))?;
@@ -637,9 +651,29 @@ mod tests {
                 feedback: Some("Baik".to_string()),
                 reason_category: Some("karier".to_string()),
                 would_recommend: Some(true),
+                satisfaction_score: Some(4),
             },
         )
         .expect("exit");
+        let det = find(&conn, id as i64).expect("find").expect("ada");
+        assert_eq!(
+            det.exit_interview
+                .as_ref()
+                .and_then(|e| e.satisfaction_score),
+            Some(4)
+        );
+        assert!(save_exit_interview(
+            &conn,
+            admin,
+            id as i64,
+            &ExitInterviewInput {
+                feedback: None,
+                reason_category: None,
+                would_recommend: None,
+                satisfaction_score: Some(6),
+            },
+        )
+        .is_err());
         assert_eq!(
             decide(
                 &conn,
