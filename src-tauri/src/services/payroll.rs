@@ -1,6 +1,6 @@
 //! Penggajian: komponen, periode, generate, alur status, kasbon, slip.
 
-use chrono::{Local, NaiveDate};
+use chrono::{Datelike, Local, NaiveDate};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::approval;
@@ -95,6 +95,50 @@ pub fn absence_deduction(
         return Ok(0.0);
     }
     Ok(((basic / 22.0) * n as f64).round())
+}
+
+/// THR proporsional: gaji pokok x masa kerja dalam bulan (maks 12) / 12.
+/// Hanya dihitung bila tanggal hari raya dari settings jatuh dalam periode.
+/// Setting kosong berarti THR nonaktif.
+fn thr_for_period(
+    conn: &Connection,
+    basic: f64,
+    join_date: &str,
+    pstart: &str,
+    pend: &str,
+) -> Result<f64, String> {
+    let holiday: Option<String> = conn
+        .query_row(
+            "SELECT setting_value FROM system_settings WHERE setting_key = 'thr_holiday_date'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("gagal memuat tanggal hari raya: {e}"))?
+        .flatten()
+        .map(|s: String| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let Some(h) = holiday else {
+        return Ok(0.0);
+    };
+    if h.as_str() < pstart || h.as_str() > pend {
+        return Ok(0.0);
+    }
+    let (Ok(j), Ok(hd)) = (
+        NaiveDate::parse_from_str(join_date.trim(), "%Y-%m-%d"),
+        NaiveDate::parse_from_str(&h, "%Y-%m-%d"),
+    ) else {
+        return Ok(0.0);
+    };
+    if hd < j {
+        return Ok(0.0);
+    }
+    let months =
+        ((hd.year() * 12 + hd.month() as i32) - (j.year() * 12 + j.month() as i32)).clamp(0, 12);
+    if months <= 0 {
+        return Ok(0.0);
+    }
+    Ok((basic * months as f64 / 12.0).round())
 }
 
 fn setting_pct(conn: &Connection, key: &str, fallback: f64) -> f64 {
@@ -615,6 +659,16 @@ fn generate_one(
         .optional()
         .map_err(|e| format!("gagal memuat PTKP: {e}"))?
         .flatten();
+    let join_date: String = conn
+        .query_row(
+            "SELECT join_date FROM employees WHERE id = ?1",
+            params![employee_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("gagal memuat tanggal masuk: {e}"))?
+        .flatten()
+        .unwrap_or_default();
     let mut incomes = vec![MoneyLine {
         name: "Gaji Pokok".to_string(),
         component_id: None,
@@ -657,6 +711,16 @@ fn generate_one(
             amount: ot,
             loan_id: None,
         });
+    }
+    let thr = thr_for_period(conn, basic, &join_date, pstart, pend)?;
+    if thr > 0.0 {
+        incomes.push(MoneyLine {
+            name: "THR".to_string(),
+            component_id: None,
+            amount: thr,
+            loan_id: None,
+        });
+        taxable_extra += thr;
     }
     let absence = absence_deduction(conn, employee_id, pstart, pend, basic)?;
     if absence > 0.0 {
@@ -1377,6 +1441,48 @@ mod tests {
             .find(|l| l.component_name == "BPJS Jaminan Hari Tua")
             .expect("baris JHT ada");
         assert_eq!(jht.amount, 400_000.0);
+    }
+
+    #[test]
+    fn thr_proporsional_masuk_payroll() {
+        let (_d, pool) = live();
+        let conn = pool.get().expect("get");
+        let actor = admin(&conn);
+        let eid = mkemp(&conn, "EMP-THR", 6_000_000.0, "TK/0");
+        let pid = period_create(
+            &conn,
+            actor,
+            actor,
+            &PeriodInput {
+                name: "Mar 2026".to_string(),
+                start_date: "2026-03-01".to_string(),
+                end_date: "2026-03-31".to_string(),
+                payment_date: None,
+            },
+        )
+        .expect("periode");
+        conn.execute(
+            "UPDATE system_settings SET setting_value = '2026-03-20' WHERE setting_key = 'thr_holiday_date'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let mut conn2 = pool.get().expect("get");
+        generate(&mut conn2, actor, pid as i64).expect("generate");
+        let prid: i64 = conn2
+            .query_row(
+                "SELECT id FROM payrolls WHERE payroll_period_id = ?1 AND employee_id = ?2",
+                params![pid, eid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let det = payroll_detail(&conn2, prid).expect("det").expect("ada");
+        let thr = det
+            .lines
+            .iter()
+            .find(|l| l.component_name == "THR")
+            .expect("baris THR ada");
+        assert_eq!(thr.amount, 1_000_000.0);
     }
 
     #[test]
