@@ -770,25 +770,44 @@ fn generate_one(
             loan_id: None,
         });
     }
-    let mut lstmt = conn
-        .prepare("SELECT id, description, amount FROM payroll_deductions WHERE employee_id = ?1 AND status = 'pending' AND (payroll_period_id IS NULL OR payroll_period_id = ?2)")
-        .map_err(|e| format!("gagal menyiapkan kasbon: {e}"))?;
-    for row in lstmt
-        .query_map(params![employee_id, period_id], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, f64>(2)?,
-            ))
-        })
-        .map_err(|e| format!("gagal membaca kasbon: {e}"))?
-    {
-        let (lid, desc, amount) = row.map_err(|e| format!("gagal membaca baris kasbon: {e}"))?;
+    let loans: Vec<(i64, String, f64, Option<i64>, Option<i64>)> = {
+        let mut lstmt = conn
+            .prepare("SELECT id, description, amount, installment_no, total_installments FROM payroll_deductions WHERE employee_id = ?1 AND status = 'pending' AND (payroll_period_id IS NULL OR payroll_period_id = ?2)")
+            .map_err(|e| format!("gagal menyiapkan kasbon: {e}"))?;
+        let rows = lstmt
+            .query_map(params![employee_id, period_id], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, f64>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                ))
+            })
+            .map_err(|e| format!("gagal membaca kasbon: {e}"))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| format!("gagal membaca baris kasbon: {e}"))?);
+        }
+        out
+    };
+    for (lid, desc, amount, ino, total) in loans {
+        let final_now = match (ino, total) {
+            (Some(n), Some(t)) if n < t => {
+                conn.execute(
+                    "UPDATE payroll_deductions SET installment_no = ?1 WHERE id = ?2",
+                    params![n + 1, lid],
+                )
+                .map_err(|e| format!("gagal maju cicilan: {e}"))?;
+                false
+            }
+            _ => true,
+        };
         deductions.push(MoneyLine {
             name: desc,
             component_id: None,
             amount,
-            loan_id: Some(lid),
+            loan_id: if final_now { Some(lid) } else { None },
         });
     }
     let total_income: f64 = incomes.iter().map(|l| l.amount).sum();
@@ -1536,6 +1555,84 @@ mod tests {
             ..base
         };
         assert!(deduction_save(&conn, actor, None, &valid).is_ok());
+    }
+
+    #[test]
+    fn kasbon_bertahap_terproses_di_cicilan_terakhir() {
+        let (_d, pool) = live();
+        let conn = pool.get().expect("get");
+        let actor = admin(&conn);
+        let eid = mkemp(&conn, "EMP-CICIL", 5_000_000.0, "TK/0");
+        deduction_save(
+            &conn,
+            actor,
+            None,
+            &DeductionInput {
+                employee_id: eid as i32,
+                deduction_type: "kasbon".to_string(),
+                description: "Kasbon 3x".to_string(),
+                amount: 300000.0,
+                installment_no: Some(1),
+                total_installments: Some(3),
+            },
+        )
+        .expect("simpan tenor");
+        let mut pids = Vec::new();
+        for (name, start, end) in [
+            ("Feb 2026", "2026-02-01", "2026-02-28"),
+            ("Mar 2026", "2026-03-01", "2026-03-31"),
+            ("Apr 2026", "2026-04-01", "2026-04-30"),
+        ] {
+            pids.push(
+                period_create(
+                    &conn,
+                    actor,
+                    actor,
+                    &PeriodInput {
+                        name: name.to_string(),
+                        start_date: start.to_string(),
+                        end_date: end.to_string(),
+                        payment_date: None,
+                    },
+                )
+                .expect("periode") as i64,
+            );
+        }
+        drop(conn);
+        let status_of = |c: &Connection| {
+            c.query_row(
+                "SELECT status, installment_no FROM payroll_deductions WHERE description = 'Kasbon 3x'",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?)),
+            )
+            .unwrap()
+        };
+        for (i, pid) in pids.iter().enumerate() {
+            let mut c = pool.get().expect("get");
+            generate(&mut c, actor, *pid).expect("generate");
+            let prid: i64 = c
+                .query_row(
+                    "SELECT id FROM payrolls WHERE payroll_period_id = ?1 AND employee_id = ?2",
+                    params![pid, eid],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let det = payroll_detail(&c, prid).expect("det").expect("ada");
+            let line = det
+                .lines
+                .iter()
+                .find(|l| l.component_name == "Kasbon 3x")
+                .expect("baris kasbon ada");
+            assert_eq!(line.amount, 300000.0);
+            let (st, no) = status_of(&c);
+            if i < 2 {
+                assert_eq!(st, "pending");
+                assert_eq!(no, Some(i as i64 + 2));
+            } else {
+                assert_eq!(st, "processed");
+                assert_eq!(no, Some(3));
+            }
+        }
     }
 
     #[test]
