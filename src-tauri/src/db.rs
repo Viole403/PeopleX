@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_membuat_87_tabel() {
+    fn migrate_membuat_88_tabel() {
         let (_dir, pool) = migrated_pool();
         let conn = pool.get().expect("get");
         let n: i64 = conn
@@ -151,7 +151,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("count");
-        assert_eq!(n, 87, "skema harus memuat 87 tabel");
+        assert_eq!(n, 88, "skema harus memuat 88 tabel");
     }
 
     #[test]

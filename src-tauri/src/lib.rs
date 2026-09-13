@@ -1,4 +1,5 @@
 pub mod db;
+pub mod entities;
 pub mod seed;
 pub mod services;
 
@@ -3126,7 +3127,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 87);
+        assert_eq!(tables, 88);
         assert_eq!(admin, 1);
     }
 
