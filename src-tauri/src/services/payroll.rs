@@ -1167,6 +1167,20 @@ pub fn deduction_save(
     if !(input.amount > 0.0) {
         return Err("Nominal harus lebih dari 0.".to_string());
     }
+    match (input.installment_no, input.total_installments) {
+        (None, None) => {}
+        (Some(_), None) => {
+            return Err("Nomor cicilan butuh total tenor.".to_string());
+        }
+        (_, Some(t)) if t < 1 => {
+            return Err("Tenor minimal 1 cicilan.".to_string());
+        }
+        (None, Some(_)) => {}
+        (Some(n), Some(t)) if n < 1 || n > t => {
+            return Err("Nomor cicilan harus 1 sampai total tenor.".to_string());
+        }
+        (Some(_), Some(_)) => {}
+    }
     let emp: Option<i64> = conn
         .query_row(
             "SELECT id FROM employees WHERE id = ?1 AND deleted_at IS NULL",
@@ -1483,6 +1497,45 @@ mod tests {
             .find(|l| l.component_name == "THR")
             .expect("baris THR ada");
         assert_eq!(thr.amount, 1_000_000.0);
+    }
+
+    #[test]
+    fn tenor_kasbon_divalidasi_saat_simpan() {
+        let (_d, pool) = live();
+        let conn = pool.get().expect("get");
+        let actor = admin(&conn);
+        let eid = mkemp(&conn, "EMP-TENOR", 5_000_000.0, "TK/0");
+        let base = DeductionInput {
+            employee_id: eid as i32,
+            deduction_type: "kasbon".to_string(),
+            description: "Kasbon tenor".to_string(),
+            amount: 900000.0,
+            installment_no: None,
+            total_installments: None,
+        };
+        assert!(deduction_save(&conn, actor, None, &base).is_ok());
+        let no_total = DeductionInput {
+            installment_no: Some(1),
+            ..base.clone()
+        };
+        assert!(deduction_save(&conn, actor, None, &no_total).is_err());
+        let zero = DeductionInput {
+            total_installments: Some(0),
+            ..base.clone()
+        };
+        assert!(deduction_save(&conn, actor, None, &zero).is_err());
+        let over = DeductionInput {
+            installment_no: Some(4),
+            total_installments: Some(3),
+            ..base.clone()
+        };
+        assert!(deduction_save(&conn, actor, None, &over).is_err());
+        let valid = DeductionInput {
+            installment_no: Some(1),
+            total_installments: Some(3),
+            ..base
+        };
+        assert!(deduction_save(&conn, actor, None, &valid).is_ok());
     }
 
     #[test]
