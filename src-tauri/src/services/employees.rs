@@ -2450,6 +2450,30 @@ mod tests {
     }
 
     #[test]
+    fn riwayat_karier_mutasi_promosi_demosi() {
+        let (_dir, pool, files) = live();
+        let conn = pool.get().expect("get");
+        let _ = files;
+        let actor = actor(&conn);
+        let id = create(&conn, files.path(), actor, &base_input(&conn), None).expect("buat") as i64;
+        let vals = |kind: &str| {
+            BTreeMap::from([
+                ("type".to_string(), kind.to_string()),
+                ("effective_date".to_string(), "2026-02-01".to_string()),
+            ])
+        };
+        for kind in ["promotion", "mutation", "transfer", "demotion"] {
+            assert!(
+                child_save(&conn, actor, "career-histories", id, None, &vals(kind)).is_ok(),
+                "jenis {kind} harus diterima"
+            );
+        }
+        assert!(child_save(&conn, actor, "career-histories", id, None, &vals("phk")).is_err());
+        let rows = super::child_list(&conn, "career-histories", id).expect("daftar");
+        assert_eq!(rows.len(), 4);
+    }
+
+    #[test]
     fn buat_cari_ubah_hapus_berurutan() {
         let (_dir, pool, files) = live();
         let conn = pool.get().expect("get");
