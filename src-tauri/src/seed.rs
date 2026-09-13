@@ -916,6 +916,9 @@ fn seed_settings(conn: &Connection) -> Result<(), String> {
         ("bpjs_health_employee_percent", "1"),
         ("bpjs_employment_employee_percent", "2"),
         ("bpjs_jp_employee_percent", "1"),
+        ("bpjs_health_max_wage", "0"),
+        ("bpjs_jht_max_wage", "0"),
+        ("bpjs_jp_max_wage", "0"),
     ];
     for (key, value) in settings {
         insert_ignore(
@@ -986,7 +989,7 @@ mod tests {
         assert_eq!(c["leave_types"], 8);
         assert_eq!(c["salary_components"], 16);
         assert_eq!(c["approval_workflows"], 5);
-        assert_eq!(c["system_settings"], 11);
+        assert_eq!(c["system_settings"], 14);
         let super_perms: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM role_permissions rp JOIN roles r ON r.id = rp.role_id WHERE r.slug = 'super-administrator'",

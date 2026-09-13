@@ -110,6 +110,25 @@ fn setting_pct(conn: &Connection, key: &str, fallback: f64) -> f64 {
     .unwrap_or(fallback)
 }
 
+/// Dasar upah untuk iuran: gaji pokok dibatasi maksimal bila setting batas > 0.
+/// Nilai 0 atau tidak valid berarti tanpa batas.
+fn capped_base(conn: &Connection, basic: f64, key: &str) -> Result<f64, String> {
+    let cap: Option<f64> = conn
+        .query_row(
+            "SELECT setting_value FROM system_settings WHERE setting_key = ?1",
+            params![key],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|e| format!("gagal memuat batas upah: {e}"))?
+        .flatten()
+        .and_then(|v| v.parse::<f64>().ok());
+    Ok(match cap {
+        Some(m) if m > 0.0 => basic.min(m),
+        _ => basic,
+    })
+}
+
 // ---------------- DTO ----------------
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
@@ -648,9 +667,9 @@ fn generate_one(
             loan_id: None,
         });
     }
-    let bpjs_h = (basic * health_pct).round();
-    let bpjs_e = (basic * emp_pct).round();
-    let bpjs_jp = (basic * jp_pct).round();
+    let bpjs_h = (capped_base(conn, basic, "bpjs_health_max_wage")? * health_pct).round();
+    let bpjs_e = (capped_base(conn, basic, "bpjs_jht_max_wage")? * emp_pct).round();
+    let bpjs_jp = (capped_base(conn, basic, "bpjs_jp_max_wage")? * jp_pct).round();
     if bpjs_h > 0.0 {
         deductions.push(MoneyLine {
             name: "BPJS Kesehatan".to_string(),
@@ -1310,6 +1329,54 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "locked");
+    }
+
+    #[test]
+    fn bpjs_cap_membatasi_dasar_upah() {
+        let (_d, pool) = live();
+        let conn = pool.get().expect("get");
+        let actor = admin(&conn);
+        let eid = mkemp(&conn, "EMP-CAP", 20_000_000.0, "TK/0");
+        let pid = period_create(
+            &conn,
+            actor,
+            actor,
+            &PeriodInput {
+                name: "Cap 2026".to_string(),
+                start_date: "2026-03-01".to_string(),
+                end_date: "2026-03-31".to_string(),
+                payment_date: None,
+            },
+        )
+        .expect("periode");
+        conn.execute(
+            "UPDATE system_settings SET setting_value = '10000000' WHERE setting_key = 'bpjs_jp_max_wage'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let mut conn2 = pool.get().expect("get");
+        generate(&mut conn2, actor, pid as i64).expect("generate");
+        let prid: i64 = conn2
+            .query_row(
+                "SELECT id FROM payrolls WHERE payroll_period_id = ?1 AND employee_id = ?2",
+                params![pid, eid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let det = payroll_detail(&conn2, prid).expect("det").expect("ada");
+        let jp = det
+            .lines
+            .iter()
+            .find(|l| l.component_name == "BPJS Jaminan Pensiun")
+            .expect("baris JP ada");
+        assert_eq!(jp.amount, 100_000.0);
+        let jht = det
+            .lines
+            .iter()
+            .find(|l| l.component_name == "BPJS Jaminan Hari Tua")
+            .expect("baris JHT ada");
+        assert_eq!(jht.amount, 400_000.0);
     }
 
     #[test]
