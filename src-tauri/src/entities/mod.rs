@@ -45,8 +45,7 @@ pub mod user {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
-pub mod company {
-    use sea_orm::entity::prelude::*;
+pub mod company {    use sea_orm::entity::prelude::*;
 
     #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
     #[sea_orm(table_name = "companies")]
@@ -112,4 +111,29 @@ mod tests {
             .expect("nilai");
         assert_eq!(company.setting_value.as_deref(), Some(direct.as_str()));
     }
+}
+
+pub mod notification {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "notifications")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        pub user_id: i32,
+        #[sea_orm(column_name = "type")]
+        pub kind: String,
+        pub title: String,
+        pub message: Option<String>,
+        pub link: Option<String>,
+        pub is_read: i32,
+        pub read_at: Option<String>,
+        pub created_at: String,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
 }

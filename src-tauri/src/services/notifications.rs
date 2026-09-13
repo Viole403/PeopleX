@@ -1,7 +1,12 @@
 //! Notifikasi pengguna: daftar terbaru, daftar penuh, tandai dibaca.
 
-use rusqlite::{params, Connection};
+use chrono::Local;
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, PaginatorTrait, QueryFilter,
+    QueryOrder, QuerySelect, Set,
+};
 
+use crate::entities::notification;
 use crate::to_dto_int;
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
@@ -15,122 +20,130 @@ pub struct Notification {
     pub created_at: String,
 }
 
-fn map_row(r: &rusqlite::Row<'_>) -> Result<Notification, rusqlite::Error> {
-    let id: i64 = r.get(0)?;
-    let read: i64 = r.get(5)?;
+fn map(m: notification::Model) -> Result<Notification, String> {
     Ok(Notification {
-        id: 0,
-        kind: r.get(1)?,
-        title: r.get(2)?,
-        message: r.get(3)?,
-        link: r.get(4)?,
-        is_read: read != 0,
-        created_at: r.get(6)?,
-    }
-    .with_id(id))
+        id: to_dto_int(m.id as i64, "notification.id")?,
+        kind: m.kind,
+        title: m.title,
+        message: m.message,
+        link: m.link,
+        is_read: m.is_read != 0,
+        created_at: m.created_at,
+    })
 }
 
-impl Notification {
-    fn with_id(mut self, id: i64) -> Self {
-        self.id = to_dto_int(id, "notification.id").unwrap_or(0);
-        self
-    }
+pub async fn recent(
+    db: &sea_orm::DatabaseConnection,
+    user_id: i64,
+) -> Result<Vec<Notification>, String> {
+    list(db, user_id, 8).await
 }
 
-const BASE: &str = "SELECT id, type, title, message, link, is_read, created_at FROM notifications WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2";
-
-pub fn recent(conn: &Connection, user_id: i64) -> Result<Vec<Notification>, String> {
-    list(conn, user_id, 8)
+pub async fn all(db: &sea_orm::DatabaseConnection, user_id: i64) -> Result<Vec<Notification>, String> {
+    list(db, user_id, 100).await
 }
 
-pub fn all(conn: &Connection, user_id: i64) -> Result<Vec<Notification>, String> {
-    list(conn, user_id, 100)
+async fn list(
+    db: &sea_orm::DatabaseConnection,
+    user_id: i64,
+    limit: u64,
+) -> Result<Vec<Notification>, String> {
+    notification::Entity::find()
+        .filter(notification::Column::UserId.eq(user_id as i32))
+        .order_by_desc(notification::Column::Id)
+        .limit(limit)
+        .all(db)
+        .await
+        .map_err(|e| format!("gagal membaca notifikasi: {e}"))?
+        .into_iter()
+        .map(map)
+        .collect()
 }
 
-fn list(conn: &Connection, user_id: i64, limit: i64) -> Result<Vec<Notification>, String> {
-    let mut stmt = conn
-        .prepare(BASE)
-        .map_err(|e| format!("gagal menyiapkan notifikasi: {e}"))?;
-    let rows = stmt
-        .query_map(params![user_id, limit], map_row)
-        .map_err(|e| format!("gagal membaca notifikasi: {e}"))?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row.map_err(|e| format!("gagal membaca baris: {e}"))?);
-    }
-    Ok(out)
-}
-
-pub fn unread_count(conn: &Connection, user_id: i64) -> Result<i32, String> {
-    let n: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM notifications WHERE user_id = ?1 AND is_read = 0",
-            params![user_id],
-            |r| r.get(0),
-        )
+pub async fn unread_count(db: &sea_orm::DatabaseConnection, user_id: i64) -> Result<i32, String> {
+    let n = notification::Entity::find()
+        .filter(notification::Column::UserId.eq(user_id as i32))
+        .filter(notification::Column::IsRead.eq(0))
+        .count(db)
+        .await
         .map_err(|e| format!("gagal menghitung notifikasi: {e}"))?;
-    to_dto_int(n, "notification.unread")
+    to_dto_int(n as i64, "notification.unread")
 }
 
-pub fn mark_read(conn: &Connection, user_id: i64, id: i64) -> Result<(), String> {
-    let n = conn
-        .execute(
-            "UPDATE notifications SET is_read = 1, read_at = datetime('now','localtime') WHERE id = ?1 AND user_id = ?2",
-            params![id, user_id],
-        )
-        .map_err(|e| format!("gagal menandai notifikasi: {e}"))?;
-    if n == 0 {
+pub async fn mark_read(
+    db: &sea_orm::DatabaseConnection,
+    user_id: i64,
+    id: i64,
+) -> Result<(), String> {
+    let found = notification::Entity::find_by_id(id as i32)
+        .filter(notification::Column::UserId.eq(user_id as i32))
+        .one(db)
+        .await
+        .map_err(|e| format!("gagal memuat notifikasi: {e}"))?;
+    let Some(m) = found else {
         return Err("Notifikasi tidak ditemukan.".to_string());
-    }
+    };
+    let mut am = m.into_active_model();
+    am.is_read = Set(1);
+    am.read_at = Set(Some(Local::now().format("%Y-%m-%d %H:%M:%S").to_string()));
+    am.update(db)
+        .await
+        .map_err(|e| format!("gagal menandai notifikasi: {e}"))?;
     Ok(())
 }
 
-pub fn mark_all(conn: &Connection, user_id: i64) -> Result<(), String> {
-    conn.execute(
-        "UPDATE notifications SET is_read = 1, read_at = datetime('now','localtime') WHERE user_id = ?1 AND is_read = 0",
-        params![user_id],
-    )
-    .map_err(|e| format!("gagal menandai notifikasi: {e}"))?;
+pub async fn mark_all(db: &sea_orm::DatabaseConnection, user_id: i64) -> Result<(), String> {
+    use sea_orm::sea_query::Expr;
+    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    notification::Entity::update_many()
+        .col_expr(notification::Column::IsRead, Expr::value(1))
+        .col_expr(notification::Column::ReadAt, Expr::value(now))
+        .filter(notification::Column::UserId.eq(user_id as i32))
+        .filter(notification::Column::IsRead.eq(0))
+        .exec(db)
+        .await
+        .map_err(|e| format!("gagal menandai notifikasi: {e}"))?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db, seed};
+    use crate::entities::notification::{ActiveModel, Column};
+    use crate::init_state;
 
-    fn live() -> (tempfile::TempDir, crate::db::DbPool) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let pool = db::init_pool(&dir.path().join("t.db")).expect("pool");
-        let mut c = pool.get().expect("get");
-        db::migrate(&mut c).expect("migrate");
-        seed::seed(&mut c).expect("seed");
-        (dir, pool)
+    async fn seed10(db: &sea_orm::DatabaseConnection, uid: i32) {
+        for i in 0..10 {
+            ActiveModel {
+                user_id: Set(uid),
+                kind: Set("info".to_string()),
+                title: Set(format!("N{i}")),
+                ..Default::default()
+            }
+            .insert(db)
+            .await
+            .expect("insert");
+        }
+        // kolom wajib lain diisi default database
+        let _ = Column::Id;
     }
 
-    #[test]
-    fn notifikasi_terbaru_dan_tandai_baca() {
-        let (_d, pool) = live();
-        let conn = pool.get().expect("get");
-        let uid: i64 = conn
-            .query_row("SELECT id FROM users WHERE username = 'admin'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        for i in 0..10 {
-            conn.execute(
-                "INSERT INTO notifications (user_id, type, title, message) VALUES (?1, 'info', ?2, NULL)",
-                params![uid, format!("N{i}")],
-            )
-            .unwrap();
-        }
-        assert_eq!(recent(&conn, uid).expect("recent").len(), 8);
-        assert_eq!(all(&conn, uid).expect("all").len(), 10);
-        assert_eq!(unread_count(&conn, uid).expect("n"), 10);
-        let first = recent(&conn, uid).expect("r")[0].clone();
-        mark_read(&conn, uid, first.id as i64).expect("read");
-        assert_eq!(unread_count(&conn, uid).expect("n2"), 9);
-        mark_all(&conn, uid).expect("all");
-        assert_eq!(unread_count(&conn, uid).expect("n3"), 0);
+    #[tokio::test]
+    async fn notifikasi_terbaru_dan_tandai_baca() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let uid: i32 = 1;
+        seed10(db, uid).await;
+        assert_eq!(recent(db, uid as i64).await.expect("recent").len(), 8);
+        assert_eq!(all(db, uid as i64).await.expect("all").len(), 10);
+        assert_eq!(unread_count(db, uid as i64).await.expect("n"), 10);
+        let first = recent(db, uid as i64).await.expect("r")[0].clone();
+        mark_read(db, uid as i64, first.id as i64)
+            .await
+            .expect("read");
+        assert_eq!(unread_count(db, uid as i64).await.expect("n2"), 9);
+        mark_all(db, uid as i64).await.expect("all");
+        assert_eq!(unread_count(db, uid as i64).await.expect("n3"), 0);
     }
 }

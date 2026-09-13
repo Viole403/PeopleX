@@ -2634,46 +2634,46 @@ fn dashboard_me(state: tauri::State<AppState>) -> Result<services::dashboard::My
 
 #[tauri::command]
 #[specta::specta]
-fn notification_recent(
-    state: tauri::State<AppState>,
+async fn notification_recent(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::notifications::Notification>, String> {
     let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state, &conn)?;
-    services::notifications::recent(&conn, uid)
+    services::notifications::recent(&state.sea, uid).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn notification_all(
-    state: tauri::State<AppState>,
+async fn notification_all(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::notifications::Notification>, String> {
     let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state, &conn)?;
-    services::notifications::all(&conn, uid)
+    services::notifications::all(&state.sea, uid).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn notification_unread(state: tauri::State<AppState>) -> Result<i32, String> {
+async fn notification_unread(state: tauri::State<'_, AppState>) -> Result<i32, String> {
     let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state, &conn)?;
-    services::notifications::unread_count(&conn, uid)
+    services::notifications::unread_count(&state.sea, uid).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn notification_mark_read(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn notification_mark_read(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state, &conn)?;
-    services::notifications::mark_read(&conn, uid, id as i64)
+    services::notifications::mark_read(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn notification_mark_all(state: tauri::State<AppState>) -> Result<(), String> {
+async fn notification_mark_all(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state, &conn)?;
-    services::notifications::mark_all(&conn, uid)
+    services::notifications::mark_all(&state.sea, uid).await
 }
 
 // ---------------- Pengumuman ----------------
