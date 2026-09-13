@@ -381,7 +381,7 @@ fn audit_list(
 #[specta::specta]
 fn get_settings(state: tauri::State<AppState>) -> Result<Vec<services::settings::Setting>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["system.manage"])?;
+    require(&state, &conn, &["settings.manage"])?;
     services::settings::all_settings(&conn)
 }
 
@@ -392,7 +392,7 @@ fn save_settings(
     items: Vec<(String, String)>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    let (uid, _) = require(&state, &conn, &["settings.manage"])?;
     services::settings::save_settings(&conn, uid, &items)
 }
 
@@ -402,7 +402,7 @@ fn get_company(
     state: tauri::State<AppState>,
 ) -> Result<Option<services::settings::Company>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["system.manage"])?;
+    require(&state, &conn, &["settings.manage"])?;
     services::settings::get_company(&conn)
 }
 
@@ -413,7 +413,7 @@ fn save_company(
     input: services::settings::CompanyInput,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    let (uid, _) = require(&state, &conn, &["settings.manage"])?;
     services::settings::save_company(&conn, uid, &input)
 }
 
