@@ -243,7 +243,7 @@ fn reset_password(
 #[specta::specta]
 fn list_roles(state: tauri::State<AppState>) -> Result<Vec<services::rbac::Role>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["system.manage"])?;
+    require(&state, &conn, &["rbac.manage"])?;
     services::rbac::list_roles(&conn)
 }
 
@@ -256,7 +256,7 @@ fn create_role(
     description: Option<String>,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    let (uid, _) = require(&state, &conn, &["rbac.manage"])?;
     services::rbac::create_role(&conn, uid, &slug, &name, description.as_deref())
 }
 
@@ -269,7 +269,7 @@ fn update_role(
     description: Option<String>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    let (uid, _) = require(&state, &conn, &["rbac.manage"])?;
     services::rbac::update_role(&conn, uid, role_id as i64, &name, description.as_deref())
 }
 
@@ -277,7 +277,7 @@ fn update_role(
 #[specta::specta]
 fn delete_role(state: tauri::State<AppState>, role_id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    let (uid, _) = require(&state, &conn, &["rbac.manage"])?;
     services::rbac::delete_role(&conn, uid, role_id as i64)
 }
 
@@ -287,7 +287,7 @@ fn list_permissions(
     state: tauri::State<AppState>,
 ) -> Result<Vec<services::rbac::Permission>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["system.manage"])?;
+    require(&state, &conn, &["rbac.manage"])?;
     services::rbac::list_permissions(&conn)
 }
 
@@ -295,7 +295,7 @@ fn list_permissions(
 #[specta::specta]
 fn role_permission_ids(state: tauri::State<AppState>, role_id: i32) -> Result<Vec<i32>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["system.manage"])?;
+    require(&state, &conn, &["rbac.manage"])?;
     services::rbac::role_permission_ids(&conn, role_id as i64)
 }
 
@@ -307,7 +307,7 @@ fn sync_role_permissions(
     permission_ids: Vec<i32>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    let (uid, _) = require(&state, &conn, &["rbac.manage"])?;
     let ids: Vec<i64> = permission_ids.iter().map(|v| *v as i64).collect();
     services::rbac::sync_role_permissions(&conn, uid, role_id as i64, &ids)
 }
@@ -316,7 +316,7 @@ fn sync_role_permissions(
 #[specta::specta]
 fn list_users(state: tauri::State<AppState>) -> Result<Vec<services::rbac::UserRow>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["system.manage"])?;
+    require(&state, &conn, &["rbac.manage"])?;
     services::rbac::list_users(&conn)
 }
 
@@ -324,7 +324,7 @@ fn list_users(state: tauri::State<AppState>) -> Result<Vec<services::rbac::UserR
 #[specta::specta]
 fn user_role_ids(state: tauri::State<AppState>, user_id: i32) -> Result<Vec<i32>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["system.manage"])?;
+    require(&state, &conn, &["rbac.manage"])?;
     services::rbac::user_role_ids(&conn, user_id as i64)
 }
 
@@ -336,7 +336,7 @@ fn sync_user_roles(
     role_ids: Vec<i32>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    let (uid, _) = require(&state, &conn, &["rbac.manage"])?;
     let ids: Vec<i64> = role_ids.iter().map(|v| *v as i64).collect();
     services::rbac::sync_user_roles(&conn, uid, user_id as i64, &ids)
 }
@@ -349,7 +349,7 @@ fn toggle_user_status(
     status: String,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    let (uid, _) = require(&state, &conn, &["rbac.manage"])?;
     services::rbac::toggle_user_status(&conn, uid, user_id as i64, &status)
 }
 
@@ -361,7 +361,7 @@ fn admin_reset_password(
     new_password: String,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    let (uid, _) = require(&state, &conn, &["rbac.manage"])?;
     services::rbac::admin_reset_password(&conn, uid, user_id as i64, &new_password)
 }
 

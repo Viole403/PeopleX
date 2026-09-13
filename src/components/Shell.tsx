@@ -39,8 +39,8 @@ const NAV_MAIN = [
   { to: "/reports", label: "Laporan", icon: Database01 },
 ];
 const NAV_ADMIN = [
-  { to: "/users", label: "Pengguna", icon: Users01, perm: "system.manage" },
-  { to: "/roles", label: "Peran", icon: Settings01, perm: "system.manage" },
+  { to: "/users", label: "Pengguna", icon: Users01, perm: "rbac.manage" },
+  { to: "/roles", label: "Peran", icon: Settings01, perm: "rbac.manage" },
   { to: "/organization", label: "Organisasi", icon: Users01, perm: "organization.view" },
   { to: "/schedules", label: "Shift & Jadwal", icon: Settings01, perm: "attendance.view" },
   { to: "/settings", label: "Pengaturan", icon: Settings01, perm: "settings.manage" },
