@@ -1133,11 +1133,7 @@ fn attendance_decide_correction(
     let conn = pooled(&state)?;
     let (uid, user) = require(&state, &conn, &["attendance.approve", "system.manage"])?;
     let actor_emp = my_employee(&conn, uid).ok();
-    let privileged = user.is_super_admin
-        || user
-            .permissions
-            .iter()
-            .any(|p| p == "attendance.approve" || p == "system.manage");
+    let privileged = privileged(&user, "attendance.approve");
     services::attendance::decide_correction(
         &conn,
         uid,
@@ -2492,11 +2488,7 @@ fn reimburse_decide(
     let conn = pooled(&state)?;
     let (uid, user) = current_actor(&state, &conn)?;
     let actor_emp = my_employee(&conn, uid).ok();
-    let privileged = user.is_super_admin
-        || user
-            .permissions
-            .iter()
-            .any(|p| p == "reimbursement.approve" || p == "system.manage");
+    let privileged = privileged(&user, "reimbursement.approve");
     services::travel::reimburse_decide(&conn, uid, actor_emp, privileged, id as i64, &action)
 }
 
