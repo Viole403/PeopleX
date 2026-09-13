@@ -711,6 +711,13 @@ mod tests {
         let selisih: f64 = t.rows[0][7].parse().unwrap();
         assert_eq!(selisih, terutang - dipotong);
         assert!(pph21_annual(&c, 1999).is_err());
+        let csv = export(&c, "pph21annual", "csv", None, Some(2026)).expect("csv tahunan");
+        let text = String::from_utf8(csv.bytes).expect("utf8");
+        assert!(text.contains("Bruto Setahun"));
+        let xlsx = export(&c, "pph21annual", "xlsx", None, Some(2026)).expect("xlsx tahunan");
+        assert_eq!(&xlsx.bytes[0..2], b"PK");
+        let pdf = export(&c, "pph21annual", "pdf", None, Some(2026)).expect("pdf tahunan");
+        assert!(pdf.bytes.starts_with(b"%PDF"));
     }
 
     #[test]
