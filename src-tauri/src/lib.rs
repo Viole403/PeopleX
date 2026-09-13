@@ -2680,52 +2680,74 @@ async fn notification_mark_all(state: tauri::State<'_, AppState>) -> Result<(), 
 
 #[tauri::command]
 #[specta::specta]
-fn announcement_visible(
-    state: tauri::State<AppState>,
+async fn announcement_visible(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::announcements::Announcement>, String> {
     let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state, &conn)?;
-    services::announcements::visible(&conn, uid)
+    services::announcements::visible(&state.sea, uid).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn announcement_list(
-    state: tauri::State<AppState>,
+async fn announcement_list(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::announcements::Announcement>, String> {
     let conn = pooled(&state)?;
     require(&state, &conn, &["announcement.view", "system.manage"])?;
-    services::announcements::all(&conn)
+    services::announcements::all(&state.sea).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn announcement_get(
-    state: tauri::State<AppState>,
+async fn announcement_get(
+    state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<services::announcements::Announcement, String> {
     let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state, &conn)?;
-    services::announcements::get(&conn, uid, id as i64)
+    services::announcements::get(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn announcement_create(
-    state: tauri::State<AppState>,
+async fn announcement_create(
+    state: tauri::State<'_, AppState>,
     input: services::announcements::AnnouncementInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
     let (uid, _) = require(&state, &conn, &["announcement.create", "system.manage"])?;
-    services::announcements::create(&conn, uid, &input)
+    let id = services::announcements::create(&state.sea, uid, &input).await?;
+    services::audit::log(
+        &conn,
+        Some(uid),
+        "CREATE",
+        "announcement",
+        Some(&id.to_string()),
+        None,
+        None,
+        None,
+    )?;
+    Ok(id)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn announcement_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn announcement_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
     let (uid, _) = require(&state, &conn, &["announcement.delete", "system.manage"])?;
-    services::announcements::delete(&conn, uid, id as i64)
+    services::announcements::delete(&state.sea, id as i64).await?;
+    services::audit::log(
+        &conn,
+        Some(uid),
+        "DELETE",
+        "announcement",
+        Some(&id.to_string()),
+        None,
+        None,
+        None,
+    )?;
+    Ok(())
 }
 
 // ---------------- Laporan ----------------
