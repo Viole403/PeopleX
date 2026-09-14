@@ -1,7 +1,7 @@
 //! Konfigurasi alur persetujuan per modul.
 
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, Set,
+    ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set,
 };
 
 use crate::entities::{approval_step, approval_workflow, role, user};

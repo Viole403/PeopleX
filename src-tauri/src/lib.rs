@@ -80,7 +80,7 @@ async fn db_status(state: tauri::State<'_, AppState>) -> Result<DbStatus, String
 }
 
 /// Ambil koneksi dari pool dengan pesan galat seragam.
-fn pooled(state: &tauri::State<AppState>) -> Result<db::DbConn, String> {
+fn pooled(state: &tauri::State<'_, AppState>) -> Result<db::DbConn, String> {
     state
         .db
         .get()
@@ -88,16 +88,16 @@ fn pooled(state: &tauri::State<AppState>) -> Result<db::DbConn, String> {
 }
 
 /// Pengguna aktif dari sesi (izin dimuat ulang tiap panggilan).
-fn current_actor(
-    state: &tauri::State<AppState>,
-    conn: &rusqlite::Connection,
+async fn current_actor(
+    state: &tauri::State<'_, AppState>,
 ) -> Result<(i64, SessionUser), String> {
     let uid = state
         .session
         .lock()
         .map_err(|_| "Sesi terkunci.".to_string())?
         .ok_or("Belum login.".to_string())?;
-    let user = services::auth::load_session_user(conn, uid)?
+    let user = services::auth::load_session_user(&state.sea, uid)
+        .await?
         .ok_or("Sesi berakhir. Masuk kembali.".to_string())?;
     Ok((uid, user))
 }
@@ -112,12 +112,11 @@ fn privileged(user: &SessionUser, perm: &str) -> bool {
 }
 
 /// Gerbang izin: super-admin lolos semua; selain itu salah satu izin cukup.
-fn require(
-    state: &tauri::State<AppState>,
-    conn: &rusqlite::Connection,
+async fn require(
+    state: &tauri::State<'_, AppState>,
     any_of: &[&str],
 ) -> Result<(i64, SessionUser), String> {
-    let (uid, user) = current_actor(state, conn)?;
+    let (uid, user) = current_actor(state).await?;
     if user.is_super_admin
         || any_of
             .iter()
@@ -131,13 +130,12 @@ fn require(
 
 #[tauri::command]
 #[specta::specta]
-fn login(
-    state: tauri::State<AppState>,
+async fn login(
+    state: tauri::State<'_, AppState>,
     username: String,
     password: String,
 ) -> Result<services::auth::LoginOk, String> {
-    let conn = pooled(&state)?;
-    let ok = services::auth::attempt_login(&conn, &username, &password)?;
+    let ok = services::auth::attempt_login(&state.sea, &username, &password).await?;
     if !ok.mfa_required {
         *state
             .session
@@ -149,13 +147,12 @@ fn login(
 
 #[tauri::command]
 #[specta::specta]
-fn mfa_challenge(
-    state: tauri::State<AppState>,
+async fn mfa_challenge(
+    state: tauri::State<'_, AppState>,
     user_id: i32,
     code: String,
 ) -> Result<services::auth::LoginOk, String> {
-    let conn = pooled(&state)?;
-    let user = services::auth::verify_mfa(&conn, user_id as i64, &code)?;
+    let user = services::auth::verify_mfa(&state.sea, user_id as i64, &code).await?;
     *state
         .session
         .lock()
@@ -169,47 +166,42 @@ fn mfa_challenge(
 
 #[tauri::command]
 #[specta::specta]
-fn mfa_setup(state: tauri::State<AppState>) -> Result<services::auth::MfaSetup, String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
-    services::auth::mfa_setup(&conn, uid)
+async fn mfa_setup(state: tauri::State<'_, AppState>) -> Result<services::auth::MfaSetup, String> {
+    let (uid, _) = current_actor(&state).await?;
+    services::auth::mfa_setup(&state.sea, uid).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn mfa_enable(state: tauri::State<AppState>, code: String) -> Result<(), String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
-    services::auth::mfa_enable(&conn, uid, &code)
+async fn mfa_enable(state: tauri::State<'_, AppState>, code: String) -> Result<(), String> {
+    let (uid, _) = current_actor(&state).await?;
+    services::auth::mfa_enable(&state.sea, uid, &code).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn mfa_disable(state: tauri::State<AppState>, password: String) -> Result<(), String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
-    services::auth::mfa_disable(&conn, uid, &password)
+async fn mfa_disable(state: tauri::State<'_, AppState>, password: String) -> Result<(), String> {
+    let (uid, _) = current_actor(&state).await?;
+    services::auth::mfa_disable(&state.sea, uid, &password).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn logout(state: tauri::State<AppState>) -> Result<(), String> {
+async fn logout(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let uid = state
         .session
         .lock()
         .map_err(|_| "Sesi terkunci.".to_string())?
         .take();
-    let conn = pooled(&state)?;
     if let Some(id) = uid {
-        services::auth::logout(&conn, id)?;
+        services::auth::logout(&state.sea, id).await?;
     }
     Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
-fn session_state(state: tauri::State<AppState>) -> Result<Option<SessionUser>, String> {
-    let conn = pooled(&state)?;
+async fn session_state(state: tauri::State<'_, AppState>) -> Result<Option<SessionUser>, String> {
     let uid = state
         .session
         .lock()
@@ -217,7 +209,7 @@ fn session_state(state: tauri::State<AppState>) -> Result<Option<SessionUser>, S
         .to_owned();
     match uid {
         None => Ok(None),
-        Some(id) => match services::auth::load_session_user(&conn, id)? {
+        Some(id) => match services::auth::load_session_user(&state.sea, id).await? {
             Some(user) => Ok(Some(user)),
             None => {
                 *state
@@ -232,160 +224,157 @@ fn session_state(state: tauri::State<AppState>) -> Result<Option<SessionUser>, S
 
 #[tauri::command]
 #[specta::specta]
-fn change_password(
-    state: tauri::State<AppState>,
+async fn change_password(
+    state: tauri::State<'_, AppState>,
     current_password: String,
     new_password: String,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
-    services::auth::change_password(&conn, uid, &current_password, &new_password)
+    let (uid, _) = current_actor(&state).await?;
+    services::auth::change_password(&state.sea, uid, &current_password, &new_password).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn request_password_reset(
-    state: tauri::State<AppState>,
+async fn request_password_reset(
+    state: tauri::State<'_, AppState>,
     email: String,
 ) -> Result<Option<String>, String> {
-    let conn = pooled(&state)?;
-    services::auth::request_password_reset(&conn, &email)
+    services::auth::request_password_reset(&state.sea, &email).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn reset_password(
-    state: tauri::State<AppState>,
+async fn reset_password(
+    state: tauri::State<'_, AppState>,
     token: String,
     new_password: String,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
-    services::auth::reset_password(&conn, &token, &new_password)
+    services::auth::reset_password(&state.sea, &token, &new_password).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn list_roles(state: tauri::State<AppState>) -> Result<Vec<services::rbac::Role>, String> {
+async fn list_roles(state: tauri::State<'_, AppState>) -> Result<Vec<services::rbac::Role>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["rbac.manage"])?;
+    require(&state, &["rbac.manage"]).await?;
     services::rbac::list_roles(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn create_role(
-    state: tauri::State<AppState>,
+async fn create_role(
+    state: tauri::State<'_, AppState>,
     slug: String,
     name: String,
     description: Option<String>,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["rbac.manage"])?;
+    let (uid, _) = require(&state, &["rbac.manage"]).await?;
     services::rbac::create_role(&conn, uid, &slug, &name, description.as_deref())
 }
 
 #[tauri::command]
 #[specta::specta]
-fn update_role(
-    state: tauri::State<AppState>,
+async fn update_role(
+    state: tauri::State<'_, AppState>,
     role_id: i32,
     name: String,
     description: Option<String>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["rbac.manage"])?;
+    let (uid, _) = require(&state, &["rbac.manage"]).await?;
     services::rbac::update_role(&conn, uid, role_id as i64, &name, description.as_deref())
 }
 
 #[tauri::command]
 #[specta::specta]
-fn delete_role(state: tauri::State<AppState>, role_id: i32) -> Result<(), String> {
+async fn delete_role(state: tauri::State<'_, AppState>, role_id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["rbac.manage"])?;
+    let (uid, _) = require(&state, &["rbac.manage"]).await?;
     services::rbac::delete_role(&conn, uid, role_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn list_permissions(
-    state: tauri::State<AppState>,
+async fn list_permissions(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::rbac::Permission>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["rbac.manage"])?;
+    require(&state, &["rbac.manage"]).await?;
     services::rbac::list_permissions(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn role_permission_ids(state: tauri::State<AppState>, role_id: i32) -> Result<Vec<i32>, String> {
+async fn role_permission_ids(state: tauri::State<'_, AppState>, role_id: i32) -> Result<Vec<i32>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["rbac.manage"])?;
+    require(&state, &["rbac.manage"]).await?;
     services::rbac::role_permission_ids(&conn, role_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn sync_role_permissions(
-    state: tauri::State<AppState>,
+async fn sync_role_permissions(
+    state: tauri::State<'_, AppState>,
     role_id: i32,
     permission_ids: Vec<i32>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["rbac.manage"])?;
+    let (uid, _) = require(&state, &["rbac.manage"]).await?;
     let ids: Vec<i64> = permission_ids.iter().map(|v| *v as i64).collect();
     services::rbac::sync_role_permissions(&conn, uid, role_id as i64, &ids)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn list_users(state: tauri::State<AppState>) -> Result<Vec<services::rbac::UserRow>, String> {
+async fn list_users(state: tauri::State<'_, AppState>) -> Result<Vec<services::rbac::UserRow>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["rbac.manage"])?;
+    require(&state, &["rbac.manage"]).await?;
     services::rbac::list_users(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn user_role_ids(state: tauri::State<AppState>, user_id: i32) -> Result<Vec<i32>, String> {
+async fn user_role_ids(state: tauri::State<'_, AppState>, user_id: i32) -> Result<Vec<i32>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["rbac.manage"])?;
+    require(&state, &["rbac.manage"]).await?;
     services::rbac::user_role_ids(&conn, user_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn sync_user_roles(
-    state: tauri::State<AppState>,
+async fn sync_user_roles(
+    state: tauri::State<'_, AppState>,
     user_id: i32,
     role_ids: Vec<i32>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["rbac.manage"])?;
+    let (uid, _) = require(&state, &["rbac.manage"]).await?;
     let ids: Vec<i64> = role_ids.iter().map(|v| *v as i64).collect();
     services::rbac::sync_user_roles(&conn, uid, user_id as i64, &ids)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn toggle_user_status(
-    state: tauri::State<AppState>,
+async fn toggle_user_status(
+    state: tauri::State<'_, AppState>,
     user_id: i32,
     status: String,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["rbac.manage"])?;
+    let (uid, _) = require(&state, &["rbac.manage"]).await?;
     services::rbac::toggle_user_status(&conn, uid, user_id as i64, &status)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn admin_reset_password(
-    state: tauri::State<AppState>,
+async fn admin_reset_password(
+    state: tauri::State<'_, AppState>,
     user_id: i32,
     new_password: String,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["rbac.manage"])?;
+    let (uid, _) = require(&state, &["rbac.manage"]).await?;
     services::rbac::admin_reset_password(&conn, uid, user_id as i64, &new_password)
 }
 
@@ -396,8 +385,7 @@ async fn audit_list(
     module: Option<String>,
     limit: Option<i32>,
 ) -> Result<Vec<services::audit::AuditEntry>, String> {
-    let conn = pooled(&state)?;
-    require(&state, &conn, &["audit.view", "system.manage"])?;
+    require(&state, &["audit.view", "system.manage"]).await?;
     services::audit::list_sea(&state.sea, module.as_deref(), limit.unwrap_or(100) as i64).await
 }
 
@@ -406,8 +394,7 @@ async fn audit_list(
 async fn get_settings(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::settings::Setting>, String> {
-    let conn = pooled(&state)?;
-    require(&state, &conn, &["settings.manage"])?;
+    require(&state, &["settings.manage"]).await?;
     services::repository::SeaOrmSettings(&state.sea)
         .all_settings()
         .await
@@ -419,8 +406,7 @@ async fn save_settings(
     state: tauri::State<'_, AppState>,
     items: Vec<(String, String)>,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["settings.manage"])?;
+    let (uid, _) = require(&state, &["settings.manage"]).await?;
     services::repository::SeaOrmSettings(&state.sea)
         .save_settings(&items)
         .await?;
@@ -450,8 +436,7 @@ async fn save_settings(
 async fn get_company(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<services::settings::Company>, String> {
-    let conn = pooled(&state)?;
-    require(&state, &conn, &["settings.manage"])?;
+    require(&state, &["settings.manage"]).await?;
     services::repository::SeaOrmSettings(&state.sea)
         .get_company()
         .await
@@ -463,8 +448,7 @@ async fn save_company(
     state: tauri::State<'_, AppState>,
     input: services::settings::CompanyInput,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["settings.manage"])?;
+    let (uid, _) = require(&state, &["settings.manage"]).await?;
     let repo = services::repository::SeaOrmSettings(&state.sea);
     let before = repo.get_company().await?;
     let after = repo.save_company(&input).await?;
@@ -486,11 +470,10 @@ async fn save_company(
 
 #[tauri::command]
 #[specta::specta]
-fn org_entities(
-    state: tauri::State<AppState>,
+async fn org_entities(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::organization::EntityMeta>, String> {
-    let conn = pooled(&state)?;
-    require(&state, &conn, &["organization.view", "system.manage"])?;
+    require(&state, &["organization.view", "system.manage"]).await?;
     Ok(services::organization::entities())
 }
 
@@ -503,8 +486,7 @@ async fn org_list(
     page: i32,
     per_page: i32,
 ) -> Result<services::organization::OrgPage, String> {
-    let conn = pooled(&state)?;
-    require(&state, &conn, &["organization.view", "system.manage"])?;
+    require(&state, &["organization.view", "system.manage"]).await?;
     services::organization::list(&state.sea, &slug, &search, page, per_page).await
 }
 
@@ -515,8 +497,7 @@ async fn org_get(
     slug: String,
     id: i32,
 ) -> Result<Option<std::collections::BTreeMap<String, String>>, String> {
-    let conn = pooled(&state)?;
-    require(&state, &conn, &["organization.view", "system.manage"])?;
+    require(&state, &["organization.view", "system.manage"]).await?;
     services::organization::get(&state.sea, &slug, id as i64).await
 }
 
@@ -527,8 +508,7 @@ async fn org_options(
     slug: String,
     field: String,
 ) -> Result<Vec<services::organization::Opt>, String> {
-    let conn = pooled(&state)?;
-    require(&state, &conn, &["organization.view", "system.manage"])?;
+    require(&state, &["organization.view", "system.manage"]).await?;
     services::organization::options(&state.sea, &slug, &field).await
 }
 
@@ -540,16 +520,13 @@ async fn org_save(
     id: Option<i32>,
     values: std::collections::BTreeMap<String, String>,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &[
             "organization.create",
             "organization.update",
             "system.manage",
         ],
-    )?;
+    ).await?;
     let rid = services::organization::save(&state.sea, &slug, id.map(|v| v as i64), &values).await?;
     services::audit::log_sea(
         &state.sea,
@@ -568,8 +545,7 @@ async fn org_save(
 #[tauri::command]
 #[specta::specta]
 async fn org_delete(state: tauri::State<'_, AppState>, slug: String, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["organization.delete", "system.manage"])?;
+    let (uid, _) = require(&state, &["organization.delete", "system.manage"]).await?;
     services::organization::delete(&state.sea, &slug, id as i64).await?;
     services::audit::log_sea(
         &state.sea,
@@ -590,8 +566,7 @@ async fn org_delete(state: tauri::State<'_, AppState>, slug: String, id: i32) ->
 async fn org_chart(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::organization::CompanyNode>, String> {
-    let conn = pooled(&state)?;
-    require(&state, &conn, &["organization.view", "system.manage"])?;
+    require(&state, &["organization.view", "system.manage"]).await?;
     services::organization::org_chart(&state.sea).await
 }
 
@@ -600,8 +575,7 @@ async fn org_chart(
 async fn list_workflows(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::workflows::Workflow>, String> {
-    let conn = pooled(&state)?;
-    require(&state, &conn, &["workflow.manage"])?;
+    require(&state, &["workflow.manage"]).await?;
     services::workflows::list(&state.sea).await
 }
 
@@ -614,8 +588,7 @@ async fn add_workflow_step(
     role_id: Option<i32>,
     user_id: Option<i32>,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["workflow.manage"])?;
+    let (uid, _) = require(&state, &["workflow.manage"]).await?;
     let id = services::workflows::add_step(
         &state.sea,
         workflow_id as i64,
@@ -641,8 +614,7 @@ async fn add_workflow_step(
 #[tauri::command]
 #[specta::specta]
 async fn remove_workflow_step(state: tauri::State<'_, AppState>, step_id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["workflow.manage"])?;
+    let (uid, _) = require(&state, &["workflow.manage"]).await?;
     services::workflows::remove_step(&state.sea, step_id as i64).await?;
     services::audit::log_sea(
         &state.sea,
@@ -664,63 +636,63 @@ fn files_dir(state: &tauri::State<AppState>) -> std::path::PathBuf {
 
 #[tauri::command]
 #[specta::specta]
-fn employee_list(
-    state: tauri::State<AppState>,
+async fn employee_list(
+    state: tauri::State<'_, AppState>,
     search: String,
     filters: services::employees::EmployeeFilter,
     page: i32,
     per_page: i32,
 ) -> Result<services::employees::EmployeePage, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["employee.view", "system.manage"])?;
+    require(&state, &["employee.view", "system.manage"]).await?;
     services::employees::list(&conn, &search, &filters, page, per_page)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_detail(
-    state: tauri::State<AppState>,
+async fn employee_detail(
+    state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::employees::EmployeeDetail>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["employee.view", "system.manage"])?;
+    require(&state, &["employee.view", "system.manage"]).await?;
     services::employees::detail(&conn, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_dropdowns(
-    state: tauri::State<AppState>,
+async fn employee_dropdowns(
+    state: tauri::State<'_, AppState>,
 ) -> Result<services::employees::Dropdowns, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["employee.view", "system.manage"])?;
+    require(&state, &["employee.view", "system.manage"]).await?;
     services::employees::dropdowns(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_create(
-    state: tauri::State<AppState>,
+async fn employee_create(
+    state: tauri::State<'_, AppState>,
     input: services::employees::EmployeeInput,
     photo: Option<services::employees::FileUpload>,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["employee.create", "system.manage"])?;
+    let (uid, _) = require(&state, &["employee.create", "system.manage"]).await?;
     let dir = files_dir(&state);
     services::employees::create(&conn, &dir, uid, &input, photo.as_ref())
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_update(
-    state: tauri::State<AppState>,
+async fn employee_update(
+    state: tauri::State<'_, AppState>,
     id: i32,
     input: services::employees::EmployeeInput,
     resign_date: Option<String>,
     photo: Option<services::employees::FileUpload>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["employee.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["employee.update", "system.manage"]).await?;
     let dir = files_dir(&state);
     services::employees::update(
         &conn,
@@ -735,49 +707,46 @@ fn employee_update(
 
 #[tauri::command]
 #[specta::specta]
-fn employee_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn employee_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["employee.delete", "system.manage"])?;
+    let (uid, _) = require(&state, &["employee.delete", "system.manage"]).await?;
     services::employees::delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_child_types(
-    state: tauri::State<AppState>,
+async fn employee_child_types(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::employees::ChildMeta>, String> {
-    let conn = pooled(&state)?;
-    require(&state, &conn, &["employee.view", "system.manage"])?;
+    require(&state, &["employee.view", "system.manage"]).await?;
     Ok(services::employees::child_types())
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_child_list(
-    state: tauri::State<AppState>,
+async fn employee_child_list(
+    state: tauri::State<'_, AppState>,
     child: String,
     employee_id: i32,
 ) -> Result<Vec<std::collections::BTreeMap<String, String>>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["employee.view", "system.manage"])?;
+    require(&state, &["employee.view", "system.manage"]).await?;
     services::employees::child_list(&conn, &child, employee_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_child_save(
-    state: tauri::State<AppState>,
+async fn employee_child_save(
+    state: tauri::State<'_, AppState>,
     child: String,
     employee_id: i32,
     id: Option<i32>,
     values: std::collections::BTreeMap<String, String>,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["employee.create", "employee.update", "system.manage"],
-    )?;
+    ).await?;
     services::employees::child_save(
         &conn,
         uid,
@@ -790,67 +759,67 @@ fn employee_child_save(
 
 #[tauri::command]
 #[specta::specta]
-fn employee_child_delete(
-    state: tauri::State<AppState>,
+async fn employee_child_delete(
+    state: tauri::State<'_, AppState>,
     child: String,
     employee_id: i32,
     id: i32,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["employee.delete", "system.manage"])?;
+    let (uid, _) = require(&state, &["employee.delete", "system.manage"]).await?;
     services::employees::child_delete(&conn, uid, &child, employee_id as i64, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn contract_expiring(
-    state: tauri::State<AppState>,
+async fn contract_expiring(
+    state: tauri::State<'_, AppState>,
     days: i32,
 ) -> Result<Vec<services::employees::ContractAlert>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["contract.view", "system.manage"])?;
+    require(&state, &["contract.view", "system.manage"]).await?;
     services::employees::expiring_contracts(&conn, days as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_addresses(
-    state: tauri::State<AppState>,
+async fn employee_addresses(
+    state: tauri::State<'_, AppState>,
     employee_id: i32,
 ) -> Result<services::employees::Addresses, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["employee.view", "system.manage"])?;
+    require(&state, &["employee.view", "system.manage"]).await?;
     services::employees::addresses(&conn, employee_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_address_save(
-    state: tauri::State<AppState>,
+async fn employee_address_save(
+    state: tauri::State<'_, AppState>,
     employee_id: i32,
     address_type: String,
     values: std::collections::BTreeMap<String, String>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["employee.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["employee.update", "system.manage"]).await?;
     services::employees::save_address(&conn, uid, employee_id as i64, &address_type, &values)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_documents(
-    state: tauri::State<AppState>,
+async fn employee_documents(
+    state: tauri::State<'_, AppState>,
     employee_id: i32,
 ) -> Result<Vec<services::employees::Document>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["employee.view", "system.manage"])?;
+    require(&state, &["employee.view", "system.manage"]).await?;
     services::employees::documents(&conn, employee_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_document_upload(
-    state: tauri::State<AppState>,
+async fn employee_document_upload(
+    state: tauri::State<'_, AppState>,
     employee_id: i32,
     category: String,
     name: String,
@@ -858,11 +827,9 @@ fn employee_document_upload(
     file: services::employees::FileUpload,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["employee.create", "employee.update", "system.manage"],
-    )?;
+    ).await?;
     let dir = files_dir(&state);
     services::employees::upload_document(
         &conn,
@@ -878,83 +845,83 @@ fn employee_document_upload(
 
 #[tauri::command]
 #[specta::specta]
-fn employee_document_bytes(
-    state: tauri::State<AppState>,
+async fn employee_document_bytes(
+    state: tauri::State<'_, AppState>,
     employee_id: i32,
     id: i32,
 ) -> Result<services::employees::DocumentBytes, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["employee.view", "system.manage"])?;
+    require(&state, &["employee.view", "system.manage"]).await?;
     let dir = files_dir(&state);
     services::employees::document_bytes(&conn, &dir, employee_id as i64, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_document_delete(
-    state: tauri::State<AppState>,
+async fn employee_document_delete(
+    state: tauri::State<'_, AppState>,
     employee_id: i32,
     id: i32,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["employee.delete", "system.manage"])?;
+    let (uid, _) = require(&state, &["employee.delete", "system.manage"]).await?;
     services::employees::child_delete(&conn, uid, "documents", employee_id as i64, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_salary_current(
-    state: tauri::State<AppState>,
+async fn employee_salary_current(
+    state: tauri::State<'_, AppState>,
     employee_id: i32,
 ) -> Result<Option<services::employees::SalaryRow>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["employee.view", "system.manage"])?;
+    require(&state, &["employee.view", "system.manage"]).await?;
     services::employees::salary_current(&conn, employee_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_salary_history(
-    state: tauri::State<AppState>,
+async fn employee_salary_history(
+    state: tauri::State<'_, AppState>,
     employee_id: i32,
 ) -> Result<Vec<services::employees::SalaryRow>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["employee.view", "system.manage"])?;
+    require(&state, &["employee.view", "system.manage"]).await?;
     services::employees::salary_history(&conn, employee_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_salary_components(
-    state: tauri::State<AppState>,
+async fn employee_salary_components(
+    state: tauri::State<'_, AppState>,
     salary_id: i32,
 ) -> Result<Vec<services::employees::SalaryComponentRow>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["employee.view", "system.manage"])?;
+    require(&state, &["employee.view", "system.manage"]).await?;
     services::employees::salary_components(&conn, salary_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_available_components(
-    state: tauri::State<AppState>,
+async fn employee_available_components(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::employees::SalaryComponentRow>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["employee.view", "system.manage"])?;
+    require(&state, &["employee.view", "system.manage"]).await?;
     services::employees::available_components(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn employee_set_salary(
-    state: tauri::State<AppState>,
+async fn employee_set_salary(
+    state: tauri::State<'_, AppState>,
     employee_id: i32,
     basic_salary: f64,
     effective_date: String,
     components: Vec<(i32, f64)>,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["employee.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["employee.update", "system.manage"]).await?;
     let comps: Vec<(i64, f64)> = components.iter().map(|(c, a)| (*c as i64, *a)).collect();
     services::employees::set_salary(
         &conn,
@@ -979,63 +946,63 @@ fn my_employee(conn: &rusqlite::Connection, user_id: i64) -> Result<i64, String>
 
 #[tauri::command]
 #[specta::specta]
-fn shift_list(state: tauri::State<AppState>) -> Result<Vec<services::attendance::Shift>, String> {
+async fn shift_list(state: tauri::State<'_, AppState>) -> Result<Vec<services::attendance::Shift>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["attendance.view", "system.manage"])?;
+    require(&state, &["attendance.view", "system.manage"]).await?;
     services::attendance::shift_list(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn shift_save(
-    state: tauri::State<AppState>,
+async fn shift_save(
+    state: tauri::State<'_, AppState>,
     id: Option<i32>,
     input: services::attendance::ShiftInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
     services::attendance::shift_save(&conn, uid, id.map(|v| v as i64), &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn shift_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn shift_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
     services::attendance::shift_delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn schedule_list(
-    state: tauri::State<AppState>,
+async fn schedule_list(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::attendance::Schedule>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["attendance.view", "system.manage"])?;
+    require(&state, &["attendance.view", "system.manage"]).await?;
     services::attendance::schedule_list(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn schedule_save(
-    state: tauri::State<AppState>,
+async fn schedule_save(
+    state: tauri::State<'_, AppState>,
     id: Option<i32>,
     input: services::attendance::ScheduleInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
     services::attendance::schedule_save(&conn, uid, id.map(|v| v as i64), &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn schedule_save_days(
-    state: tauri::State<AppState>,
+async fn schedule_save_days(
+    state: tauri::State<'_, AppState>,
     schedule_id: i32,
     days: Vec<(i32, Option<i32>, bool)>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
     let mapped: Vec<(i64, Option<i64>, bool)> = days
         .iter()
         .map(|(d, s, w)| (*d as i64, s.map(|v| v as i64), *w))
@@ -1045,91 +1012,91 @@ fn schedule_save_days(
 
 #[tauri::command]
 #[specta::specta]
-fn schedule_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn schedule_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
     services::attendance::schedule_delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn assignment_list(
-    state: tauri::State<AppState>,
+async fn assignment_list(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::attendance::Assignment>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["attendance.view", "system.manage"])?;
+    require(&state, &["attendance.view", "system.manage"]).await?;
     services::attendance::assignment_list(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn assignment_save(
-    state: tauri::State<AppState>,
+async fn assignment_save(
+    state: tauri::State<'_, AppState>,
     id: Option<i32>,
     input: services::attendance::AssignmentInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
     services::attendance::assignment_save(&conn, uid, id.map(|v| v as i64), &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn assignment_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn assignment_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
     services::attendance::assignment_delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn holiday_list(
-    state: tauri::State<AppState>,
+async fn holiday_list(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::attendance::Holiday>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["attendance.view", "system.manage"])?;
+    require(&state, &["attendance.view", "system.manage"]).await?;
     services::attendance::holiday_list(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn holiday_save(
-    state: tauri::State<AppState>,
+async fn holiday_save(
+    state: tauri::State<'_, AppState>,
     id: Option<i32>,
     input: services::attendance::HolidayInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
     services::attendance::holiday_save(&conn, uid, id.map(|v| v as i64), &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn holiday_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn holiday_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["attendance.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
     services::attendance::holiday_delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn attendance_today(
-    state: tauri::State<AppState>,
+async fn attendance_today(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Option<services::attendance::Attendance>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::attendance::today(&conn, my_employee(&conn, uid)?)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn attendance_clock_in(
-    state: tauri::State<AppState>,
+async fn attendance_clock_in(
+    state: tauri::State<'_, AppState>,
     lat: Option<f64>,
     lng: Option<f64>,
 ) -> Result<services::attendance::ClockResult, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::attendance::clock_in(
         &conn,
         uid,
@@ -1142,13 +1109,13 @@ fn attendance_clock_in(
 
 #[tauri::command]
 #[specta::specta]
-fn attendance_clock_out(
-    state: tauri::State<AppState>,
+async fn attendance_clock_out(
+    state: tauri::State<'_, AppState>,
     lat: Option<f64>,
     lng: Option<f64>,
 ) -> Result<services::attendance::ClockResult, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::attendance::clock_out(
         &conn,
         uid,
@@ -1161,83 +1128,81 @@ fn attendance_clock_out(
 
 #[tauri::command]
 #[specta::specta]
-fn attendance_history(
-    state: tauri::State<AppState>,
+async fn attendance_history(
+    state: tauri::State<'_, AppState>,
     month: String,
 ) -> Result<Vec<services::attendance::Attendance>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::attendance::history(&conn, my_employee(&conn, uid)?, &month)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn attendance_recap(
-    state: tauri::State<AppState>,
+async fn attendance_recap(
+    state: tauri::State<'_, AppState>,
     date: String,
     search: String,
 ) -> Result<Vec<services::attendance::RecapRow>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["attendance.view", "system.manage"])?;
+    require(&state, &["attendance.view", "system.manage"]).await?;
     services::attendance::recap(&conn, &date, &search)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn attendance_manual(
-    state: tauri::State<AppState>,
+async fn attendance_manual(
+    state: tauri::State<'_, AppState>,
     input: services::attendance::ManualInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["attendance.create", "attendance.correct", "system.manage"],
-    )?;
+    ).await?;
     services::attendance::manual_entry(&conn, uid, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn attendance_my_corrections(
-    state: tauri::State<AppState>,
+async fn attendance_my_corrections(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::attendance::Correction>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::attendance::my_corrections(&conn, my_employee(&conn, uid)?)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn attendance_pending_corrections(
-    state: tauri::State<AppState>,
+async fn attendance_pending_corrections(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::attendance::Correction>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["attendance.approve", "system.manage"])?;
+    require(&state, &["attendance.approve", "system.manage"]).await?;
     services::attendance::pending_corrections(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn attendance_request_correction(
-    state: tauri::State<AppState>,
+async fn attendance_request_correction(
+    state: tauri::State<'_, AppState>,
     input: services::attendance::CorrectionInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::attendance::request_correction(&conn, uid, my_employee(&conn, uid)?, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn attendance_decide_correction(
-    state: tauri::State<AppState>,
+async fn attendance_decide_correction(
+    state: tauri::State<'_, AppState>,
     id: i32,
     decision: String,
     notes: Option<String>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, user) = require(&state, &conn, &["attendance.approve", "system.manage"])?;
+    let (uid, user) = require(&state, &["attendance.approve", "system.manage"]).await?;
     let actor_emp = my_employee(&conn, uid).ok();
     let privileged = privileged(&user, "attendance.approve");
     services::attendance::decide_correction(
@@ -1253,225 +1218,225 @@ fn attendance_decide_correction(
 
 #[tauri::command]
 #[specta::specta]
-fn leave_balances(
-    state: tauri::State<AppState>,
+async fn leave_balances(
+    state: tauri::State<'_, AppState>,
     year: i32,
 ) -> Result<Vec<services::leave::Balance>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::leave::balances(&conn, my_employee(&conn, uid)?, year)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn leave_types(state: tauri::State<AppState>) -> Result<Vec<services::leave::LeaveType>, String> {
+async fn leave_types(state: tauri::State<'_, AppState>) -> Result<Vec<services::leave::LeaveType>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["leave.view", "system.manage"])?;
+    require(&state, &["leave.view", "system.manage"]).await?;
     services::leave::type_list(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn leave_type_save(
-    state: tauri::State<AppState>,
+async fn leave_type_save(
+    state: tauri::State<'_, AppState>,
     id: Option<i32>,
     input: services::leave::LeaveTypeInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["leave.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["leave.update", "system.manage"]).await?;
     services::leave::type_save(&conn, uid, id.map(|v| v as i64), &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn leave_type_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn leave_type_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["leave.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["leave.update", "system.manage"]).await?;
     services::leave::type_delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn leave_my(state: tauri::State<AppState>) -> Result<Vec<services::leave::LeaveRequest>, String> {
+async fn leave_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::leave::LeaveRequest>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::leave::my_requests(&conn, my_employee(&conn, uid)?)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn leave_pending(
-    state: tauri::State<AppState>,
+async fn leave_pending(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::leave::LeaveRequest>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::leave::pending_for(&conn, uid)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn leave_all(state: tauri::State<AppState>) -> Result<Vec<services::leave::LeaveRequest>, String> {
+async fn leave_all(state: tauri::State<'_, AppState>) -> Result<Vec<services::leave::LeaveRequest>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["leave.view", "system.manage"])?;
+    require(&state, &["leave.view", "system.manage"]).await?;
     services::leave::all_requests(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn leave_create(
-    state: tauri::State<AppState>,
+async fn leave_create(
+    state: tauri::State<'_, AppState>,
     input: services::leave::LeaveCreate,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::leave::create(&conn, uid, my_employee(&conn, uid)?, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn leave_decide(
-    state: tauri::State<AppState>,
+async fn leave_decide(
+    state: tauri::State<'_, AppState>,
     id: i32,
     decision: String,
     notes: Option<String>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::leave::decide(&conn, uid, id as i64, &decision, notes.as_deref())
 }
 
 #[tauri::command]
 #[specta::specta]
-fn leave_cancel(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn leave_cancel(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::leave::cancel(&conn, uid, my_employee(&conn, uid)?, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn leave_calendar(
-    state: tauri::State<AppState>,
+async fn leave_calendar(
+    state: tauri::State<'_, AppState>,
     month: String,
 ) -> Result<Vec<services::leave::CalendarDay>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["leave.view", "system.manage"])?;
+    require(&state, &["leave.view", "system.manage"]).await?;
     services::leave::calendar(&conn, &month)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn overtime_my(state: tauri::State<AppState>) -> Result<Vec<services::overtime::Overtime>, String> {
+async fn overtime_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::overtime::Overtime>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::overtime::my_requests(&conn, my_employee(&conn, uid)?)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn overtime_pending(
-    state: tauri::State<AppState>,
+async fn overtime_pending(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::overtime::Overtime>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::overtime::pending_for(&conn, uid)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn overtime_all(
-    state: tauri::State<AppState>,
+async fn overtime_all(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::overtime::Overtime>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["overtime.view", "system.manage"])?;
+    require(&state, &["overtime.view", "system.manage"]).await?;
     services::overtime::all_requests(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn overtime_create(
-    state: tauri::State<AppState>,
+async fn overtime_create(
+    state: tauri::State<'_, AppState>,
     input: services::overtime::OvertimeCreate,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::overtime::create(&conn, uid, my_employee(&conn, uid)?, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn overtime_decide(
-    state: tauri::State<AppState>,
+async fn overtime_decide(
+    state: tauri::State<'_, AppState>,
     id: i32,
     decision: String,
     notes: Option<String>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::overtime::decide(&conn, uid, id as i64, &decision, notes.as_deref())
 }
 
 #[tauri::command]
 #[specta::specta]
-fn permission_types(
-    state: tauri::State<AppState>,
+async fn permission_types(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::permission::PermissionType>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["permission.view", "system.manage"])?;
+    require(&state, &["permission.view", "system.manage"]).await?;
     services::permission::types(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn permission_my(
-    state: tauri::State<AppState>,
+async fn permission_my(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::permission::PermissionRequest>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::permission::my_requests(&conn, my_employee(&conn, uid)?)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn permission_pending(
-    state: tauri::State<AppState>,
+async fn permission_pending(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::permission::PermissionRequest>, String> {
     let conn = pooled(&state)?;
-    let (uid, user) = current_actor(&state, &conn)?;
+    let (uid, user) = current_actor(&state).await?;
     let privileged = privileged(&user, "permission.approve");
     services::permission::pending_for(&conn, uid, privileged)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn permission_all(
-    state: tauri::State<AppState>,
+async fn permission_all(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::permission::PermissionRequest>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["permission.view", "system.manage"])?;
+    require(&state, &["permission.view", "system.manage"]).await?;
     services::permission::all_requests(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn permission_create(
-    state: tauri::State<AppState>,
+async fn permission_create(
+    state: tauri::State<'_, AppState>,
     input: services::permission::PermissionCreate,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::permission::create(&conn, uid, my_employee(&conn, uid)?, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn permission_decide(
-    state: tauri::State<AppState>,
+async fn permission_decide(
+    state: tauri::State<'_, AppState>,
     id: i32,
     decision: String,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, user) = current_actor(&state, &conn)?;
+    let (uid, user) = current_actor(&state).await?;
     let actor_emp = my_employee(&conn, uid).ok();
     let privileged = privileged(&user, "permission.approve");
     services::permission::decide(&conn, uid, actor_emp, privileged, id as i64, &decision)
@@ -1479,109 +1444,109 @@ fn permission_decide(
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_periods(
-    state: tauri::State<AppState>,
+async fn payroll_periods(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::payroll::Period>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["payroll.view", "system.manage"])?;
+    require(&state, &["payroll.view", "system.manage"]).await?;
     services::payroll::period_list(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_period_create(
-    state: tauri::State<AppState>,
+async fn payroll_period_create(
+    state: tauri::State<'_, AppState>,
     input: services::payroll::PeriodInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["payroll.create", "system.manage"])?;
+    let (uid, _) = require(&state, &["payroll.create", "system.manage"]).await?;
     services::payroll::period_create(&conn, uid, uid, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_rows(
-    state: tauri::State<AppState>,
+async fn payroll_rows(
+    state: tauri::State<'_, AppState>,
     period_id: i32,
 ) -> Result<Vec<services::payroll::PayrollRow>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["payroll.view", "system.manage"])?;
+    require(&state, &["payroll.view", "system.manage"]).await?;
     services::payroll::payrolls_for_period(&conn, period_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_detail(
-    state: tauri::State<AppState>,
+async fn payroll_detail(
+    state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::payroll::PayrollDetail>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["payroll.view", "system.manage"])?;
+    require(&state, &["payroll.view", "system.manage"]).await?;
     services::payroll::payroll_detail(&conn, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_generate(state: tauri::State<AppState>, period_id: i32) -> Result<(), String> {
+async fn payroll_generate(state: tauri::State<'_, AppState>, period_id: i32) -> Result<(), String> {
     let mut conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["payroll.generate", "system.manage"])?;
+    let (uid, _) = require(&state, &["payroll.generate", "system.manage"]).await?;
     services::payroll::generate(&mut conn, uid, period_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_approve(state: tauri::State<AppState>, period_id: i32) -> Result<(), String> {
+async fn payroll_approve(state: tauri::State<'_, AppState>, period_id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["payroll.approve", "system.manage"])?;
+    let (uid, _) = require(&state, &["payroll.approve", "system.manage"]).await?;
     services::payroll::approve_period(&conn, uid, period_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_pay(state: tauri::State<AppState>, period_id: i32) -> Result<(), String> {
+async fn payroll_pay(state: tauri::State<'_, AppState>, period_id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["payroll.approve", "system.manage"])?;
+    let (uid, _) = require(&state, &["payroll.approve", "system.manage"]).await?;
     services::payroll::mark_paid(&conn, uid, period_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_lock(state: tauri::State<AppState>, period_id: i32) -> Result<(), String> {
+async fn payroll_lock(state: tauri::State<'_, AppState>, period_id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["payroll.approve", "system.manage"])?;
+    let (uid, _) = require(&state, &["payroll.approve", "system.manage"]).await?;
     services::payroll::lock_period(&conn, uid, period_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_my_slips(
-    state: tauri::State<AppState>,
+async fn payroll_my_slips(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::payroll::PayslipInfo>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::payroll::my_payslips(&conn, my_employee(&conn, uid)?)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_payslip_render(
-    state: tauri::State<AppState>,
+async fn payroll_payslip_render(
+    state: tauri::State<'_, AppState>,
     payroll_id: i32,
 ) -> Result<String, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["payroll.view", "system.manage"])?;
+    require(&state, &["payroll.view", "system.manage"]).await?;
     let dir = files_dir(&state);
     services::payslip::render(&conn, &dir, payroll_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_payslip_file(
-    state: tauri::State<AppState>,
+async fn payroll_payslip_file(
+    state: tauri::State<'_, AppState>,
     payroll_id: i32,
 ) -> Result<services::payslip::PayslipFile, String> {
     let conn = pooled(&state)?;
-    let (uid, user) = current_actor(&state, &conn)?;
+    let (uid, user) = current_actor(&state).await?;
     let owner: Option<i64> = conn
         .query_row(
             "SELECT p.employee_id FROM payrolls p WHERE p.id = ?1",
@@ -1601,150 +1566,144 @@ fn payroll_payslip_file(
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_components(
-    state: tauri::State<AppState>,
+async fn payroll_components(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::payroll::Component>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["payroll.view", "system.manage"])?;
+    require(&state, &["payroll.view", "system.manage"]).await?;
     services::payroll::component_list(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_component_save(
-    state: tauri::State<AppState>,
+async fn payroll_component_save(
+    state: tauri::State<'_, AppState>,
     id: Option<i32>,
     input: services::payroll::ComponentInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["payroll.create", "payroll.update", "system.manage"],
-    )?;
+    ).await?;
     services::payroll::component_save(&conn, uid, id.map(|v| v as i64), &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_component_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn payroll_component_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["payroll.delete", "system.manage"])?;
+    let (uid, _) = require(&state, &["payroll.delete", "system.manage"]).await?;
     services::payroll::component_delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_deductions(
-    state: tauri::State<AppState>,
+async fn payroll_deductions(
+    state: tauri::State<'_, AppState>,
     pending_only: bool,
 ) -> Result<Vec<services::payroll::Deduction>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["payroll.view", "system.manage"])?;
+    require(&state, &["payroll.view", "system.manage"]).await?;
     services::payroll::deduction_list(&conn, pending_only)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_deduction_save(
-    state: tauri::State<AppState>,
+async fn payroll_deduction_save(
+    state: tauri::State<'_, AppState>,
     id: Option<i32>,
     input: services::payroll::DeductionInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["payroll.create", "payroll.update", "system.manage"],
-    )?;
+    ).await?;
     services::payroll::deduction_save(&conn, uid, id.map(|v| v as i64), &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn payroll_deduction_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn payroll_deduction_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["payroll.delete", "system.manage"])?;
+    let (uid, _) = require(&state, &["payroll.delete", "system.manage"]).await?;
     services::payroll::deduction_delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn vacancy_list(
-    state: tauri::State<AppState>,
+async fn vacancy_list(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::recruitment::Vacancy>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["recruitment.view", "system.manage"])?;
+    require(&state, &["recruitment.view", "system.manage"]).await?;
     services::recruitment::vacancy_list(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn vacancy_get(
-    state: tauri::State<AppState>,
+async fn vacancy_get(
+    state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::recruitment::Vacancy>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["recruitment.view", "system.manage"])?;
+    require(&state, &["recruitment.view", "system.manage"]).await?;
     services::recruitment::vacancy_get(&conn, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn vacancy_save(
-    state: tauri::State<AppState>,
+async fn vacancy_save(
+    state: tauri::State<'_, AppState>,
     id: Option<i32>,
     input: services::recruitment::VacancyInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["recruitment.create", "recruitment.update", "system.manage"],
-    )?;
+    ).await?;
     services::recruitment::vacancy_save(&conn, uid, id.map(|v| v as i64), &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn vacancy_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn vacancy_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["recruitment.delete", "system.manage"])?;
+    let (uid, _) = require(&state, &["recruitment.delete", "system.manage"]).await?;
     services::recruitment::vacancy_delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn candidates_by_vacancy(
-    state: tauri::State<AppState>,
+async fn candidates_by_vacancy(
+    state: tauri::State<'_, AppState>,
     vacancy_id: i32,
 ) -> Result<Vec<services::recruitment::CandidateRow>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["recruitment.view", "system.manage"])?;
+    require(&state, &["recruitment.view", "system.manage"]).await?;
     services::recruitment::candidates_by_vacancy(&conn, vacancy_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn candidate_detail(
-    state: tauri::State<AppState>,
+async fn candidate_detail(
+    state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::recruitment::CandidateDetail>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["recruitment.view", "system.manage"])?;
+    require(&state, &["recruitment.view", "system.manage"]).await?;
     services::recruitment::candidate_detail(&conn, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn candidate_create(
-    state: tauri::State<AppState>,
+async fn candidate_create(
+    state: tauri::State<'_, AppState>,
     vacancy_id: i32,
     input: services::recruitment::CandidateInput,
     cv: Option<services::employees::FileUpload>,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["recruitment.create", "system.manage"])?;
+    let (uid, _) = require(&state, &["recruitment.create", "system.manage"]).await?;
     let dir = files_dir(&state);
     services::recruitment::candidate_create(
         &conn,
@@ -1758,186 +1717,184 @@ fn candidate_create(
 
 #[tauri::command]
 #[specta::specta]
-fn candidate_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn candidate_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["recruitment.delete", "system.manage"])?;
+    let (uid, _) = require(&state, &["recruitment.delete", "system.manage"]).await?;
     services::recruitment::candidate_delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn candidate_stage(
-    state: tauri::State<AppState>,
+async fn candidate_stage(
+    state: tauri::State<'_, AppState>,
     id: i32,
     stage: String,
     notes: Option<String>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["recruitment.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["recruitment.update", "system.manage"]).await?;
     services::recruitment::update_stage(&conn, uid, id as i64, &stage, notes.as_deref())
 }
 
 #[tauri::command]
 #[specta::specta]
-fn interview_add(
-    state: tauri::State<AppState>,
+async fn interview_add(
+    state: tauri::State<'_, AppState>,
     candidate_id: i32,
     input: services::recruitment::InterviewInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["recruitment.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["recruitment.update", "system.manage"]).await?;
     services::recruitment::add_interview(&conn, uid, candidate_id as i64, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn interview_decide(
-    state: tauri::State<AppState>,
+async fn interview_decide(
+    state: tauri::State<'_, AppState>,
     id: i32,
     result: String,
     notes: Option<String>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["recruitment.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["recruitment.update", "system.manage"]).await?;
     services::recruitment::decide_interview(&conn, uid, id as i64, &result, notes.as_deref())
 }
 
 #[tauri::command]
 #[specta::specta]
-fn assessment_add(
-    state: tauri::State<AppState>,
+async fn assessment_add(
+    state: tauri::State<'_, AppState>,
     candidate_id: i32,
     input: services::recruitment::AssessmentInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["recruitment.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["recruitment.update", "system.manage"]).await?;
     services::recruitment::add_assessment(&conn, uid, candidate_id as i64, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn candidate_hire(
-    state: tauri::State<AppState>,
+async fn candidate_hire(
+    state: tauri::State<'_, AppState>,
     id: i32,
     join_date: Option<String>,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["recruitment.update", "system.manage"])?;
+    let (uid, _) = require(&state, &["recruitment.update", "system.manage"]).await?;
     let dir = files_dir(&state);
     services::recruitment::hire(&conn, &dir, uid, id as i64, join_date.as_deref())
 }
 
 #[tauri::command]
 #[specta::specta]
-fn candidate_cv(
-    state: tauri::State<AppState>,
+async fn candidate_cv(
+    state: tauri::State<'_, AppState>,
     candidate_id: i32,
     id: i32,
 ) -> Result<services::employees::DocumentBytes, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["recruitment.view", "system.manage"])?;
+    require(&state, &["recruitment.view", "system.manage"]).await?;
     let dir = files_dir(&state);
     services::recruitment::candidate_document_bytes(&conn, &dir, candidate_id as i64, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn onboarding_list(
-    state: tauri::State<AppState>,
+async fn onboarding_list(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::onboarding::Onboarding>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["onboarding.view", "system.manage"])?;
+    require(&state, &["onboarding.view", "system.manage"]).await?;
     services::onboarding::list(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn onboarding_get(
-    state: tauri::State<AppState>,
+async fn onboarding_get(
+    state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::onboarding::Onboarding>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["onboarding.view", "system.manage"])?;
+    require(&state, &["onboarding.view", "system.manage"]).await?;
     services::onboarding::find(&conn, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn onboarding_mine(
-    state: tauri::State<AppState>,
+async fn onboarding_mine(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Option<services::onboarding::Onboarding>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::onboarding::for_employee(&conn, my_employee(&conn, uid)?)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn onboarding_toggle(
-    state: tauri::State<AppState>,
+async fn onboarding_toggle(
+    state: tauri::State<'_, AppState>,
     task_id: i32,
     completed: bool,
 ) -> Result<(i32, String), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["onboarding.create", "onboarding.update", "system.manage"],
-    )?;
+    ).await?;
     services::onboarding::toggle_task(&conn, uid, task_id as i64, completed)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn offboarding_list(
-    state: tauri::State<AppState>,
+async fn offboarding_list(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::offboarding::OffboardingRow>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["offboarding.view", "system.manage"])?;
+    require(&state, &["offboarding.view", "system.manage"]).await?;
     services::offboarding::list(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn offboarding_my(
-    state: tauri::State<AppState>,
+async fn offboarding_my(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::offboarding::OffboardingRow>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::offboarding::my_requests(&conn, my_employee(&conn, uid)?)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn offboarding_get(
-    state: tauri::State<AppState>,
+async fn offboarding_get(
+    state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::offboarding::OffboardingDetail>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["offboarding.view", "system.manage"])?;
+    require(&state, &["offboarding.view", "system.manage"]).await?;
     services::offboarding::find(&conn, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn offboarding_create(
-    state: tauri::State<AppState>,
+async fn offboarding_create(
+    state: tauri::State<'_, AppState>,
     input: services::offboarding::OffboardingCreate,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::offboarding::create(&conn, uid, my_employee(&conn, uid)?, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn offboarding_decide(
-    state: tauri::State<AppState>,
+async fn offboarding_decide(
+    state: tauri::State<'_, AppState>,
     id: i32,
     action: String,
 ) -> Result<String, String> {
     let conn = pooled(&state)?;
-    let (uid, user) = current_actor(&state, &conn)?;
+    let (uid, user) = current_actor(&state).await?;
     let actor_emp = my_employee(&conn, uid).ok();
     let privileged = privileged(&user, "offboarding.approve");
     services::offboarding::decide(&conn, uid, actor_emp, privileged, id as i64, &action, None)
@@ -1945,157 +1902,147 @@ fn offboarding_decide(
 
 #[tauri::command]
 #[specta::specta]
-fn offboarding_exit_save(
-    state: tauri::State<AppState>,
+async fn offboarding_exit_save(
+    state: tauri::State<'_, AppState>,
     id: i32,
     input: services::offboarding::ExitInterviewInput,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["offboarding.create", "offboarding.update", "system.manage"],
-    )?;
+    ).await?;
     services::offboarding::save_exit_interview(&conn, uid, id as i64, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn offboarding_clearance(
-    state: tauri::State<AppState>,
+async fn offboarding_clearance(
+    state: tauri::State<'_, AppState>,
     item_id: i32,
     cleared: bool,
     notes: Option<String>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["offboarding.create", "offboarding.update", "system.manage"],
-    )?;
+    ).await?;
     services::offboarding::toggle_clearance(&conn, uid, item_id as i64, cleared, notes.as_deref())
 }
 
 #[tauri::command]
 #[specta::specta]
-fn performance_periods(
-    state: tauri::State<AppState>,
+async fn performance_periods(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::performance::PerfPeriod>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["performance.view", "system.manage"])?;
+    require(&state, &["performance.view", "system.manage"]).await?;
     services::performance::period_list(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn performance_period_save(
-    state: tauri::State<AppState>,
+async fn performance_period_save(
+    state: tauri::State<'_, AppState>,
     id: Option<i32>,
     input: services::performance::PerfPeriodInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["performance.create", "performance.update", "system.manage"],
-    )?;
+    ).await?;
     services::performance::period_save(&conn, uid, id.map(|v| v as i64), &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn performance_period_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn performance_period_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["performance.delete", "system.manage"])?;
+    let (uid, _) = require(&state, &["performance.delete", "system.manage"]).await?;
     services::performance::period_delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn performance_kpis(
-    state: tauri::State<AppState>,
+async fn performance_kpis(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::performance::Kpi>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["performance.view", "system.manage"])?;
+    require(&state, &["performance.view", "system.manage"]).await?;
     services::performance::kpi_list(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn performance_kpi_save(
-    state: tauri::State<AppState>,
+async fn performance_kpi_save(
+    state: tauri::State<'_, AppState>,
     id: Option<i32>,
     input: services::performance::KpiInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["performance.create", "performance.update", "system.manage"],
-    )?;
+    ).await?;
     services::performance::kpi_save(&conn, uid, id.map(|v| v as i64), &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn performance_kpi_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn performance_kpi_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["performance.delete", "system.manage"])?;
+    let (uid, _) = require(&state, &["performance.delete", "system.manage"]).await?;
     services::performance::kpi_delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn performance_reviews(
-    state: tauri::State<AppState>,
+async fn performance_reviews(
+    state: tauri::State<'_, AppState>,
     period_id: i32,
 ) -> Result<Vec<services::performance::ReviewRow>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["performance.view", "system.manage"])?;
+    require(&state, &["performance.view", "system.manage"]).await?;
     services::performance::reviews_for_period(&conn, period_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn performance_my_reviews(
-    state: tauri::State<AppState>,
+async fn performance_my_reviews(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::performance::ReviewRow>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::performance::my_reviews(&conn, my_employee(&conn, uid)?)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn performance_review_detail(
-    state: tauri::State<AppState>,
+async fn performance_review_detail(
+    state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::performance::ReviewDetail>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["performance.view", "system.manage"])?;
+    require(&state, &["performance.view", "system.manage"]).await?;
     services::performance::review_detail(&conn, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn performance_ensure_review(
-    state: tauri::State<AppState>,
+async fn performance_ensure_review(
+    state: tauri::State<'_, AppState>,
     period_id: i32,
     employee_id: i32,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    require(
-        &state,
-        &conn,
+    require(&state,
         &["performance.create", "performance.update", "system.manage"],
-    )?;
+    ).await?;
     services::performance::ensure_review(&conn, period_id as i64, employee_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn performance_assign_kpi(
-    state: tauri::State<AppState>,
+async fn performance_assign_kpi(
+    state: tauri::State<'_, AppState>,
     period_id: i32,
     employee_id: i32,
     kpi_id: i32,
@@ -2103,11 +2050,9 @@ fn performance_assign_kpi(
     weight: f64,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["performance.create", "performance.update", "system.manage"],
-    )?;
+    ).await?;
     services::performance::assign_kpi(
         &conn,
         uid,
@@ -2121,35 +2066,31 @@ fn performance_assign_kpi(
 
 #[tauri::command]
 #[specta::specta]
-fn performance_submit_actual(
-    state: tauri::State<AppState>,
+async fn performance_submit_actual(
+    state: tauri::State<'_, AppState>,
     employee_kpi_id: i32,
     actual: f64,
 ) -> Result<f64, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["performance.create", "performance.update", "system.manage"],
-    )?;
+    ).await?;
     services::performance::submit_actual(&conn, uid, employee_kpi_id as i64, actual)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn performance_submit_review(
-    state: tauri::State<AppState>,
+async fn performance_submit_review(
+    state: tauri::State<'_, AppState>,
     review_id: i32,
     role: String,
     score: f64,
     comments: Option<String>,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["performance.create", "performance.review", "system.manage"],
-    )?;
+    ).await?;
     services::performance::submit_review(
         &conn,
         uid,
@@ -2162,132 +2103,122 @@ fn performance_submit_review(
 
 #[tauri::command]
 #[specta::specta]
-fn training_list(
-    state: tauri::State<AppState>,
+async fn training_list(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::training::Training>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["training.view", "system.manage"])?;
+    require(&state, &["training.view", "system.manage"]).await?;
     services::training::list(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn training_participants(
-    state: tauri::State<AppState>,
+async fn training_participants(
+    state: tauri::State<'_, AppState>,
     training_id: i32,
 ) -> Result<Vec<services::training::Participant>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["training.view", "system.manage"])?;
+    require(&state, &["training.view", "system.manage"]).await?;
     services::training::detail_participants(&conn, training_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn training_save(
-    state: tauri::State<AppState>,
+async fn training_save(
+    state: tauri::State<'_, AppState>,
     id: Option<i32>,
     input: services::training::TrainingInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["training.create", "training.update", "system.manage"],
-    )?;
+    ).await?;
     services::training::save(&conn, uid, id.map(|v| v as i64), &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn training_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn training_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["training.delete", "system.manage"])?;
+    let (uid, _) = require(&state, &["training.delete", "system.manage"]).await?;
     services::training::delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn training_add_participant(
-    state: tauri::State<AppState>,
+async fn training_add_participant(
+    state: tauri::State<'_, AppState>,
     training_id: i32,
     employee_id: i32,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["training.create", "training.update", "system.manage"],
-    )?;
+    ).await?;
     services::training::add_participant(&conn, uid, training_id as i64, employee_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn training_participant_status(
-    state: tauri::State<AppState>,
+async fn training_participant_status(
+    state: tauri::State<'_, AppState>,
     participant_id: i32,
     status: String,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["training.create", "training.update", "system.manage"],
-    )?;
+    ).await?;
     services::training::set_participant_status(&conn, uid, participant_id as i64, &status)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn training_certifications(
-    state: tauri::State<AppState>,
+async fn training_certifications(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::training::Certification>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["training.view", "system.manage"])?;
+    require(&state, &["training.view", "system.manage"]).await?;
     services::training::certifications(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn training_certification_add(
-    state: tauri::State<AppState>,
+async fn training_certification_add(
+    state: tauri::State<'_, AppState>,
     input: services::training::CertificationInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["training.create", "training.update", "system.manage"],
-    )?;
+    ).await?;
     services::training::add_certification(&conn, uid, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn training_materials(
-    state: tauri::State<AppState>,
+async fn training_materials(
+    state: tauri::State<'_, AppState>,
     training_id: i32,
 ) -> Result<Vec<services::training::Material>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["training.view", "system.manage"])?;
+    require(&state, &["training.view", "system.manage"]).await?;
     services::training::material_list(&conn, training_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn training_material_add(
-    state: tauri::State<AppState>,
+async fn training_material_add(
+    state: tauri::State<'_, AppState>,
     training_id: i32,
     title: String,
     kind: String,
     url: Option<String>,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["training.create", "training.update", "system.manage"],
-    )?;
+    ).await?;
     services::training::material_add(
         &conn,
         uid,
@@ -2300,339 +2231,323 @@ fn training_material_add(
 
 #[tauri::command]
 #[specta::specta]
-fn training_material_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn training_material_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["training.delete", "system.manage"])?;
+    let (uid, _) = require(&state, &["training.delete", "system.manage"]).await?;
     services::training::material_delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn training_quiz_score(
-    state: tauri::State<AppState>,
+async fn training_quiz_score(
+    state: tauri::State<'_, AppState>,
     participant_id: i32,
     score: f64,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["training.create", "training.update", "system.manage"],
-    )?;
+    ).await?;
     services::training::set_quiz_score(&conn, uid, participant_id as i64, score)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn training_skill_matrix(
-    state: tauri::State<AppState>,
+async fn training_skill_matrix(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::training::SkillCell>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["training.view", "system.manage"])?;
+    require(&state, &["training.view", "system.manage"]).await?;
     services::training::skill_matrix(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn training_skill_set(
-    state: tauri::State<AppState>,
+async fn training_skill_set(
+    state: tauri::State<'_, AppState>,
     employee_id: i32,
     skill_name: String,
     level: i32,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["training.create", "training.update", "system.manage"],
-    )?;
+    ).await?;
     services::training::set_skill(&conn, uid, employee_id as i64, &skill_name, level)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn asset_categories(
-    state: tauri::State<AppState>,
+async fn asset_categories(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::assets::Category>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["asset.view", "system.manage"])?;
+    require(&state, &["asset.view", "system.manage"]).await?;
     services::assets::category_list(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn asset_category_save(
-    state: tauri::State<AppState>,
+async fn asset_category_save(
+    state: tauri::State<'_, AppState>,
     id: Option<i32>,
     code: String,
     name: String,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["asset.create", "asset.update", "system.manage"],
-    )?;
+    ).await?;
     services::assets::category_save(&conn, uid, id.map(|v| v as i64), &code, &name)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn asset_category_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn asset_category_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["asset.delete", "system.manage"])?;
+    let (uid, _) = require(&state, &["asset.delete", "system.manage"]).await?;
     services::assets::category_delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn assets_list(
-    state: tauri::State<AppState>,
+async fn assets_list(
+    state: tauri::State<'_, AppState>,
     search: String,
 ) -> Result<Vec<services::assets::Asset>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["asset.view", "system.manage"])?;
+    require(&state, &["asset.view", "system.manage"]).await?;
     services::assets::asset_list(&conn, &search)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn asset_detail(
-    state: tauri::State<AppState>,
+async fn asset_detail(
+    state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::assets::AssetDetail>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["asset.view", "system.manage"])?;
+    require(&state, &["asset.view", "system.manage"]).await?;
     services::assets::asset_detail(&conn, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn asset_save(
-    state: tauri::State<AppState>,
+async fn asset_save(
+    state: tauri::State<'_, AppState>,
     id: Option<i32>,
     input: services::assets::AssetInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["asset.create", "asset.update", "system.manage"],
-    )?;
+    ).await?;
     services::assets::asset_save(&conn, uid, id.map(|v| v as i64), &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn asset_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn asset_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["asset.delete", "system.manage"])?;
+    let (uid, _) = require(&state, &["asset.delete", "system.manage"]).await?;
     services::assets::asset_delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn asset_my(state: tauri::State<AppState>) -> Result<Vec<services::assets::MyAsset>, String> {
+async fn asset_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::assets::MyAsset>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::assets::my_assets(&conn, my_employee(&conn, uid)?)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn asset_assign(
-    state: tauri::State<AppState>,
+async fn asset_assign(
+    state: tauri::State<'_, AppState>,
     asset_id: i32,
     input: services::assets::AssignInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["asset.create", "asset.update", "system.manage"],
-    )?;
+    ).await?;
     services::assets::assign(&conn, uid, asset_id as i64, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn asset_return(
-    state: tauri::State<AppState>,
+async fn asset_return(
+    state: tauri::State<'_, AppState>,
     assignment_id: i32,
     input: services::assets::ReturnInput,
 ) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["asset.create", "asset.update", "system.manage"],
-    )?;
+    ).await?;
     services::assets::return_asset(&conn, uid, uid, assignment_id as i64, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn asset_maintenance_add(
-    state: tauri::State<AppState>,
+async fn asset_maintenance_add(
+    state: tauri::State<'_, AppState>,
     asset_id: i32,
     input: services::assets::MaintenanceInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["asset.create", "asset.update", "system.manage"],
-    )?;
+    ).await?;
     services::assets::add_maintenance(&conn, uid, asset_id as i64, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn asset_mark_available(state: tauri::State<AppState>, asset_id: i32) -> Result<(), String> {
+async fn asset_mark_available(state: tauri::State<'_, AppState>, asset_id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(
-        &state,
-        &conn,
+    let (uid, _) = require(&state,
         &["asset.create", "asset.update", "system.manage"],
-    )?;
+    ).await?;
     services::assets::mark_available(&conn, uid, asset_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn trip_my(state: tauri::State<AppState>) -> Result<Vec<services::travel::Trip>, String> {
+async fn trip_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::travel::Trip>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::travel::my_trips(&conn, my_employee(&conn, uid)?)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn trip_all(state: tauri::State<AppState>) -> Result<Vec<services::travel::Trip>, String> {
+async fn trip_all(state: tauri::State<'_, AppState>) -> Result<Vec<services::travel::Trip>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["business_trip.view", "system.manage"])?;
+    require(&state, &["business_trip.view", "system.manage"]).await?;
     services::travel::all_trips(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn trip_pending(state: tauri::State<AppState>) -> Result<Vec<services::travel::Trip>, String> {
+async fn trip_pending(state: tauri::State<'_, AppState>) -> Result<Vec<services::travel::Trip>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::travel::pending_for(&conn, uid)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn trip_expenses(
-    state: tauri::State<AppState>,
+async fn trip_expenses(
+    state: tauri::State<'_, AppState>,
     trip_id: i32,
 ) -> Result<Vec<services::travel::TripExpense>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["business_trip.view", "system.manage"])?;
+    require(&state, &["business_trip.view", "system.manage"]).await?;
     services::travel::trip_expenses(&conn, trip_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn trip_create(
-    state: tauri::State<AppState>,
+async fn trip_create(
+    state: tauri::State<'_, AppState>,
     input: services::travel::TripInput,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::travel::trip_create(&conn, uid, my_employee(&conn, uid)?, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn trip_decide(state: tauri::State<AppState>, id: i32, decision: String) -> Result<(), String> {
+async fn trip_decide(state: tauri::State<'_, AppState>, id: i32, decision: String) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::travel::trip_decide(&conn, uid, id as i64, &decision)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn trip_expense_add(
-    state: tauri::State<AppState>,
+async fn trip_expense_add(
+    state: tauri::State<'_, AppState>,
     trip_id: i32,
     input: services::travel::TripExpenseInput,
     receipt: Option<services::employees::FileUpload>,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     let dir = files_dir(&state);
     services::travel::trip_add_expense(&conn, &dir, uid, trip_id as i64, &input, receipt.as_ref())
 }
 
 #[tauri::command]
 #[specta::specta]
-fn trip_settle(state: tauri::State<AppState>, trip_id: i32) -> Result<(), String> {
+async fn trip_settle(state: tauri::State<'_, AppState>, trip_id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["business_trip.approve", "system.manage"])?;
+    let (uid, _) = require(&state, &["business_trip.approve", "system.manage"]).await?;
     services::travel::trip_settle(&conn, uid, trip_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn reimburse_categories(
-    state: tauri::State<AppState>,
+async fn reimburse_categories(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::travel::ReimburseCategory>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["reimbursement.view", "system.manage"])?;
+    require(&state, &["reimbursement.view", "system.manage"]).await?;
     services::travel::category_list(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn reimburse_category_save(
-    state: tauri::State<AppState>,
+async fn reimburse_category_save(
+    state: tauri::State<'_, AppState>,
     id: Option<i32>,
     code: String,
     name: String,
     max_amount: Option<f64>,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    let (uid, _) = require(&state, &["system.manage"]).await?;
     services::travel::category_save(&conn, uid, id.map(|v| v as i64), &code, &name, max_amount)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn reimburse_category_delete(state: tauri::State<AppState>, id: i32) -> Result<(), String> {
+async fn reimburse_category_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["system.manage"])?;
+    let (uid, _) = require(&state, &["system.manage"]).await?;
     services::travel::category_delete(&conn, uid, id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn reimburse_my(state: tauri::State<AppState>) -> Result<Vec<services::travel::Reimburse>, String> {
+async fn reimburse_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::travel::Reimburse>, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::travel::my_reimburse(&conn, my_employee(&conn, uid)?)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn reimburse_all(
-    state: tauri::State<AppState>,
+async fn reimburse_all(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::travel::Reimburse>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["reimbursement.view", "system.manage"])?;
+    require(&state, &["reimbursement.view", "system.manage"]).await?;
     services::travel::all_reimburse(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn reimburse_create(
-    state: tauri::State<AppState>,
+async fn reimburse_create(
+    state: tauri::State<'_, AppState>,
     input: services::travel::ReimburseInput,
     receipt: Option<services::employees::FileUpload>,
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     let dir = files_dir(&state);
     services::travel::reimburse_create(
         &conn,
@@ -2646,13 +2561,13 @@ fn reimburse_create(
 
 #[tauri::command]
 #[specta::specta]
-fn reimburse_decide(
-    state: tauri::State<AppState>,
+async fn reimburse_decide(
+    state: tauri::State<'_, AppState>,
     id: i32,
     action: String,
 ) -> Result<String, String> {
     let conn = pooled(&state)?;
-    let (uid, user) = current_actor(&state, &conn)?;
+    let (uid, user) = current_actor(&state).await?;
     let actor_emp = my_employee(&conn, uid).ok();
     let privileged = privileged(&user, "reimbursement.approve");
     services::travel::reimburse_decide(&conn, uid, actor_emp, privileged, id as i64, &action)
@@ -2662,21 +2577,19 @@ fn reimburse_decide(
 
 #[tauri::command]
 #[specta::specta]
-fn dashboard_hr(state: tauri::State<AppState>) -> Result<services::dashboard::HrDashboard, String> {
+async fn dashboard_hr(state: tauri::State<'_, AppState>) -> Result<services::dashboard::HrDashboard, String> {
     let conn = pooled(&state)?;
-    require(
-        &state,
-        &conn,
+    require(&state,
         &["employee.view", "payroll.view", "system.manage"],
-    )?;
+    ).await?;
     services::dashboard::hr(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn dashboard_me(state: tauri::State<AppState>) -> Result<services::dashboard::MySummary, String> {
+async fn dashboard_me(state: tauri::State<'_, AppState>) -> Result<services::dashboard::MySummary, String> {
     let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::dashboard::mine(&conn, uid)
 }
 
@@ -2687,8 +2600,7 @@ fn dashboard_me(state: tauri::State<AppState>) -> Result<services::dashboard::My
 async fn notification_recent(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::notifications::Notification>, String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::notifications::recent(&state.sea, uid).await
 }
 
@@ -2697,32 +2609,28 @@ async fn notification_recent(
 async fn notification_all(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::notifications::Notification>, String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::notifications::all(&state.sea, uid).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn notification_unread(state: tauri::State<'_, AppState>) -> Result<i32, String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::notifications::unread_count(&state.sea, uid).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn notification_mark_read(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::notifications::mark_read(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn notification_mark_all(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::notifications::mark_all(&state.sea, uid).await
 }
 
@@ -2733,8 +2641,7 @@ async fn notification_mark_all(state: tauri::State<'_, AppState>) -> Result<(), 
 async fn announcement_visible(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::announcements::Announcement>, String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::announcements::visible(&state.sea, uid).await
 }
 
@@ -2743,8 +2650,7 @@ async fn announcement_visible(
 async fn announcement_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::announcements::Announcement>, String> {
-    let conn = pooled(&state)?;
-    require(&state, &conn, &["announcement.view", "system.manage"])?;
+    require(&state, &["announcement.view", "system.manage"]).await?;
     services::announcements::all(&state.sea).await
 }
 
@@ -2754,8 +2660,7 @@ async fn announcement_get(
     state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<services::announcements::Announcement, String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = current_actor(&state, &conn)?;
+    let (uid, _) = current_actor(&state).await?;
     services::announcements::get(&state.sea, uid, id as i64).await
 }
 
@@ -2765,8 +2670,7 @@ async fn announcement_create(
     state: tauri::State<'_, AppState>,
     input: services::announcements::AnnouncementInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["announcement.create", "system.manage"])?;
+    let (uid, _) = require(&state, &["announcement.create", "system.manage"]).await?;
     let id = services::announcements::create(&state.sea, uid, &input).await?;
     services::audit::log_sea(
         &state.sea,
@@ -2785,8 +2689,7 @@ async fn announcement_create(
 #[tauri::command]
 #[specta::specta]
 async fn announcement_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
-    let (uid, _) = require(&state, &conn, &["announcement.delete", "system.manage"])?;
+    let (uid, _) = require(&state, &["announcement.delete", "system.manage"]).await?;
     services::announcements::delete(&state.sea, id as i64).await?;
     services::audit::log_sea(
         &state.sea,
@@ -2806,14 +2709,14 @@ async fn announcement_delete(state: tauri::State<'_, AppState>, id: i32) -> Resu
 
 #[tauri::command]
 #[specta::specta]
-fn report_employees(
-    state: tauri::State<AppState>,
+async fn report_employees(
+    state: tauri::State<'_, AppState>,
     search: Option<String>,
     department_id: Option<i32>,
     status: Option<String>,
 ) -> Result<services::reports::ReportTable, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["report.view", "system.manage"])?;
+    require(&state, &["report.view", "system.manage"]).await?;
     services::reports::employees(
         &conn,
         search.as_deref(),
@@ -2824,112 +2727,112 @@ fn report_employees(
 
 #[tauri::command]
 #[specta::specta]
-fn report_headcount(
-    state: tauri::State<AppState>,
+async fn report_headcount(
+    state: tauri::State<'_, AppState>,
 ) -> Result<services::reports::ReportTable, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["report.view", "system.manage"])?;
+    require(&state, &["report.view", "system.manage"]).await?;
     services::reports::headcount(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn report_attendance(
-    state: tauri::State<AppState>,
+async fn report_attendance(
+    state: tauri::State<'_, AppState>,
     month: String,
     department_id: Option<i32>,
 ) -> Result<services::reports::ReportTable, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["report.view", "system.manage"])?;
+    require(&state, &["report.view", "system.manage"]).await?;
     services::reports::attendance(&conn, &month, department_id.map(|v| v as i64))
 }
 
 #[tauri::command]
 #[specta::specta]
-fn report_leave(
-    state: tauri::State<AppState>,
+async fn report_leave(
+    state: tauri::State<'_, AppState>,
     year: i32,
 ) -> Result<services::reports::ReportTable, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["report.view", "system.manage"])?;
+    require(&state, &["report.view", "system.manage"]).await?;
     services::reports::leave(&conn, year)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn report_payroll(
-    state: tauri::State<AppState>,
+async fn report_payroll(
+    state: tauri::State<'_, AppState>,
     period_id: i32,
 ) -> Result<services::reports::ReportTable, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["report.view", "system.manage"])?;
+    require(&state, &["report.view", "system.manage"]).await?;
     services::reports::payroll(&conn, period_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn report_pph21_annual(
-    state: tauri::State<AppState>,
+async fn report_pph21_annual(
+    state: tauri::State<'_, AppState>,
     year: i32,
 ) -> Result<services::reports::ReportTable, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["report.view", "system.manage"])?;
+    require(&state, &["report.view", "system.manage"]).await?;
     services::reports::pph21_annual(&conn, year)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn report_recruitment(
-    state: tauri::State<AppState>,
+async fn report_recruitment(
+    state: tauri::State<'_, AppState>,
 ) -> Result<services::reports::ReportTable, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["report.view", "system.manage"])?;
+    require(&state, &["report.view", "system.manage"]).await?;
     services::reports::recruitment(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn report_performance(
-    state: tauri::State<AppState>,
+async fn report_performance(
+    state: tauri::State<'_, AppState>,
     period_id: i32,
 ) -> Result<services::reports::ReportTable, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["report.view", "system.manage"])?;
+    require(&state, &["report.view", "system.manage"]).await?;
     services::reports::performance(&conn, period_id as i64)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn report_contracts(
-    state: tauri::State<AppState>,
+async fn report_contracts(
+    state: tauri::State<'_, AppState>,
     before: String,
 ) -> Result<services::reports::ReportTable, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["report.view", "system.manage"])?;
+    require(&state, &["report.view", "system.manage"]).await?;
     services::reports::contracts(&conn, &before)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn report_analytics(
-    state: tauri::State<AppState>,
+async fn report_analytics(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::reports::DeptStat>, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["report.view", "system.manage"])?;
+    require(&state, &["report.view", "system.manage"]).await?;
     services::reports::analytics(&conn)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn report_export(
-    state: tauri::State<AppState>,
+async fn report_export(
+    state: tauri::State<'_, AppState>,
     kind: String,
     format: String,
     arg1: Option<String>,
     arg2: Option<i32>,
 ) -> Result<services::reports::ExportFile, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["report.export", "system.manage"])?;
+    require(&state, &["report.export", "system.manage"]).await?;
     services::reports::export(
         &conn,
         &kind,
@@ -2975,25 +2878,24 @@ fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
 
 #[tauri::command]
 #[specta::specta]
-fn backup_now(state: tauri::State<AppState>) -> Result<String, String> {
+async fn backup_now(state: tauri::State<'_, AppState>) -> Result<String, String> {
     let conn = pooled(&state)?;
-    require(&state, &conn, &["system.manage"])?;
+    require(&state, &["system.manage"]).await?;
     services::backup::backup_now(&conn, &services::backup::backup_dir(&state.data_dir))
 }
 
 #[tauri::command]
 #[specta::specta]
-fn backup_list(state: tauri::State<AppState>) -> Result<Vec<services::backup::BackupFile>, String> {
-    let conn = pooled(&state)?;
-    require(&state, &conn, &["system.manage"])?;
+async fn backup_list(state: tauri::State<'_, AppState>) -> Result<Vec<services::backup::BackupFile>, String> {
+    require(&state, &["system.manage"]).await?;
     services::backup::backup_list(&services::backup::backup_dir(&state.data_dir))
 }
 
 #[tauri::command]
 #[specta::specta]
-fn backup_restore(state: tauri::State<AppState>, name: String) -> Result<(), String> {
+async fn backup_restore(state: tauri::State<'_, AppState>, name: String) -> Result<(), String> {
     let mut conn = pooled(&state)?;
-    require(&state, &conn, &["system.manage"])?;
+    require(&state, &["system.manage"]).await?;
     services::backup::backup_restore(
         &mut conn,
         &services::backup::backup_dir(&state.data_dir),

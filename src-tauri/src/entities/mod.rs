@@ -37,6 +37,18 @@ pub mod user {
         pub email: String,
         pub password: String,
         pub status: String,
+        pub failed_login_attempts: i32,
+        pub locked_until: Option<String>,
+        pub remember_token: Option<String>,
+        pub password_reset_token: Option<String>,
+        pub password_reset_expires_at: Option<String>,
+        pub must_change_password: i32,
+        pub mfa_secret: Option<String>,
+        pub mfa_enabled: i32,
+        pub last_login_at: Option<String>,
+        pub last_login_ip: Option<String>,
+        pub created_at: Option<String>,
+        pub updated_at: Option<String>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -285,6 +297,46 @@ pub mod role {
         #[sea_orm(primary_key)]
         pub id: i32,
         pub name: String,
+        pub slug: String,
+        pub description: Option<String>,
+        pub is_system: i32,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod permission {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "permissions")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        pub name: String,
+        pub slug: String,
+        pub module: String,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod role_permission {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "role_permissions")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        pub role_id: i32,
+        pub permission_id: i32,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -355,6 +407,28 @@ pub mod approval_step {
         pub user_id: Option<i32>,
         pub created_at: Option<String>,
         pub updated_at: Option<String>,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod login_activity {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "login_activities")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        pub user_id: Option<i32>,
+        pub username_attempt: Option<String>,
+        pub ip_address: Option<String>,
+        pub user_agent: Option<String>,
+        pub status: String,
+        pub created_at: Option<String>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

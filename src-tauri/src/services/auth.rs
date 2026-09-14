@@ -1,11 +1,14 @@
-//! Autentikasi: login lockout, reset token, ganti password, sesi.
+//! Autentikasi: login lockout, reset token, ganti password, sesi, MFA.
 
 use chrono::Local;
 use rand::RngCore;
-use rusqlite::{params, Connection, OptionalExtension};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set,
+};
 use sha2::{Digest, Sha256};
 
-use super::audit;
+use crate::entities::{login_activity, permission, role, role_permission, user, user_role};
+use crate::services::audit;
 use crate::{to_dto_int, SessionUser};
 
 const MAX_ATTEMPTS: i64 = 5;
@@ -18,48 +21,45 @@ fn now_str() -> String {
     Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-struct UserRow {
-    id: i64,
-    username: String,
-    password_hash: String,
-    status: String,
-    failed_attempts: i64,
-    locked_until: Option<String>,
-    must_change_password: bool,
-    mfa_enabled: bool,
+async fn find_by_login(
+    db: &sea_orm::DatabaseConnection,
+    login: &str,
+) -> Result<Option<user::Model>, String> {
+    let by_name = user::Entity::find()
+        .filter(user::Column::Username.eq(login))
+        .one(db)
+        .await
+        .map_err(|e| format!("gagal mencari pengguna: {e}"))?;
+    if by_name.is_some() {
+        return Ok(by_name);
+    }
+    user::Entity::find()
+        .filter(user::Column::Email.eq(login))
+        .one(db)
+        .await
+        .map_err(|e| format!("gagal mencari pengguna: {e}"))
 }
 
-fn find_by_login(conn: &Connection, login: &str) -> Result<Option<UserRow>, String> {
-    conn.query_row(
-        "SELECT id, username, password, status, failed_login_attempts, locked_until, must_change_password, COALESCE(mfa_enabled, 0) FROM users WHERE username = ?1 OR email = ?1 LIMIT 1",
-        params![login],
-        |r| {
-            Ok(UserRow {
-                id: r.get(0)?,
-                username: r.get(1)?,
-                password_hash: r.get(2)?,
-                status: r.get(3)?,
-                failed_attempts: r.get(4)?,
-                locked_until: r.get(5)?,
-                must_change_password: r.get::<_, i64>(6)? != 0,
-                mfa_enabled: r.get::<_, i64>(7)? != 0,
-            })
-        },
-    )
-    .optional()
-    .map_err(|e| format!("gagal mencari pengguna: {e}"))
-}
-
-fn record_login_activity(
-    conn: &Connection,
+async fn record_login_activity(
+    db: &sea_orm::DatabaseConnection,
     user_id: Option<i64>,
     attempt: &str,
     status: &str,
 ) -> Result<(), String> {
-    conn.execute(
-        "INSERT INTO login_activities (user_id, username_attempt, ip_address, user_agent, status) VALUES (?1, ?2, 'desktop', 'peoplex', ?3)",
-        params![user_id, attempt, status],
-    )
+    login_activity::ActiveModel {
+        user_id: Set(user_id.map(|v| v as i32)),
+        username_attempt: Set(if attempt.is_empty() {
+            None
+        } else {
+            Some(attempt.to_string())
+        }),
+        ip_address: Set(Some("desktop".to_string())),
+        user_agent: Set(Some("peoplex".to_string())),
+        status: Set(status.to_string()),
+        ..Default::default()
+    }
+    .insert(db)
+    .await
     .map_err(|e| format!("gagal mencatat aktivitas login: {e}"))?;
     Ok(())
 }
@@ -73,61 +73,66 @@ pub struct LoginOk {
 }
 
 /// Muat profil sesi (peran + izin). None bila user tak aktif/ tak ada.
-pub fn load_session_user(conn: &Connection, user_id: i64) -> Result<Option<SessionUser>, String> {
-    let row: Option<(String, String)> = conn
-        .query_row(
-            "SELECT username, status FROM users WHERE id = ?1",
-            params![user_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
+pub async fn load_session_user(
+    db: &sea_orm::DatabaseConnection,
+    user_id: i64,
+) -> Result<Option<SessionUser>, String> {
+    let u = user::Entity::find_by_id(user_id as i32)
+        .one(db)
+        .await
         .map_err(|e| format!("gagal memuat sesi: {e}"))?;
-    let Some((username, status)) = row else {
+    let Some(u) = u else {
         return Ok(None);
     };
-    if status != "active" {
+    if u.status != "active" {
         return Ok(None);
     }
-    let mut stmt = conn
-        .prepare("SELECT slug FROM roles r JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = ?1")
+    let urs = user_role::Entity::find()
+        .filter(user_role::Column::UserId.eq(user_id as i32))
+        .all(db)
+        .await
         .map_err(|e| format!("gagal memuat peran: {e}"))?;
-    let roles: Vec<String> = stmt
-        .query_map(params![user_id], |r| r.get(0))
-        .map_err(|e| format!("gagal memuat peran: {e}"))?
-        .collect::<Result<_, _>>()
-        .map_err(|e| format!("gagal memuat peran: {e}"))?;
-    let mut stmt = conn
-        .prepare("SELECT DISTINCT p.slug FROM permissions p JOIN role_permissions rp ON rp.permission_id = p.id JOIN user_roles ur ON ur.role_id = rp.role_id WHERE ur.user_id = ?1")
-        .map_err(|e| format!("gagal memuat izin: {e}"))?;
-    let permissions: Vec<String> = stmt
-        .query_map(params![user_id], |r| r.get(0))
-        .map_err(|e| format!("gagal memuat izin: {e}"))?
-        .collect::<Result<_, _>>()
-        .map_err(|e| format!("gagal memuat izin: {e}"))?;
+    let mut roles = Vec::new();
+    let mut perm_ids = Vec::new();
+    for ur in &urs {
+        if let Some(r) = role::Entity::find_by_id(ur.role_id)
+            .one(db)
+            .await
+            .map_err(|e| format!("gagal memuat peran: {e}"))?
+        {
+            roles.push(r.slug);
+        }
+        let rps = role_permission::Entity::find()
+            .filter(role_permission::Column::RoleId.eq(ur.role_id))
+            .all(db)
+            .await
+            .map_err(|e| format!("gagal memuat izin: {e}"))?;
+        perm_ids.extend(rps.into_iter().map(|r| r.permission_id));
+    }
+    let mut permissions = Vec::new();
+    for pid in perm_ids {
+        if let Some(p) = permission::Entity::find_by_id(pid)
+            .one(db)
+            .await
+            .map_err(|e| format!("gagal memuat izin: {e}"))?
+        {
+            if !permissions.contains(&p.slug) {
+                permissions.push(p.slug);
+            }
+        }
+    }
     Ok(Some(SessionUser {
         id: to_dto_int(user_id, "user.id")?,
-        username,
-        must_change_password: must_change_flag(conn, user_id)?,
+        username: u.username,
+        must_change_password: u.must_change_password != 0,
         is_super_admin: roles.iter().any(|r| r == "super-administrator"),
         roles,
         permissions,
     }))
 }
 
-fn must_change_flag(conn: &Connection, user_id: i64) -> Result<bool, String> {
-    let v: i64 = conn
-        .query_row(
-            "SELECT must_change_password FROM users WHERE id = ?1",
-            params![user_id],
-            |r| r.get(0),
-        )
-        .map_err(|e| format!("gagal memuat flag password: {e}"))?;
-    Ok(v != 0)
-}
-
 fn locked_minutes_remaining(locked_until: &str, now: &str) -> Option<i64> {
     if locked_until > now {
-        // format ISO terurut leksikal; hitung selisih via chrono
         let fmt = "%Y-%m-%d %H:%M:%S";
         let end = chrono::NaiveDateTime::parse_from_str(locked_until, fmt).ok()?;
         let cur = chrono::NaiveDateTime::parse_from_str(now, fmt).ok()?;
@@ -139,18 +144,22 @@ fn locked_minutes_remaining(locked_until: &str, now: &str) -> Option<i64> {
 }
 
 /// Coba login. Pesan gagal generik agar tak membocorkan akun mana yang ada.
-pub fn attempt_login(conn: &Connection, login: &str, password: &str) -> Result<LoginOk, String> {
+pub async fn attempt_login(
+    db: &sea_orm::DatabaseConnection,
+    login: &str,
+    password: &str,
+) -> Result<LoginOk, String> {
     let login = login.trim();
     if login.is_empty() || password.is_empty() {
         return Err("Username/email dan password wajib diisi.".to_string());
     }
-    let user = find_by_login(conn, login)?;
+    let user = find_by_login(db, login).await?;
     let now = now_str();
 
     if let Some(u) = &user {
         if let Some(locked) = u.locked_until.as_deref() {
             if let Some(mins) = locked_minutes_remaining(locked, &now) {
-                record_login_activity(conn, None, login, "failed")?;
+                record_login_activity(db, None, login, "failed").await?;
                 return Err(format!(
                     "Akun terkunci sementara. Coba lagi dalam {mins} menit."
                 ));
@@ -159,63 +168,64 @@ pub fn attempt_login(conn: &Connection, login: &str, password: &str) -> Result<L
     }
 
     let valid = match &user {
-        Some(u) if u.status == "active" => bcrypt::verify(password, &u.password_hash)
+        Some(u) if u.status == "active" => bcrypt::verify(password, &u.password)
             .map_err(|e| format!("gagal verifikasi password: {e}"))?,
         _ => false,
     };
     if !valid {
         if let Some(u) = &user {
-            let attempts = u.failed_attempts + 1;
+            let attempts = u.failed_login_attempts as i64 + 1;
+            let mut am = u.clone().into_active_model();
+            am.failed_login_attempts = Set(attempts as i32);
             if attempts >= MAX_ATTEMPTS {
                 let locked = (Local::now() + chrono::Duration::minutes(LOCKOUT_MINUTES))
                     .format("%Y-%m-%d %H:%M:%S")
                     .to_string();
-                conn.execute(
-                    "UPDATE users SET failed_login_attempts = ?1, locked_until = ?2 WHERE id = ?3",
-                    params![attempts, locked, u.id],
-                )
-                .map_err(|e| format!("gagal mencatat percobaan: {e}"))?;
-            } else {
-                conn.execute(
-                    "UPDATE users SET failed_login_attempts = ?1 WHERE id = ?2",
-                    params![attempts, u.id],
-                )
-                .map_err(|e| format!("gagal mencatat percobaan: {e}"))?;
+                am.locked_until = Set(Some(locked));
             }
+            am.update(db)
+                .await
+                .map_err(|e| format!("gagal mencatat percobaan: {e}"))?;
         }
-        record_login_activity(conn, user.as_ref().map(|u| u.id), login, "failed")?;
+        record_login_activity(db, user.as_ref().map(|u| u.id as i64), login, "failed").await?;
         return Err("Username/email atau password salah.".to_string());
     }
 
     let u = user.expect("user valid");
-    conn.execute(
-        "UPDATE users SET failed_login_attempts = 0, locked_until = NULL, last_login_at = ?1, last_login_ip = 'desktop' WHERE id = ?2",
-        params![now, u.id],
-    )
-    .map_err(|e| format!("gagal memperbarui login: {e}"))?;
-    record_login_activity(conn, Some(u.id), login, "success")?;
-    audit::log(
-        conn,
-        Some(u.id),
+    let mut am = u.clone().into_active_model();
+    am.failed_login_attempts = Set(0);
+    am.locked_until = Set(None);
+    am.last_login_at = Set(Some(now.clone()));
+    am.last_login_ip = Set(Some("desktop".to_string()));
+    am.update(db)
+        .await
+        .map_err(|e| format!("gagal memperbarui login: {e}"))?;
+    record_login_activity(db, Some(u.id as i64), login, "success").await?;
+    audit::log_sea(
+        db,
+        Some(u.id as i64),
         "LOGIN",
         "auth",
         Some(&u.id.to_string()),
         None,
         None,
-        Some(&format!("User {} logged in", u.username)),
-    )?;
-    let session = load_session_user(conn, u.id)?.expect("sesi user aktif");
+        None,
+    )
+    .await?;
+    let session = load_session_user(db, u.id as i64)
+        .await?
+        .ok_or("Sesi berakhir. Masuk kembali.".to_string())?;
     Ok(LoginOk {
-        must_change_password: u.must_change_password,
-        mfa_required: u.mfa_enabled,
         user: session,
+        must_change_password: u.must_change_password != 0,
+        mfa_required: u.mfa_enabled != 0,
     })
 }
 
 /// Catat logout + audit.
-pub fn logout(conn: &Connection, user_id: i64) -> Result<(), String> {
-    audit::log(
-        conn,
+pub async fn logout(db: &sea_orm::DatabaseConnection, user_id: i64) -> Result<(), String> {
+    audit::log_sea(
+        db,
         Some(user_id),
         "LOGOUT",
         "auth",
@@ -223,7 +233,8 @@ pub fn logout(conn: &Connection, user_id: i64) -> Result<(), String> {
         None,
         None,
         None,
-    )?;
+    )
+    .await?;
     Ok(())
 }
 
@@ -340,60 +351,66 @@ pub struct MfaSetup {
 }
 
 /// Mulai enroll: simpan secret baru (belum aktif) dan kembalikan untuk dipindai.
-pub fn mfa_setup(conn: &Connection, user_id: i64) -> Result<MfaSetup, String> {
-    let username: Option<String> = conn
-        .query_row(
-            "SELECT username FROM users WHERE id = ?1 AND status = 'active'",
-            params![user_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("gagal memuat akun: {e}"))?
-        .flatten();
-    let Some(name) = username else {
+pub async fn mfa_setup(
+    db: &sea_orm::DatabaseConnection,
+    user_id: i64,
+) -> Result<MfaSetup, String> {
+    let u = user::Entity::find_by_id(user_id as i32)
+        .one(db)
+        .await
+        .map_err(|e| format!("gagal memuat akun: {e}"))?;
+    let Some(u) = u else {
         return Err("Akun tidak ditemukan.".to_string());
     };
+    if u.status != "active" {
+        return Err("Akun tidak ditemukan.".to_string());
+    }
     let mut bytes = [0u8; MFA_SECRET_BYTES];
     rand::thread_rng().fill_bytes(&mut bytes);
     let secret = base32_encode(&bytes);
-    conn.execute(
-        "UPDATE users SET mfa_secret = ?1, mfa_enabled = 0 WHERE id = ?2",
-        params![secret, user_id],
-    )
-    .map_err(|e| format!("gagal menyimpan secret MFA: {e}"))?;
+    let username = u.username.clone();
+    let mut am = u.into_active_model();
+    am.mfa_secret = Set(Some(secret.clone()));
+    am.mfa_enabled = Set(0);
+    am.update(db)
+        .await
+        .map_err(|e| format!("gagal menyimpan secret MFA: {e}"))?;
     Ok(MfaSetup {
         otpauth_url: format!(
-            "otpauth://totp/PeopleX:{name}?secret={secret}&issuer=PeopleX&algorithm=SHA256&digits=6&period=30"
+            "otpauth://totp/PeopleX:{}?secret={secret}&issuer=PeopleX&algorithm=SHA256&digits=6&period=30",
+            username
         ),
         secret,
     })
 }
 
 /// Aktifkan MFA setelah kode pertama terbukti benar.
-pub fn mfa_enable(conn: &Connection, user_id: i64, code: &str) -> Result<(), String> {
-    let secret: Option<String> = conn
-        .query_row(
-            "SELECT mfa_secret FROM users WHERE id = ?1",
-            params![user_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("gagal memuat MFA: {e}"))?
-        .flatten();
-    let Some(sec) = secret else {
+pub async fn mfa_enable(
+    db: &sea_orm::DatabaseConnection,
+    user_id: i64,
+    code: &str,
+) -> Result<(), String> {
+    let u = user::Entity::find_by_id(user_id as i32)
+        .one(db)
+        .await
+        .map_err(|e| format!("gagal memuat MFA: {e}"))?;
+    let Some(u) = u else {
+        return Err("MFA belum disiapkan.".to_string());
+    };
+    let Some(sec) = u.mfa_secret.clone() else {
         return Err("MFA belum disiapkan.".to_string());
     };
     let now = Local::now().timestamp();
     if !totp_valid(&sec, code, now)? {
         return Err("Kode MFA salah.".to_string());
     }
-    conn.execute(
-        "UPDATE users SET mfa_enabled = 1 WHERE id = ?1",
-        params![user_id],
-    )
-    .map_err(|e| format!("gagal mengaktifkan MFA: {e}"))?;
-    audit::log(
-        conn,
+    let mut am = u.into_active_model();
+    am.mfa_enabled = Set(1);
+    am.update(db)
+        .await
+        .map_err(|e| format!("gagal mengaktifkan MFA: {e}"))?;
+    audit::log_sea(
+        db,
         Some(user_id),
         "UPDATE",
         "mfa",
@@ -401,34 +418,37 @@ pub fn mfa_enable(conn: &Connection, user_id: i64, code: &str) -> Result<(), Str
         None,
         None,
         Some("MFA diaktifkan"),
-    )?;
+    )
+    .await?;
     Ok(())
 }
 
 /// Matikan MFA dengan verifikasi password.
-pub fn mfa_disable(conn: &Connection, user_id: i64, password: &str) -> Result<(), String> {
-    let hash: Option<String> = conn
-        .query_row(
-            "SELECT password FROM users WHERE id = ?1",
-            params![user_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("gagal memuat akun: {e}"))?
-        .flatten();
-    let Some(h) = hash else {
+pub async fn mfa_disable(
+    db: &sea_orm::DatabaseConnection,
+    user_id: i64,
+    password: &str,
+) -> Result<(), String> {
+    let u = user::Entity::find_by_id(user_id as i32)
+        .one(db)
+        .await
+        .map_err(|e| format!("gagal memuat akun: {e}"))?;
+    let Some(u) = u else {
         return Err("Akun tidak ditemukan.".to_string());
     };
-    if !bcrypt::verify(password, &h).map_err(|e| format!("gagal verifikasi password: {e}"))? {
+    if !bcrypt::verify(password, &u.password)
+        .map_err(|e| format!("gagal verifikasi password: {e}"))?
+    {
         return Err("Password salah.".to_string());
     }
-    conn.execute(
-        "UPDATE users SET mfa_secret = NULL, mfa_enabled = 0 WHERE id = ?1",
-        params![user_id],
-    )
-    .map_err(|e| format!("gagal mematikan MFA: {e}"))?;
-    audit::log(
-        conn,
+    let mut am = u.into_active_model();
+    am.mfa_secret = Set(None);
+    am.mfa_enabled = Set(0);
+    am.update(db)
+        .await
+        .map_err(|e| format!("gagal mematikan MFA: {e}"))?;
+    audit::log_sea(
+        db,
         Some(user_id),
         "UPDATE",
         "mfa",
@@ -436,106 +456,127 @@ pub fn mfa_disable(conn: &Connection, user_id: i64, password: &str) -> Result<()
         None,
         None,
         Some("MFA dimatikan"),
-    )?;
+    )
+    .await?;
     Ok(())
 }
 
 /// Verifikasi kode tahap kedua dan kembalikan profil sesi.
-pub fn verify_mfa(conn: &Connection, user_id: i64, code: &str) -> Result<SessionUser, String> {
-    let row: Option<(Option<String>, i64)> = conn
-        .query_row(
-            "SELECT mfa_secret, mfa_enabled FROM users WHERE id = ?1 AND status = 'active'",
-            params![user_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
+pub async fn verify_mfa(
+    db: &sea_orm::DatabaseConnection,
+    user_id: i64,
+    code: &str,
+) -> Result<SessionUser, String> {
+    let u = user::Entity::find_by_id(user_id as i32)
+        .one(db)
+        .await
         .map_err(|e| format!("gagal memuat MFA: {e}"))?;
-    let Some((Some(sec), enabled)) = row else {
+    let Some(u) = u else {
         return Err("MFA tidak aktif untuk akun ini.".to_string());
     };
-    if enabled == 0 {
+    if u.status != "active" {
+        return Err("MFA tidak aktif untuk akun ini.".to_string());
+    }
+    let Some(sec) = u.mfa_secret.clone() else {
+        return Err("MFA tidak aktif untuk akun ini.".to_string());
+    };
+    if u.mfa_enabled == 0 {
         return Err("MFA tidak aktif untuk akun ini.".to_string());
     }
     let now = Local::now().timestamp();
     if !totp_valid(&sec, code, now)? {
-        record_login_activity(conn, Some(user_id), "", "failed")?;
+        record_login_activity(db, Some(user_id), "", "failed").await?;
         return Err("Kode MFA salah.".to_string());
     }
-    record_login_activity(conn, Some(user_id), "", "success")?;
-    load_session_user(conn, user_id)?.ok_or("Sesi berakhir. Masuk kembali.".to_string())
+    record_login_activity(db, Some(user_id), "", "success").await?;
+    load_session_user(db, user_id)
+        .await?
+        .ok_or("Sesi berakhir. Masuk kembali.".to_string())
 }
 
 /// Minta reset: simpan hash token + kedaluwarsa 1 jam.
 /// Kembalikan token plaintext bila email aktif dikenal, None bila tidak
 /// (pemanggil menampilkan pesan generik yang sama agar anti-enumerasi).
 /// Tanpa SMTP: token diserahkan ke admin/HR untuk diteruskan ke user.
-pub fn request_password_reset(conn: &Connection, email: &str) -> Result<Option<String>, String> {
+pub async fn request_password_reset(
+    db: &sea_orm::DatabaseConnection,
+    email: &str,
+) -> Result<Option<String>, String> {
     let email = email.trim();
-    let user_id: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM users WHERE email = ?1 AND status = 'active'",
-            params![email],
-            |r| r.get(0),
-        )
-        .optional()
+    let u = user::Entity::find()
+        .filter(user::Column::Email.eq(email))
+        .filter(user::Column::Status.eq("active"))
+        .one(db)
+        .await
         .map_err(|e| format!("gagal mencari email: {e}"))?;
-    let Some(uid) = user_id else {
+    let Some(u) = u else {
         return Ok(None);
     };
     let token = random_token();
     let expires = (Local::now() + chrono::Duration::hours(RESET_VALID_HOURS))
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
-    conn.execute(
-        "UPDATE users SET password_reset_token = ?1, password_reset_expires_at = ?2 WHERE id = ?3",
-        params![sha256_hex(&token), expires, uid],
-    )
-    .map_err(|e| format!("gagal menyimpan token reset: {e}"))?;
-    audit::log(
-        conn,
-        Some(uid),
+    let mut am = u.clone().into_active_model();
+    am.password_reset_token = Set(Some(sha256_hex(&token)));
+    am.password_reset_expires_at = Set(Some(expires));
+    am.update(db)
+        .await
+        .map_err(|e| format!("gagal menyimpan token reset: {e}"))?;
+    audit::log_sea(
+        db,
+        Some(u.id as i64),
         "PASSWORD_RESET_REQUEST",
         "auth",
-        Some(&uid.to_string()),
+        Some(&u.id.to_string()),
         None,
         None,
         None,
-    )?;
+    )
+    .await?;
     Ok(Some(token))
 }
 
 /// Terapkan password baru via token (sekali pakai, 1 jam).
-pub fn reset_password(conn: &Connection, token: &str, new_password: &str) -> Result<(), String> {
+pub async fn reset_password(
+    db: &sea_orm::DatabaseConnection,
+    token: &str,
+    new_password: &str,
+) -> Result<(), String> {
     check_password_policy(new_password)?;
     let now = now_str();
-    let user_id: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM users WHERE password_reset_token = ?1 AND password_reset_expires_at > ?2",
-            params![sha256_hex(token.trim()), now],
-            |r| r.get(0),
-        )
-        .optional()
+    let users = user::Entity::find()
+        .filter(user::Column::PasswordResetToken.eq(sha256_hex(token.trim())))
+        .all(db)
+        .await
         .map_err(|e| format!("gagal memvalidasi token: {e}"))?;
-    let Some(uid) = user_id else {
-        return Err("Tautan reset tidak valid atau sudah kedaluwarsa.".to_string());
-    };
+    let u = users
+        .into_iter()
+        .find(|u| u.password_reset_expires_at.as_deref().unwrap_or("") > now.as_str())
+        .ok_or("Tautan reset tidak valid atau sudah kedaluwarsa.".to_string())?;
     let hash = bcrypt::hash(new_password, bcrypt::DEFAULT_COST)
         .map_err(|e| format!("gagal hash password: {e}"))?;
-    conn.execute(
-        "UPDATE users SET password = ?1, password_reset_token = NULL, password_reset_expires_at = NULL, must_change_password = 0, failed_login_attempts = 0, locked_until = NULL WHERE id = ?2",
-        params![hash, uid],
-    )
-    .map_err(|e| format!("gagal menyimpan password baru: {e}"))?;
-    audit::log(
-        conn,
-        Some(uid),
+    let uid = u.id;
+    let mut am = u.into_active_model();
+    am.password = Set(hash);
+    am.password_reset_token = Set(None);
+    am.password_reset_expires_at = Set(None);
+    am.must_change_password = Set(0);
+    am.failed_login_attempts = Set(0);
+    am.locked_until = Set(None);
+    am.update(db)
+        .await
+        .map_err(|e| format!("gagal menyimpan password baru: {e}"))?;
+    audit::log_sea(
+        db,
+        Some(uid as i64),
         "PASSWORD_RESET",
         "auth",
         Some(&uid.to_string()),
         None,
         None,
         None,
-    )?;
+    )
+    .await?;
     Ok(())
 }
 
@@ -549,24 +590,20 @@ fn check_password_policy(password: &str) -> Result<(), String> {
 }
 
 /// Ganti password sendiri (wajib tahu password lama).
-pub fn change_password(
-    conn: &Connection,
+pub async fn change_password(
+    db: &sea_orm::DatabaseConnection,
     user_id: i64,
     current_password: &str,
     new_password: &str,
 ) -> Result<(), String> {
-    let hash: Option<String> = conn
-        .query_row(
-            "SELECT password FROM users WHERE id = ?1",
-            params![user_id],
-            |r| r.get(0),
-        )
-        .optional()
+    let u = user::Entity::find_by_id(user_id as i32)
+        .one(db)
+        .await
         .map_err(|e| format!("gagal memuat pengguna: {e}"))?;
-    let Some(hash) = hash else {
+    let Some(u) = u else {
         return Err("Pengguna tidak ditemukan.".to_string());
     };
-    if !bcrypt::verify(current_password, &hash)
+    if !bcrypt::verify(current_password, &u.password)
         .map_err(|e| format!("gagal verifikasi password: {e}"))?
     {
         return Err("Password saat ini tidak sesuai.".to_string());
@@ -574,13 +611,14 @@ pub fn change_password(
     check_password_policy(new_password)?;
     let new_hash = bcrypt::hash(new_password, bcrypt::DEFAULT_COST)
         .map_err(|e| format!("gagal hash password: {e}"))?;
-    conn.execute(
-        "UPDATE users SET password = ?1, must_change_password = 0 WHERE id = ?2",
-        params![new_hash, user_id],
-    )
-    .map_err(|e| format!("gagal menyimpan password: {e}"))?;
-    audit::log(
-        conn,
+    let mut am = u.into_active_model();
+    am.password = Set(new_hash);
+    am.must_change_password = Set(0);
+    am.update(db)
+        .await
+        .map_err(|e| format!("gagal menyimpan password: {e}"))?;
+    audit::log_sea(
+        db,
         Some(user_id),
         "PASSWORD_CHANGE",
         "auth",
@@ -588,164 +626,205 @@ pub fn change_password(
         None,
         None,
         None,
-    )?;
+    )
+    .await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db, seed};
+    use crate::init_state;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
-    fn live() -> (tempfile::TempDir, crate::db::DbPool) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let pool = db::init_pool(&dir.path().join("t.db")).expect("pool");
-        let mut c = pool.get().expect("get");
-        db::migrate(&mut c).expect("migrate");
-        seed::seed(&mut c).expect("seed");
-        (dir, pool)
+    async fn admin_id(db: &sea_orm::DatabaseConnection) -> i64 {
+        user::Entity::find()
+            .filter(user::Column::Username.eq("admin"))
+            .one(db)
+            .await
+            .expect("admin")
+            .expect("ada")
+            .id as i64
     }
 
-    fn admin_id(conn: &Connection) -> i64 {
-        conn.query_row("SELECT id FROM users WHERE username = 'admin'", [], |r| {
-            r.get(0)
-        })
-        .expect("admin")
-    }
-
-    #[test]
-    fn login_admin_berhasil_dan_membawa_izin() {
-        let (_dir, pool) = live();
-        let conn = pool.get().expect("get");
-        let ok = attempt_login(&conn, "admin", "Admin@123").expect("login");
+    #[tokio::test]
+    async fn login_admin_berhasil_dan_membawa_izin() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let ok = attempt_login(db, "admin", "Admin@123").await.expect("login");
         assert!(ok.must_change_password);
         assert!(ok.user.is_super_admin);
         assert!(!ok.user.permissions.is_empty());
     }
 
-    #[test]
-    fn mfa_enroll_aktif_lalu_challenge() {
-        let (_dir, pool) = live();
-        let conn = pool.get().expect("get");
-        let uid = admin_id(&conn);
-        let setup = mfa_setup(&conn, uid).expect("setup");
+    #[tokio::test]
+    async fn mfa_enroll_aktif_lalu_challenge() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let uid = admin_id(db).await;
+        let setup = mfa_setup(db, uid).await.expect("setup");
         assert_eq!(setup.secret.len(), 32);
         assert!(setup.otpauth_url.starts_with("otpauth://totp/"));
-        assert!(mfa_enable(&conn, uid, "000000").is_err());
+        assert!(mfa_enable(db, uid, "000000").await.is_err());
         let now = Local::now().timestamp();
         let secret = base32_decode(&setup.secret).expect("decode");
         let code = totp_code(&secret, now);
-        mfa_enable(&conn, uid, &code).expect("enable");
-        let ok = attempt_login(&conn, "admin", "Admin@123").expect("login");
+        mfa_enable(db, uid, &code).await.expect("enable");
+        let ok = attempt_login(db, "admin", "Admin@123").await.expect("login");
         assert!(ok.mfa_required);
-        assert!(verify_mfa(&conn, uid, "000000").is_err());
-        let user = verify_mfa(&conn, uid, &code).expect("challenge");
+        assert!(verify_mfa(db, uid, "000000").await.is_err());
+        let user = verify_mfa(db, uid, &code).await.expect("challenge");
         assert_eq!(user.id as i64, uid);
-        mfa_disable(&conn, uid, "salah").expect_err("password salah");
-        mfa_disable(&conn, uid, "Admin@123").expect("disable");
-        let ok = attempt_login(&conn, "admin", "Admin@123").expect("login lagi");
+        mfa_disable(db, uid, "salah").await.expect_err("password salah");
+        mfa_disable(db, uid, "Admin@123").await.expect("disable");
+        let ok = attempt_login(db, "admin", "Admin@123").await.expect("login lagi");
         assert!(!ok.mfa_required);
     }
 
-    #[test]
-    fn login_gagal_lima_kali_mengunci() {
-        let (_dir, pool) = live();
-        let conn = pool.get().expect("get");
+    #[tokio::test]
+    async fn login_gagal_lima_kali_mengunci() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
         for _ in 0..5 {
-            let e = attempt_login(&conn, "admin", "salah").expect_err("harus gagal");
+            let e = attempt_login(db, "admin", "salah").await.expect_err("harus gagal");
             assert_eq!(e, "Username/email atau password salah.");
         }
-        let e = attempt_login(&conn, "admin", "Admin@123").expect_err("harus terkunci");
+        let e = attempt_login(db, "admin", "Admin@123")
+            .await
+            .expect_err("harus terkunci");
         assert!(e.contains("terkunci"), "pesan: {e}");
-        let attempts: i64 = conn
-            .query_row(
-                "SELECT failed_login_attempts FROM users WHERE username = 'admin'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(attempts, 5);
+        let u = user::Entity::find()
+            .filter(user::Column::Username.eq("admin"))
+            .one(db)
+            .await
+            .expect("baca")
+            .expect("ada");
+        assert_eq!(u.failed_login_attempts, 5);
     }
 
-    #[test]
-    fn login_user_nonaktif_dan_tak_dikenal_generik() {
-        let (_dir, pool) = live();
-        let conn = pool.get().expect("get");
-        conn.execute(
-            "UPDATE users SET status = 'inactive' WHERE username = 'admin'",
-            [],
-        )
-        .unwrap();
-        let e = attempt_login(&conn, "admin", "Admin@123").expect_err("nonaktif ditolak");
+    #[tokio::test]
+    async fn login_user_nonaktif_dan_tak_dikenal_generik() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let admin = user::Entity::find()
+            .filter(user::Column::Username.eq("admin"))
+            .one(db)
+            .await
+            .expect("baca")
+            .expect("ada");
+        let mut am = admin.into_active_model();
+        am.status = Set("inactive".to_string());
+        am.update(db).await.expect("nonaktif");
+        let e = attempt_login(db, "admin", "Admin@123")
+            .await
+            .expect_err("nonaktif ditolak");
         assert_eq!(e, "Username/email atau password salah.");
-        conn.execute(
-            "UPDATE users SET status = 'active' WHERE username = 'admin'",
-            [],
-        )
-        .unwrap();
-        let e = attempt_login(&conn, "hantu", "apapun").expect_err("unknown ditolak");
+        let admin = user::Entity::find()
+            .filter(user::Column::Username.eq("admin"))
+            .one(db)
+            .await
+            .expect("baca")
+            .expect("ada");
+        let mut am = admin.into_active_model();
+        am.status = Set("active".to_string());
+        am.update(db).await.expect("aktif");
+        let e = attempt_login(db, "hantu", "apapun")
+            .await
+            .expect_err("unknown ditolak");
         assert_eq!(e, "Username/email atau password salah.");
     }
 
-    #[test]
-    fn ganti_password_butuh_password_lama() {
-        let (_dir, pool) = live();
-        let conn = pool.get().expect("get");
-        let id = admin_id(&conn);
-        let e = change_password(&conn, id, "keliru", "PasswordBaru1").expect_err("harus gagal");
+    #[tokio::test]
+    async fn ganti_password_butuh_password_lama() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let id = admin_id(db).await;
+        let e = change_password(db, id, "keliru", "PasswordBaru1")
+            .await
+            .expect_err("harus gagal");
         assert_eq!(e, "Password saat ini tidak sesuai.");
-        let e = change_password(&conn, id, "Admin@123", "pendek").expect_err("kebijakan");
+        let e = change_password(db, id, "Admin@123", "pendek")
+            .await
+            .expect_err("kebijakan");
         assert!(e.contains("minimal 8"), "pesan: {e}");
-        change_password(&conn, id, "Admin@123", "PasswordBaru1").expect("ganti ok");
-        let ok = attempt_login(&conn, "admin", "PasswordBaru1").expect("login baru");
+        change_password(db, id, "Admin@123", "PasswordBaru1")
+            .await
+            .expect("ganti ok");
+        let ok = attempt_login(db, "admin", "PasswordBaru1")
+            .await
+            .expect("login baru");
         assert!(!ok.must_change_password);
     }
 
-    #[test]
-    fn reset_token_sekali_pakai_lalu_hangus() {
-        let (_dir, pool) = live();
-        let conn = pool.get().expect("get");
-        let token = request_password_reset(&conn, "admin@hris.local")
+    #[tokio::test]
+    async fn reset_token_sekali_pakai_lalu_hangus() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let token = request_password_reset(db, "admin@hris.local")
+            .await
             .expect("request")
             .expect("token ada");
-        reset_password(&conn, &token, "ResetBaru12").expect("reset ok");
-        let e = reset_password(&conn, &token, "LainLagi12").expect_err("reuse ditolak");
+        reset_password(db, &token, "ResetBaru12")
+            .await
+            .expect("reset ok");
+        let e = reset_password(db, &token, "LainLagi12")
+            .await
+            .expect_err("reuse ditolak");
         assert!(e.contains("tidak valid"), "pesan: {e}");
-        attempt_login(&conn, "admin", "ResetBaru12").expect("login password reset");
+        attempt_login(db, "admin", "ResetBaru12")
+            .await
+            .expect("login password reset");
     }
 
-    #[test]
-    fn reset_token_kedaluwarsa_ditolak_dan_email_asing_senyap() {
-        let (_dir, pool) = live();
-        let conn = pool.get().expect("get");
-        assert!(request_password_reset(&conn, "tidak@ada.local")
+    #[tokio::test]
+    async fn reset_token_kedaluwarsa_ditolak_dan_email_asing_senyap() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        assert!(request_password_reset(db, "tidak@ada.local")
+            .await
             .expect("request")
             .is_none());
-        let token = request_password_reset(&conn, "admin@hris.local")
+        let token = request_password_reset(db, "admin@hris.local")
+            .await
             .expect("request")
             .expect("token");
-        conn.execute(
-            "UPDATE users SET password_reset_expires_at = '2000-01-01 00:00:00' WHERE username = 'admin'",
-            [],
-        )
-        .unwrap();
-        let e = reset_password(&conn, &token, "ResetBaru12").expect_err("expired ditolak");
+        let admin = user::Entity::find()
+            .filter(user::Column::Username.eq("admin"))
+            .one(db)
+            .await
+            .expect("baca")
+            .expect("ada");
+        let mut am = admin.into_active_model();
+        am.password_reset_expires_at = Set(Some("2000-01-01 00:00:00".to_string()));
+        am.update(db).await.expect("kedaluwarsa");
+        let e = reset_password(db, &token, "ResetBaru12")
+            .await
+            .expect_err("expired ditolak");
         assert!(e.contains("kedaluwarsa"), "pesan: {e}");
     }
 
-    #[test]
-    fn logout_menulis_audit() {
-        let (_dir, pool) = live();
-        let conn = pool.get().expect("get");
-        let id = admin_id(&conn);
-        logout(&conn, id).expect("logout");
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM audit_logs WHERE action = 'LOGOUT' AND user_id = ?1",
-                params![id],
-                |r| r.get(0),
-            )
-            .unwrap();
+    #[tokio::test]
+    async fn logout_menulis_audit() {
+        use crate::entities::audit_log;
+        let dir = tempfile::tempdir().expect("dir");
+        let state = init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let id = admin_id(db).await;
+        logout(db, id).await.expect("logout");
+        let n = audit_log::Entity::find()
+            .filter(audit_log::Column::Action.eq("LOGOUT"))
+            .filter(audit_log::Column::UserId.eq(id as i32))
+            .all(db)
+            .await
+            .expect("baca")
+            .len();
         assert_eq!(n, 1);
     }
 }
