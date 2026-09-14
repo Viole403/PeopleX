@@ -2240,6 +2240,590 @@ pub async fn delete_sea(
     Ok(())
 }
 
+// ---------------- Child generik (SeaORM) ----------------
+
+async fn employee_exists_sea(db: &sea_orm::DatabaseConnection, id: i64) -> Result<(), String> {
+    let found = q_one(
+        db,
+        "SELECT id FROM employees WHERE id = ?1 AND deleted_at IS NULL".to_string(),
+        vec![Value::from(id)],
+        1,
+        "memuat karyawan",
+    )
+    .await?;
+    if found.is_none() {
+        return Err("Karyawan tidak ditemukan.".to_string());
+    }
+    Ok(())
+}
+
+pub async fn child_list_sea(
+    db: &sea_orm::DatabaseConnection,
+    slug: &str,
+    employee_id: i64,
+) -> Result<Vec<BTreeMap<String, String>>, String> {
+    let def = child_def(slug)?;
+    employee_exists_sea(db, employee_id).await?;
+    let cols: Vec<&str> = def.fields.iter().map(|f| f.name).collect();
+    let select = format!("id, employee_id, {}", cols.join(", "));
+    let rows = q_all(
+        db,
+        format!(
+            "SELECT {select} FROM {} WHERE {} ORDER BY id DESC",
+            def.table,
+            child_where(def)
+        ),
+        vec![Value::from(employee_id)],
+        cols.len() + 2,
+        "membaca daftar",
+    )
+    .await?;
+    let mut out = Vec::new();
+    for row in rows {
+        let mut map = BTreeMap::new();
+        map.insert("id".to_string(), value_to_string(&row[0]));
+        map.insert("employee_id".to_string(), value_to_string(&row[1]));
+        for (i, col) in cols.iter().enumerate() {
+            map.insert((*col).to_string(), value_to_string(&row[i + 2]));
+        }
+        out.push(map);
+    }
+    Ok(out)
+}
+
+async fn validate_child_sea(
+    db: &sea_orm::DatabaseConnection,
+    def: &ChildDef,
+    values: &BTreeMap<String, String>,
+    exclude_id: Option<i64>,
+) -> Result<BTreeMap<String, Option<String>>, String> {
+    let mut cleaned = BTreeMap::new();
+    for f in def.fields {
+        let raw = values.get(f.name).map(|s| s.trim()).unwrap_or("");
+        if f.field_type == "checkbox" {
+            let v = raw == "1" || raw.eq_ignore_ascii_case("true");
+            cleaned.insert(
+                f.name.to_string(),
+                Some(if v { "1".to_string() } else { "0".to_string() }),
+            );
+            continue;
+        }
+        if raw.is_empty() {
+            if f.required {
+                return Err(format!("{} wajib diisi.", f.label));
+            }
+            cleaned.insert(f.name.to_string(), None);
+            continue;
+        }
+        if let Some(max) = f.max_len {
+            if raw.len() > max {
+                return Err(format!("{} maksimal {max} karakter.", f.label));
+            }
+        }
+        if let Some(allowed) = f.in_values {
+            if !allowed.contains(&raw) {
+                return Err(format!("{} tidak valid.", f.label));
+            }
+        }
+        if f.is_date && chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").is_err() {
+            return Err(format!("{} harus tanggal valid (YYYY-MM-DD).", f.label));
+        }
+        if f.is_integer && raw.parse::<i64>().is_err() {
+            return Err(format!("{} harus bilangan bulat.", f.label));
+        }
+        if f.is_numeric && raw.parse::<f64>().is_err() {
+            return Err(format!("{} harus angka.", f.label));
+        }
+        if f.unique {
+            let mut sql = format!("SELECT id FROM {} WHERE {} = ?1", def.table, f.name);
+            let mut uvals = vec![Value::from(raw.to_string())];
+            if let Some(ex) = exclude_id {
+                sql.push_str(" AND id != ?2");
+                uvals.push(Value::from(ex));
+            }
+            let found = q_one(db, sql, uvals, 1, "memeriksa keunikan").await?;
+            if found.is_some() {
+                return Err(format!("{} sudah dipakai.", f.label));
+            }
+        }
+        cleaned.insert(f.name.to_string(), Some(raw.to_string()));
+    }
+    Ok(cleaned)
+}
+
+pub async fn child_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    slug: &str,
+    employee_id: i64,
+    id: Option<i64>,
+    values: &BTreeMap<String, String>,
+) -> Result<i32, String> {
+    let def = child_def(slug)?;
+    employee_exists_sea(db, employee_id).await?;
+    let cleaned = validate_child_sea(db, def, values, id).await?;
+    let module = format!("employee.{slug}");
+    if let Some(rid) = id {
+        let owned = q_one(
+            db,
+            format!(
+                "SELECT id FROM {} WHERE id = ?1 AND employee_id = ?2",
+                def.table
+            ),
+            vec![Value::from(rid), Value::from(employee_id)],
+            1,
+            "memuat data",
+        )
+        .await?;
+        if owned.is_none() {
+            return Err("Data tidak ditemukan.".to_string());
+        }
+        let sets: Vec<String> = cleaned
+            .keys()
+            .enumerate()
+            .map(|(i, c)| format!("{c} = ?{}", i + 1))
+            .collect();
+        let mut vals: Vec<Value> = cleaned
+            .values()
+            .map(|v| match v {
+                Some(s) => Value::from(s.clone()),
+                None => Value::Null,
+            })
+            .collect();
+        vals.push(Value::from(rid));
+        vals.push(Value::from(employee_id));
+        let n = vals.len();
+        exec(
+            db,
+            format!(
+                "UPDATE {} SET {}, updated_at = datetime('now','localtime') WHERE id = ?{} AND employee_id = ?{}",
+                def.table,
+                sets.join(", "),
+                n - 1,
+                n
+            ),
+            vals,
+            "menyimpan",
+        )
+        .await?;
+        let after = serde_json::to_string(&cleaned).unwrap_or_default();
+        audit::log_sea(
+            db,
+            Some(actor_id),
+            "UPDATE",
+            &module,
+            Some(&rid.to_string()),
+            None,
+            Some(&after),
+            None,
+        )
+        .await?;
+        to_dto_int(rid, "child.id")
+    } else {
+        let mut cols = vec!["employee_id".to_string()];
+        cols.extend(cleaned.keys().cloned());
+        let holders: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
+        let mut vals = vec![Value::from(employee_id)];
+        vals.extend(cleaned.values().map(|v| match v {
+            Some(s) => Value::from(s.clone()),
+            None => Value::Null,
+        }));
+        exec(
+            db,
+            format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                def.table,
+                cols.join(", "),
+                holders.join(", ")
+            ),
+            vals,
+            "menyimpan",
+        )
+        .await
+        .map_err(|e| {
+            if e.contains("UNIQUE") {
+                "Data duplikat (batas unik dilanggar).".to_string()
+            } else {
+                e
+            }
+        })?;
+        let row = q_one(
+            db,
+            "SELECT last_insert_rowid()".to_string(),
+            vec![],
+            1,
+            "memuat id",
+        )
+        .await?;
+        let rid = row
+            .as_ref()
+            .and_then(|v| value_i64(&v[0]))
+            .ok_or("gagal memuat id baru.".to_string())?;
+        let after = serde_json::to_string(&cleaned).unwrap_or_default();
+        audit::log_sea(
+            db,
+            Some(actor_id),
+            "CREATE",
+            &module,
+            Some(&rid.to_string()),
+            None,
+            Some(&after),
+            None,
+        )
+        .await?;
+        to_dto_int(rid, "child.id")
+    }
+}
+
+pub async fn child_delete_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    slug: &str,
+    employee_id: i64,
+    id: i64,
+) -> Result<(), String> {
+    if slug == "documents" {
+        return delete_document_sea(db, actor_id, employee_id, id).await;
+    }
+    let def = child_def(slug)?;
+    let owned = q_one(
+        db,
+        format!(
+            "SELECT id FROM {} WHERE id = ?1 AND employee_id = ?2",
+            def.table
+        ),
+        vec![Value::from(id), Value::from(employee_id)],
+        1,
+        "memuat data",
+    )
+    .await?;
+    if owned.is_none() {
+        return Err("Data tidak ditemukan.".to_string());
+    }
+    if def.soft_delete {
+        exec(
+            db,
+            format!(
+                "UPDATE {} SET deleted_at = datetime('now','localtime') WHERE id = ?1",
+                def.table
+            ),
+            vec![Value::from(id)],
+            "menghapus",
+        )
+        .await?;
+    } else {
+        exec(
+            db,
+            format!("DELETE FROM {} WHERE id = ?1", def.table),
+            vec![Value::from(id)],
+            "menghapus",
+        )
+        .await?;
+    }
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "DELETE",
+        &format!("employee.{slug}"),
+        Some(&id.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+// ---------------- Alamat (SeaORM) ----------------
+
+async fn read_address_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+    kind: &str,
+) -> Result<Option<AddressRow>, String> {
+    let row = q_one(
+        db,
+        "SELECT address, city, province, postal_code FROM employee_addresses WHERE employee_id = ?1 AND type = ?2".to_string(),
+        vec![Value::from(employee_id), Value::from(kind)],
+        4,
+        "memuat alamat",
+    )
+    .await?;
+    Ok(row.map(|r| AddressRow {
+        address: opt_text(&r[0]),
+        city: opt_text(&r[1]),
+        province: opt_text(&r[2]),
+        postal_code: opt_text(&r[3]),
+    }))
+}
+
+pub async fn addresses_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+) -> Result<Addresses, String> {
+    employee_exists_sea(db, employee_id).await?;
+    Ok(Addresses {
+        ktp: read_address_sea(db, employee_id, "ktp").await?,
+        domicile: read_address_sea(db, employee_id, "domicile").await?,
+    })
+}
+
+pub async fn save_address_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    employee_id: i64,
+    kind: &str,
+    values: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if kind != "ktp" && kind != "domicile" {
+        return Err("Tipe alamat tidak valid.".to_string());
+    }
+    employee_exists_sea(db, employee_id).await?;
+    let get = |k: &str, max: usize, label: &str| -> Result<Option<String>, String> {
+        match values.get(k).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            None => Ok(None),
+            Some(s) => {
+                if s.len() > max {
+                    return Err(format!("{label} maksimal {max} karakter."));
+                }
+                Ok(Some(s.to_string()))
+            }
+        }
+    };
+    let address = get("address", 1000, "Alamat")?;
+    let city = get("city", 100, "Kota")?;
+    let province = get("province", 100, "Provinsi")?;
+    let postal = get("postal_code", 10, "Kode pos")?;
+    let opt_val = |v: &Option<String>| match v {
+        Some(s) => Value::from(s.clone()),
+        None => Value::Null,
+    };
+    let existing = q_one(
+        db,
+        "SELECT id FROM employee_addresses WHERE employee_id = ?1 AND type = ?2".to_string(),
+        vec![Value::from(employee_id), Value::from(kind)],
+        1,
+        "memeriksa alamat",
+    )
+    .await?;
+    match existing.and_then(|v| value_i64(&v[0])) {
+        Some(id) => {
+            exec(
+                db,
+                "UPDATE employee_addresses SET address = ?1, city = ?2, province = ?3, postal_code = ?4 WHERE id = ?5".to_string(),
+                vec![
+                    opt_val(&address),
+                    opt_val(&city),
+                    opt_val(&province),
+                    opt_val(&postal),
+                    Value::from(id),
+                ],
+                "menyimpan alamat",
+            )
+            .await?;
+        }
+        None => {
+            exec(
+                db,
+                "INSERT INTO employee_addresses (employee_id, type, address, city, province, postal_code) VALUES (?1, ?2, ?3, ?4, ?5, ?6)".to_string(),
+                vec![
+                    Value::from(employee_id),
+                    Value::from(kind),
+                    opt_val(&address),
+                    opt_val(&city),
+                    opt_val(&province),
+                    opt_val(&postal),
+                ],
+                "menyimpan alamat",
+            )
+            .await?;
+        }
+    }
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "UPDATE",
+        "employee.address",
+        Some(&employee_id.to_string()),
+        None,
+        None,
+        Some(&format!("Alamat {kind} karyawan {employee_id}")),
+    )
+    .await?;
+    Ok(())
+}
+
+// ---------------- Dokumen (SeaORM) ----------------
+
+pub async fn documents_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+) -> Result<Vec<Document>, String> {
+    employee_exists_sea(db, employee_id).await?;
+    let rows = q_all(
+        db,
+        "SELECT id, category, name, file_path, file_size, mime_type, expiry_date, created_at FROM employee_documents WHERE employee_id = ?1 AND deleted_at IS NULL ORDER BY created_at DESC".to_string(),
+        vec![Value::from(employee_id)],
+        8,
+        "membaca dokumen",
+    )
+    .await?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(Document {
+            id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "document.id")?,
+            category: value_to_string(&r[1]),
+            name: value_to_string(&r[2]),
+            file_path: value_to_string(&r[3]),
+            file_size: opt_dto(&r[4], "document.size")?,
+            mime_type: opt_text(&r[5]),
+            expiry_date: opt_text(&r[6]),
+            created_at: value_to_string(&r[7]),
+        });
+    }
+    Ok(out)
+}
+
+pub async fn upload_document_sea(
+    db: &sea_orm::DatabaseConnection,
+    files: &Path,
+    actor_id: i64,
+    employee_id: i64,
+    category: &str,
+    name: &str,
+    expiry_date: Option<&str>,
+    file: &FileUpload,
+) -> Result<i32, String> {
+    employee_exists_sea(db, employee_id).await?;
+    if !DOC_CATEGORIES.contains(&category) {
+        return Err("Kategori dokumen tidak valid.".to_string());
+    }
+    if name.trim().is_empty() {
+        return Err("Nama dokumen wajib diisi.".to_string());
+    }
+    if name.len() > 150 {
+        return Err("Nama dokumen maksimal 150 karakter.".to_string());
+    }
+    if let Some(exp) = expiry_date.map(str::trim).filter(|s| !s.is_empty()) {
+        chrono::NaiveDate::parse_from_str(exp, "%Y-%m-%d")
+            .map_err(|_| "Tanggal kedaluwarsa harus valid (YYYY-MM-DD).".to_string())?;
+    }
+    let subdir = format!("documents/{employee_id}");
+    let rel = store_file(files, &subdir, file, DOC_MIMES)?;
+    let expiry = expiry_date.map(str::trim).filter(|s| !s.is_empty());
+    exec(
+        db,
+        "INSERT INTO employee_documents (employee_id, category, name, file_path, file_size, mime_type, expiry_date, uploaded_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)".to_string(),
+        vec![
+            Value::from(employee_id),
+            Value::from(category),
+            Value::from(name.trim()),
+            Value::from(rel),
+            Value::from(file.bytes.len() as i64),
+            Value::from(file.mime.clone()),
+            match expiry {
+                Some(s) => Value::from(s),
+                None => Value::Null,
+            },
+            Value::from(actor_id),
+        ],
+        "mencatat dokumen",
+    )
+    .await?;
+    let row = q_one(
+        db,
+        "SELECT last_insert_rowid()".to_string(),
+        vec![],
+        1,
+        "memuat id",
+    )
+    .await?;
+    let id = row
+        .as_ref()
+        .and_then(|v| value_i64(&v[0]))
+        .ok_or("gagal memuat id baru.".to_string())?;
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "CREATE",
+        "employee.document",
+        Some(&id.to_string()),
+        None,
+        None,
+        Some(&format!("Dokumen {category} {name}")),
+    )
+    .await?;
+    to_dto_int(id, "document.id")
+}
+
+pub async fn document_bytes_sea(
+    db: &sea_orm::DatabaseConnection,
+    files: &Path,
+    employee_id: i64,
+    id: i64,
+) -> Result<DocumentBytes, String> {
+    let row = q_one(
+        db,
+        "SELECT file_path, mime_type, name FROM employee_documents WHERE id = ?1 AND employee_id = ?2 AND deleted_at IS NULL".to_string(),
+        vec![Value::from(id), Value::from(employee_id)],
+        3,
+        "memuat dokumen",
+    )
+    .await?;
+    let Some(r) = row else {
+        return Err("Dokumen tidak ditemukan.".to_string());
+    };
+    let rel = value_to_string(&r[0]);
+    let mime = opt_text(&r[1]).unwrap_or_else(|| "application/octet-stream".to_string());
+    let name = value_to_string(&r[2]);
+    let path = files.join(&rel);
+    if !path.starts_with(files) {
+        return Err("Path dokumen tidak valid.".to_string());
+    }
+    let bytes =
+        std::fs::read(&path).map_err(|_| "Berkas dokumen hilang dari penyimpanan.".to_string())?;
+    Ok(DocumentBytes { mime, name, bytes })
+}
+
+pub async fn delete_document_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    employee_id: i64,
+    id: i64,
+) -> Result<(), String> {
+    let row = q_one(
+        db,
+        "SELECT file_path, name FROM employee_documents WHERE id = ?1 AND employee_id = ?2 AND deleted_at IS NULL".to_string(),
+        vec![Value::from(id), Value::from(employee_id)],
+        2,
+        "memuat dokumen",
+    )
+    .await?;
+    if row.is_none() {
+        return Err("Dokumen tidak ditemukan.".to_string());
+    }
+    exec(
+        db,
+        "UPDATE employee_documents SET deleted_at = datetime('now','localtime') WHERE id = ?1".to_string(),
+        vec![Value::from(id)],
+        "menghapus dokumen",
+    )
+    .await?;
+    // berkas fisik dipertahankan sebagai arsip; hanya baris yang dihapus lunak
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "DELETE",
+        "employee.document",
+        Some(&id.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
 // ---------------- Child generik ----------------
 
 fn employee_exists(conn: &Connection, id: i64) -> Result<(), String> {
@@ -3343,5 +3927,73 @@ mod tests {
             .await
             .expect("detail3")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn child_alamat_dokumen_sea_paritas_dengan_sync() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files = tempfile::tempdir().expect("files");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("init_state");
+        let conn = state.db.get().expect("get");
+        let input = base_input(&conn);
+        let actor_id = actor(&conn);
+        let id = create_sea(&state.sea, files.path(), actor_id, &input, None)
+            .await
+            .expect("create_sea") as i64;
+        let mut vals = BTreeMap::new();
+        vals.insert("name".to_string(), "Ibu Ani".to_string());
+        vals.insert("phone".to_string(), "081234".to_string());
+        child_save_sea(&state.sea, actor_id, "contacts", id, None, &vals)
+            .await
+            .expect("child_save_sea");
+        let a = child_list(&conn, "contacts", id).expect("child_list");
+        drop(conn);
+        let b = child_list_sea(&state.sea, "contacts", id)
+            .await
+            .expect("child_list_sea");
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap()
+        );
+        assert_eq!(a.len(), 1);
+        let mut addr = BTreeMap::new();
+        addr.insert("address".to_string(), "Jl. Mawar 1".to_string());
+        addr.insert("city".to_string(), "Bandung".to_string());
+        save_address_sea(&state.sea, actor_id, id, "ktp", &addr)
+            .await
+            .expect("save_address_sea");
+        let conn2 = state.db.get().expect("get2");
+        let sa = addresses(&conn2, id).expect("addresses");
+        drop(conn2);
+        let sb = addresses_sea(&state.sea, id)
+            .await
+            .expect("addresses_sea");
+        assert_eq!(
+            serde_json::to_string(&sa).unwrap(),
+            serde_json::to_string(&sb).unwrap()
+        );
+        assert_eq!(
+            sb.ktp.as_ref().and_then(|r| r.city.clone()).as_deref(),
+            Some("Bandung")
+        );
+        let up = FileUpload {
+            name: "ktp.png".to_string(),
+            mime: "image/png".to_string(),
+            bytes: vec![1, 2, 3],
+        };
+        upload_document_sea(&state.sea, files.path(), actor_id, id, "ktp", "KTP", None, &up)
+            .await
+            .expect("upload_document_sea");
+        let conn3 = state.db.get().expect("get3");
+        let da = documents(&conn3, id).expect("documents");
+        drop(conn3);
+        let db_ = documents_sea(&state.sea, id)
+            .await
+            .expect("documents_sea");
+        assert_eq!(
+            serde_json::to_string(&da).unwrap(),
+            serde_json::to_string(&db_).unwrap()
+        );
+        assert_eq!(da.len(), 1);
     }
 }

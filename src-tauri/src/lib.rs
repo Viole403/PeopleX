@@ -726,9 +726,8 @@ async fn employee_child_list(
     child: String,
     employee_id: i32,
 ) -> Result<Vec<std::collections::BTreeMap<String, String>>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["employee.view", "system.manage"]).await?;
-    services::employees::child_list(&conn, &child, employee_id as i64)
+    services::employees::child_list_sea(&state.sea, &child, employee_id as i64).await
 }
 
 #[tauri::command]
@@ -740,18 +739,18 @@ async fn employee_child_save(
     id: Option<i32>,
     values: std::collections::BTreeMap<String, String>,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["employee.create", "employee.update", "system.manage"],
     ).await?;
-    services::employees::child_save(
-        &conn,
+    services::employees::child_save_sea(
+        &state.sea,
         uid,
         &child,
         employee_id as i64,
         id.map(|v| v as i64),
         &values,
     )
+    .await
 }
 
 #[tauri::command]
@@ -762,9 +761,8 @@ async fn employee_child_delete(
     employee_id: i32,
     id: i32,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["employee.delete", "system.manage"]).await?;
-    services::employees::child_delete(&conn, uid, &child, employee_id as i64, id as i64)
+    services::employees::child_delete_sea(&state.sea, uid, &child, employee_id as i64, id as i64).await
 }
 
 #[tauri::command]
@@ -784,9 +782,8 @@ async fn employee_addresses(
     state: tauri::State<'_, AppState>,
     employee_id: i32,
 ) -> Result<services::employees::Addresses, String> {
-    let conn = pooled(&state)?;
     require(&state, &["employee.view", "system.manage"]).await?;
-    services::employees::addresses(&conn, employee_id as i64)
+    services::employees::addresses_sea(&state.sea, employee_id as i64).await
 }
 
 #[tauri::command]
@@ -797,9 +794,8 @@ async fn employee_address_save(
     address_type: String,
     values: std::collections::BTreeMap<String, String>,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["employee.update", "system.manage"]).await?;
-    services::employees::save_address(&conn, uid, employee_id as i64, &address_type, &values)
+    services::employees::save_address_sea(&state.sea, uid, employee_id as i64, &address_type, &values).await
 }
 
 #[tauri::command]
@@ -808,9 +804,8 @@ async fn employee_documents(
     state: tauri::State<'_, AppState>,
     employee_id: i32,
 ) -> Result<Vec<services::employees::Document>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["employee.view", "system.manage"]).await?;
-    services::employees::documents(&conn, employee_id as i64)
+    services::employees::documents_sea(&state.sea, employee_id as i64).await
 }
 
 #[tauri::command]
@@ -823,13 +818,12 @@ async fn employee_document_upload(
     expiry_date: Option<String>,
     file: services::employees::FileUpload,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["employee.create", "employee.update", "system.manage"],
     ).await?;
     let dir = files_dir(&state);
-    services::employees::upload_document(
-        &conn,
+    services::employees::upload_document_sea(
+        &state.sea,
         &dir,
         uid,
         employee_id as i64,
@@ -838,6 +832,7 @@ async fn employee_document_upload(
         expiry_date.as_deref(),
         &file,
     )
+    .await
 }
 
 #[tauri::command]
@@ -847,10 +842,9 @@ async fn employee_document_bytes(
     employee_id: i32,
     id: i32,
 ) -> Result<services::employees::DocumentBytes, String> {
-    let conn = pooled(&state)?;
     require(&state, &["employee.view", "system.manage"]).await?;
     let dir = files_dir(&state);
-    services::employees::document_bytes(&conn, &dir, employee_id as i64, id as i64)
+    services::employees::document_bytes_sea(&state.sea, &dir, employee_id as i64, id as i64).await
 }
 
 #[tauri::command]
@@ -860,9 +854,8 @@ async fn employee_document_delete(
     employee_id: i32,
     id: i32,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["employee.delete", "system.manage"]).await?;
-    services::employees::child_delete(&conn, uid, "documents", employee_id as i64, id as i64)
+    services::employees::delete_document_sea(&state.sea, uid, employee_id as i64, id as i64).await
 }
 
 #[tauri::command]
