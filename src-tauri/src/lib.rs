@@ -496,8 +496,8 @@ fn org_entities(
 
 #[tauri::command]
 #[specta::specta]
-fn org_list(
-    state: tauri::State<AppState>,
+async fn org_list(
+    state: tauri::State<'_, AppState>,
     slug: String,
     search: String,
     page: i32,
@@ -505,37 +505,37 @@ fn org_list(
 ) -> Result<services::organization::OrgPage, String> {
     let conn = pooled(&state)?;
     require(&state, &conn, &["organization.view", "system.manage"])?;
-    services::organization::list(&conn, &slug, &search, page, per_page)
+    services::organization::list(&state.sea, &slug, &search, page, per_page).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn org_get(
-    state: tauri::State<AppState>,
+async fn org_get(
+    state: tauri::State<'_, AppState>,
     slug: String,
     id: i32,
 ) -> Result<Option<std::collections::BTreeMap<String, String>>, String> {
     let conn = pooled(&state)?;
     require(&state, &conn, &["organization.view", "system.manage"])?;
-    services::organization::get(&conn, &slug, id as i64)
+    services::organization::get(&state.sea, &slug, id as i64).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn org_options(
-    state: tauri::State<AppState>,
+async fn org_options(
+    state: tauri::State<'_, AppState>,
     slug: String,
     field: String,
 ) -> Result<Vec<services::organization::Opt>, String> {
     let conn = pooled(&state)?;
     require(&state, &conn, &["organization.view", "system.manage"])?;
-    services::organization::options(&conn, &slug, &field)
+    services::organization::options(&state.sea, &slug, &field).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn org_save(
-    state: tauri::State<AppState>,
+async fn org_save(
+    state: tauri::State<'_, AppState>,
     slug: String,
     id: Option<i32>,
     values: std::collections::BTreeMap<String, String>,
@@ -550,25 +550,49 @@ fn org_save(
             "system.manage",
         ],
     )?;
-    services::organization::save(&conn, uid, &slug, id.map(|v| v as i64), &values)
+    let rid = services::organization::save(&state.sea, &slug, id.map(|v| v as i64), &values).await?;
+    services::audit::log_sea(
+        &state.sea,
+        Some(uid),
+        if id.is_some() { "UPDATE" } else { "CREATE" },
+        &format!("organization.{slug}"),
+        Some(&rid.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    Ok(rid)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn org_delete(state: tauri::State<AppState>, slug: String, id: i32) -> Result<(), String> {
+async fn org_delete(state: tauri::State<'_, AppState>, slug: String, id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
     let (uid, _) = require(&state, &conn, &["organization.delete", "system.manage"])?;
-    services::organization::delete(&conn, uid, &slug, id as i64)
+    services::organization::delete(&state.sea, &slug, id as i64).await?;
+    services::audit::log_sea(
+        &state.sea,
+        Some(uid),
+        "DELETE",
+        &format!("organization.{slug}"),
+        Some(&id.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
-fn org_chart(
-    state: tauri::State<AppState>,
+async fn org_chart(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::organization::CompanyNode>, String> {
     let conn = pooled(&state)?;
     require(&state, &conn, &["organization.view", "system.manage"])?;
-    services::organization::org_chart(&conn)
+    services::organization::org_chart(&state.sea).await
 }
 
 #[tauri::command]
