@@ -102,6 +102,12 @@ pub fn backup_restore_sea(db_path: &Path, dir: &Path, name: &str) -> Result<(), 
         return Err("Berkas cadangan tidak ditemukan.".to_string());
     }
     std::fs::copy(&path, db_path).map_err(|e| format!("gagal memulihkan cadangan: {e}"))?;
+    // Basis utama sudah digantikan; jurnal WAL lama wajib dibuang agar
+    // koneksi berikutnya tidak mengulang frame pasca-cadangan ke file baru.
+    let wal = db_path.with_extension("db-wal");
+    let shm = db_path.with_extension("db-shm");
+    let _ = std::fs::remove_file(wal);
+    let _ = std::fs::remove_file(shm);
     Ok(())
 }
 
@@ -195,6 +201,14 @@ mod tests {
         .await
         .expect("junk");
         drop(state);
+        // Tunggu penutupan bersih koneksi lama (checkpoint menghapus -wal)
+        // sebelum menimpa berkas utama, agar tidak ada balapan tulis.
+        for _ in 0..200 {
+            if !db_path.with_extension("db-wal").exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         backup_restore_sea(&db_path, backups.path(), &name).expect("restore");
         let c2 = crate::db::connect_sea(&db_path)
             .await
@@ -230,7 +244,7 @@ mod tests {
     }
 
     async fn exec_sea_setting(db: &sea_orm::DatabaseConnection, v: &str) {
-        use super::sea_raw::{exec, Value};
+        use crate::services::sea_raw::{exec, Value};
         exec(
             db,
             "UPDATE system_settings SET setting_value = ?1 WHERE setting_key = 'backup_schedule'".to_string(),

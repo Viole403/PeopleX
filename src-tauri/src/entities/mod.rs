@@ -93,7 +93,7 @@ mod tests {
     #[tokio::test]
     async fn baca_seaorm_konsisten_dengan_sql_raw() {
         let dir = tempfile::tempdir().expect("dir");
-        let state = crate::init_state(dir.path().to_path_buf());
+        let state = crate::init_state(dir.path().to_path_buf()).expect("init_state");
         let via_sea = SettingEntity::find()
             .all(&state.sea)
             .await
@@ -108,10 +108,11 @@ mod tests {
         .await
         .expect("count")
         .expect("baris");
-        match counted[0] {
-            Value::Int(n) => assert_eq!(via_sea.len() as i64, n),
+        let n = match counted.first() {
+            Some(Value::Int(v)) => *v,
             other => panic!("tipe tak terduga: {other:?}"),
-        }
+        };
+        assert_eq!(via_sea.len() as i64, n);
         assert!(!via_sea.is_empty());
         let company = via_sea
             .iter()

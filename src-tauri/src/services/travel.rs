@@ -1258,7 +1258,7 @@ mod tests {
         );
         assert!(trip_settle_sea(db, admin_uid, tid as i64)
             .await
-            .expect_err("settle ganda"));
+            .is_err());
     }
 
     #[tokio::test]
@@ -1324,8 +1324,8 @@ mod tests {
             },
             None,
         )
-        .await
-        .expect_err("nominal terlalu kecil"));
+            .await
+            .is_err());
         let bad = FileUpload {
             name: "x.exe".to_string(),
             mime: "application/x-ms".to_string(),
@@ -1375,7 +1375,7 @@ mod tests {
             .contains("berwenang"));
         assert!(reimburse_decide_sea(db, admin_uid, Some(admin_emp), true, rid as i64, "setuju")
             .await
-            .expect_err("aksi salah"));
+            .is_err());
         assert_eq!(
             reimburse_decide_sea(db, mgr_uid, Some(mgr_eid), false, rid as i64, "approve")
                 .await
@@ -1467,7 +1467,7 @@ mod tests {
         let admin_uid = one(db, "SELECT id FROM users WHERE username = 'admin'", "t.admin").await;
         assert!(category_save_sea(db, admin_uid, None, " ", "Nama", None)
             .await
-            .expect_err("kode kosong"));
+            .is_err());
         assert!(category_save_sea(db, admin_uid, None, "NOL", "Nol", Some(0.0))
             .await
             .expect_err("batas nol")

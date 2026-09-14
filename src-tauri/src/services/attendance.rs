@@ -1081,6 +1081,7 @@ mod tests {
                 Value::Null => None,
                 v => Some(value_to_string(v)),
             })
+            .flatten()
     }
 
     async fn mkemp(db: &sea_orm::DatabaseConnection, number: &str, supervisor: Option<i64>) -> i64 {

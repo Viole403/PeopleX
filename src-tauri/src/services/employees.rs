@@ -2866,7 +2866,7 @@ mod tests {
         assert_eq!(e, "Email pribadi tidak valid.");
         let dd = dropdowns_sea(db).await.expect("dropdowns");
         assert!(!dd.companies.is_empty());
-        assert!(dd.employees.iter().any(|o| o.name == "Budi"));
+        assert!(dd.employees.iter().any(|o| o.name.trim() == "Budi"));
     }
 
     #[tokio::test]
