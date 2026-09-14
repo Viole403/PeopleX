@@ -255,9 +255,8 @@ async fn reset_password(
 #[tauri::command]
 #[specta::specta]
 async fn list_roles(state: tauri::State<'_, AppState>) -> Result<Vec<services::rbac::Role>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["rbac.manage"]).await?;
-    services::rbac::list_roles(&conn)
+    services::rbac::list_roles(&state.sea).await
 }
 
 #[tauri::command]
@@ -268,9 +267,10 @@ async fn create_role(
     name: String,
     description: Option<String>,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["rbac.manage"]).await?;
-    services::rbac::create_role(&conn, uid, &slug, &name, description.as_deref())
+    let id = services::rbac::create_role(&state.sea, &slug, &name, description.as_deref()).await?;
+    services::audit::log_sea(&state.sea, Some(uid), "CREATE", "roles", Some(&id.to_string()), None, None, Some(&format!("Peran {name} dibuat"))).await?;
+    Ok(id)
 }
 
 #[tauri::command]
@@ -281,17 +281,19 @@ async fn update_role(
     name: String,
     description: Option<String>,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["rbac.manage"]).await?;
-    services::rbac::update_role(&conn, uid, role_id as i64, &name, description.as_deref())
+    services::rbac::update_role(&state.sea, role_id as i64, &name, description.as_deref()).await?;
+    services::audit::log_sea(&state.sea, Some(uid), "UPDATE", "roles", Some(&role_id.to_string()), None, None, Some(&format!("Peran {name} diperbarui"))).await?;
+    Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn delete_role(state: tauri::State<'_, AppState>, role_id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["rbac.manage"]).await?;
-    services::rbac::delete_role(&conn, uid, role_id as i64)
+    services::rbac::delete_role(&state.sea, role_id as i64).await?;
+    services::audit::log_sea(&state.sea, Some(uid), "DELETE", "roles", Some(&role_id.to_string()), None, None, None).await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -299,17 +301,15 @@ async fn delete_role(state: tauri::State<'_, AppState>, role_id: i32) -> Result<
 async fn list_permissions(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::rbac::Permission>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["rbac.manage"]).await?;
-    services::rbac::list_permissions(&conn)
+    services::rbac::list_permissions(&state.sea).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn role_permission_ids(state: tauri::State<'_, AppState>, role_id: i32) -> Result<Vec<i32>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["rbac.manage"]).await?;
-    services::rbac::role_permission_ids(&conn, role_id as i64)
+    services::rbac::role_permission_ids(&state.sea, role_id as i64).await
 }
 
 #[tauri::command]
@@ -319,26 +319,25 @@ async fn sync_role_permissions(
     role_id: i32,
     permission_ids: Vec<i32>,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["rbac.manage"]).await?;
     let ids: Vec<i64> = permission_ids.iter().map(|v| *v as i64).collect();
-    services::rbac::sync_role_permissions(&conn, uid, role_id as i64, &ids)
+    services::rbac::sync_role_permissions(&state.sea, role_id as i64, &ids).await?;
+    services::audit::log_sea(&state.sea, Some(uid), "UPDATE", "role_permissions", Some(&role_id.to_string()), None, None, None).await?;
+    Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn list_users(state: tauri::State<'_, AppState>) -> Result<Vec<services::rbac::UserRow>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["rbac.manage"]).await?;
-    services::rbac::list_users(&conn)
+    services::rbac::list_users(&state.sea).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn user_role_ids(state: tauri::State<'_, AppState>, user_id: i32) -> Result<Vec<i32>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["rbac.manage"]).await?;
-    services::rbac::user_role_ids(&conn, user_id as i64)
+    services::rbac::user_role_ids(&state.sea, user_id as i64).await
 }
 
 #[tauri::command]
@@ -348,10 +347,11 @@ async fn sync_user_roles(
     user_id: i32,
     role_ids: Vec<i32>,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["rbac.manage"]).await?;
     let ids: Vec<i64> = role_ids.iter().map(|v| *v as i64).collect();
-    services::rbac::sync_user_roles(&conn, uid, user_id as i64, &ids)
+    services::rbac::sync_user_roles(&state.sea, uid, user_id as i64, &ids).await?;
+    services::audit::log_sea(&state.sea, Some(uid), "UPDATE", "user_roles", Some(&user_id.to_string()), None, None, None).await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -361,9 +361,10 @@ async fn toggle_user_status(
     user_id: i32,
     status: String,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["rbac.manage"]).await?;
-    services::rbac::toggle_user_status(&conn, uid, user_id as i64, &status)
+    services::rbac::toggle_user_status(&state.sea, uid, user_id as i64, &status).await?;
+    services::audit::log_sea(&state.sea, Some(uid), "UPDATE", "users", Some(&user_id.to_string()), None, None, None).await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -373,9 +374,10 @@ async fn admin_reset_password(
     user_id: i32,
     new_password: String,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["rbac.manage"]).await?;
-    services::rbac::admin_reset_password(&conn, uid, user_id as i64, &new_password)
+    services::rbac::admin_reset_password(&state.sea, user_id as i64, &new_password).await?;
+    services::audit::log_sea(&state.sea, Some(uid), "PASSWORD_RESET", "users", Some(&user_id.to_string()), None, None, None).await?;
+    Ok(())
 }
 
 #[tauri::command]
