@@ -1,7 +1,6 @@
 //! Izin non-cuti: satu tahap oleh atasan.
 
 use chrono::{Local, NaiveDate};
-use rusqlite::{params, Connection, OptionalExtension};
 
 use super::approval;
 use super::audit;
@@ -37,304 +36,6 @@ pub struct PermissionCreate {
     pub start_time: Option<String>,
     pub end_time: Option<String>,
     pub reason: String,
-}
-
-pub fn types(conn: &Connection) -> Result<Vec<PermissionType>, String> {
-    let mut stmt = conn
-        .prepare("SELECT id, code, name FROM permission_types ORDER BY name")
-        .map_err(|e| format!("gagal menyiapkan tipe izin: {e}"))?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(|e| format!("gagal membaca tipe: {e}"))?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (id, code, name) = row.map_err(|e| format!("gagal membaca baris: {e}"))?;
-        out.push(PermissionType {
-            id: to_dto_int(id, "permtype.id")?,
-            code,
-            name,
-        });
-    }
-    Ok(out)
-}
-
-fn map_row(
-    id: i64,
-    emp: i64,
-    name: String,
-    number: String,
-    tid: i64,
-    tname: String,
-    date: String,
-    start: Option<String>,
-    end: Option<String>,
-    reason: String,
-    status: String,
-    created: String,
-) -> Result<PermissionRequest, String> {
-    Ok(PermissionRequest {
-        id: to_dto_int(id, "perm.id")?,
-        employee_id: to_dto_int(emp, "perm.emp")?,
-        employee_name: name,
-        employee_number: number,
-        permission_type_id: to_dto_int(tid, "perm.type")?,
-        permission_type_name: tname,
-        date,
-        start_time: start,
-        end_time: end,
-        reason,
-        status,
-        created_at: created,
-    })
-}
-
-const SELECT: &str = "SELECT pr.id, pr.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), e.employee_number, pr.permission_type_id, pt.name, pr.date, pr.start_time, pr.end_time, pr.reason, pr.status, pr.created_at FROM permission_requests pr INNER JOIN permission_types pt ON pt.id = pr.permission_type_id INNER JOIN employees e ON e.id = pr.employee_id";
-
-type PermRow = (
-    i64,
-    i64,
-    String,
-    String,
-    i64,
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-    String,
-    String,
-    String,
-);
-
-fn map_perm_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PermRow> {
-    Ok((
-        r.get(0)?,
-        r.get(1)?,
-        r.get(2)?,
-        r.get(3)?,
-        r.get(4)?,
-        r.get(5)?,
-        r.get(6)?,
-        r.get(7)?,
-        r.get(8)?,
-        r.get(9)?,
-        r.get(10)?,
-        r.get(11)?,
-    ))
-}
-
-fn collect(
-    stmt: &mut rusqlite::Statement,
-    param: Option<i64>,
-    joint: bool,
-) -> Result<Vec<PermissionRequest>, String> {
-    let rows = if joint {
-        stmt.query_map(params![param.unwrap_or(0)], map_perm_row)
-            .map_err(|e| format!("gagal membaca daftar: {e}"))?
-    } else {
-        stmt.query_map([], map_perm_row)
-            .map_err(|e| format!("gagal membaca daftar: {e}"))?
-    };
-    let mut out = Vec::new();
-    for row in rows {
-        let t = row.map_err(|e| format!("gagal membaca baris: {e}"))?;
-        out.push(map_row(
-            t.0, t.1, t.2, t.3, t.4, t.5, t.6, t.7, t.8, t.9, t.10, t.11,
-        )?);
-    }
-    Ok(out)
-}
-
-pub fn my_requests(conn: &Connection, employee_id: i64) -> Result<Vec<PermissionRequest>, String> {
-    let mut stmt = conn
-        .prepare(&format!(
-            "{SELECT} WHERE pr.employee_id = ?1 ORDER BY pr.created_at DESC"
-        ))
-        .map_err(|e| format!("gagal menyiapkan daftar: {e}"))?;
-    collect(&mut stmt, Some(employee_id), true)
-}
-
-/// Menunggu putusan user: ia supervisor langsung ATAU pemegang izin.
-pub fn pending_for(
-    conn: &Connection,
-    user_id: i64,
-    privileged: bool,
-) -> Result<Vec<PermissionRequest>, String> {
-    let emp = approval::employee_of_user(conn, user_id)?.unwrap_or(0);
-    let mut stmt = conn
-        .prepare(&format!("{SELECT} WHERE pr.status = 'pending' AND e.supervisor_id = ?1 ORDER BY pr.created_at ASC"))
-        .map_err(|e| format!("gagal menyiapkan antrean: {e}"))?;
-    let mut out = collect(&mut stmt, Some(emp), true)?;
-    if privileged {
-        let mut stmt = conn
-            .prepare(&format!("{SELECT} WHERE pr.status = 'pending' AND (e.supervisor_id IS NULL OR e.supervisor_id != ?1) ORDER BY pr.created_at ASC"))
-            .map_err(|e| format!("gagal menyiapkan antrean: {e}"))?;
-        out.extend(collect(&mut stmt, Some(emp), true)?);
-    }
-    Ok(out)
-}
-
-pub fn all_requests(conn: &Connection) -> Result<Vec<PermissionRequest>, String> {
-    let mut stmt = conn
-        .prepare(&format!("{SELECT} ORDER BY CASE pr.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, pr.created_at DESC"))
-        .map_err(|e| format!("gagal menyiapkan semua: {e}"))?;
-    collect(&mut stmt, None, false)
-}
-
-pub fn create(
-    conn: &Connection,
-    actor_id: i64,
-    employee_id: i64,
-    input: &PermissionCreate,
-) -> Result<i32, String> {
-    let type_ok: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM permission_types WHERE id = ?1",
-            params![input.permission_type_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("gagal memeriksa tipe: {e}"))?;
-    if type_ok.is_none() {
-        return Err("Tipe izin tidak ditemukan.".to_string());
-    }
-    NaiveDate::parse_from_str(input.date.trim(), "%Y-%m-%d")
-        .map_err(|_| "Tanggal tidak valid.".to_string())?;
-    if input.reason.trim().is_empty() {
-        return Err("Alasan wajib diisi.".to_string());
-    }
-    if input.reason.len() > 255 {
-        return Err("Alasan maksimal 255 karakter.".to_string());
-    }
-    let start = input
-        .start_time
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let end = input
-        .end_time
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    conn.execute(
-        "INSERT INTO permission_requests (employee_id, permission_type_id, date, start_time, end_time, reason, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending')",
-        params![employee_id, input.permission_type_id, input.date.trim(), start, end, input.reason.trim()],
-    )
-    .map_err(|e| format!("gagal mengajukan izin: {e}"))?;
-    let rid = conn.last_insert_rowid();
-    let sup: Option<i64> = conn
-        .query_row(
-            "SELECT supervisor_id FROM employees WHERE id = ?1",
-            params![employee_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("gagal memuat supervisor: {e}"))?
-        .flatten();
-    if let Some(sid) = sup {
-        if let Some(uid) = approval::user_of_employee(conn, sid)? {
-            let name: String = conn
-                .query_row(
-                    "SELECT first_name || ' ' || COALESCE(last_name, '') FROM employees WHERE id = ?1",
-                    params![employee_id],
-                    |r| r.get(0),
-                )
-                .unwrap_or_default();
-            approval::notify(
-                conn,
-                uid,
-                "permission_request",
-                "Pengajuan Izin Baru",
-                &format!("{name} mengajukan izin."),
-                "/leave",
-            )?;
-        }
-    }
-    audit::log(
-        conn,
-        Some(actor_id),
-        "CREATE",
-        "permission_request",
-        Some(&rid.to_string()),
-        None,
-        None,
-        None,
-    )?;
-    to_dto_int(rid, "perm.id")
-}
-
-pub fn decide(
-    conn: &Connection,
-    approver_user_id: i64,
-    approver_employee_id: Option<i64>,
-    privileged: bool,
-    id: i64,
-    decision: &str,
-) -> Result<(), String> {
-    if decision != "approved" && decision != "rejected" {
-        return Err("Keputusan tidak valid.".to_string());
-    }
-    let req: Option<(Option<i64>, String)> = conn
-        .query_row(
-            "SELECT e.supervisor_id, pr.status FROM permission_requests pr INNER JOIN employees e ON e.id = pr.employee_id WHERE pr.id = ?1",
-            params![id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(|e| format!("gagal memuat pengajuan: {e}"))?;
-    let Some((supervisor, status)) = req else {
-        return Err("Pengajuan tidak ditemukan.".to_string());
-    };
-    if status != "pending" {
-        return Err("Pengajuan sudah diproses.".to_string());
-    }
-    let is_supervisor = approver_employee_id == supervisor;
-    if !is_supervisor && !privileged {
-        return Err("Hanya supervisor atau HR yang boleh memutuskan.".to_string());
-    }
-    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    conn.execute(
-        "UPDATE permission_requests SET status = ?1, approved_by = ?2, approved_at = ?3 WHERE id = ?4",
-        params![decision, approver_user_id, now, id],
-    )
-    .map_err(|e| format!("gagal menyimpan putusan: {e}"))?;
-    let emp_id: i64 = conn
-        .query_row(
-            "SELECT employee_id FROM permission_requests WHERE id = ?1",
-            params![id],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    if let Some(uid) = approval::user_of_employee(conn, emp_id)? {
-        approval::notify(
-            conn,
-            uid,
-            "permission_request",
-            if decision == "approved" {
-                "Izin Disetujui"
-            } else {
-                "Izin Ditolak"
-            },
-            &format!("Pengajuan izin Anda {decision}."),
-            "/leave",
-        )?;
-    }
-    audit::log(
-        conn,
-        Some(approver_user_id),
-        decision.to_uppercase().as_str(),
-        "permission_request",
-        Some(&id.to_string()),
-        None,
-        None,
-        None,
-    )?;
-    Ok(())
 }
 
 // ---------------- Varian SeaORM ----------------
@@ -663,145 +364,92 @@ pub async fn decide_sea(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db, seed};
+    use crate::services::sea_raw::{exec, q_one, value_i64, Value};
 
-    fn live() -> (tempfile::TempDir, crate::db::DbPool) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let pool = db::init_pool(&dir.path().join("t.db")).expect("pool");
-        let mut c = pool.get().expect("get");
-        db::migrate(&mut c).expect("migrate");
-        seed::seed(&mut c).expect("seed");
-        (dir, pool)
-    }
-
-    fn mkuser(
-        conn: &Connection,
+    async fn mkuser(
+        db: &sea_orm::DatabaseConnection,
         username: &str,
         number: &str,
         supervisor: Option<i64>,
     ) -> (i64, i64) {
-        conn.execute(
-            "INSERT INTO employees (employee_number, first_name, gender, marital_status, company_id, supervisor_id, join_date, employment_status, employment_type) VALUES (?1, 'Tes', 'male', 'single', 1, ?2, '2026-01-01', 'active', 'permanent')",
-            params![number, supervisor],
+        exec(
+            db,
+            "INSERT INTO employees (employee_number, first_name, gender, marital_status, company_id, supervisor_id, join_date, employment_status, employment_type) VALUES (?1, 'Tes', 'male', 'single', 1, ?2, '2026-01-01', 'active', 'permanent')".to_string(),
+            vec![
+                Value::Text(number.to_string()),
+                match supervisor {
+                    Some(s) => Value::Int(s),
+                    None => Value::Null,
+                },
+            ],
+            "test.mkemp",
         )
-        .unwrap();
-        let eid = conn.last_insert_rowid();
-        let hash = bcrypt::hash("Rahasia123", 4).unwrap();
-        conn.execute(
-            "INSERT INTO users (employee_id, username, email, password, status, must_change_password) VALUES (?1, ?2, ?3, ?4, 'active', 0)",
-            params![eid, username, format!("{username}@x.local"), hash],
+        .await
+        .expect("emp");
+        let eid = q_one(db, "SELECT last_insert_rowid()".to_string(), vec![], 1, "test.rowid")
+            .await
+            .expect("rowid")
+            .and_then(|r| value_i64(&r[0]))
+            .expect("eid");
+        let hash = bcrypt::hash("Rahasia123", 4).expect("hash");
+        exec(
+            db,
+            "INSERT INTO users (employee_id, username, email, password, status, must_change_password) VALUES (?1, ?2, ?3, ?4, 'active', 0)".to_string(),
+            vec![
+                Value::Int(eid),
+                Value::Text(username.to_string()),
+                Value::Text(format!("{username}@x.local")),
+                Value::Text(hash),
+            ],
+            "test.mkuser",
         )
-        .unwrap();
-        (conn.last_insert_rowid(), eid)
+        .await
+        .expect("user");
+        let uid = q_one(db, "SELECT last_insert_rowid()".to_string(), vec![], 1, "test.rowid")
+            .await
+            .expect("rowid")
+            .and_then(|r| value_i64(&r[0]))
+            .expect("uid");
+        (uid, eid)
     }
 
-    #[test]
-    fn izin_satu_tahap_oleh_supervisor() {
-        let (_d, pool) = live();
-        let conn = pool.get().expect("get");
-        let (sup_uid, sup_eid) = mkuser(&conn, "spv2", "EMP-P1", None);
-        let (uid, eid) = mkuser(&conn, "staff2", "EMP-P2", Some(sup_eid));
-        assert!(!types(&conn).expect("tipe").is_empty());
-        let tid: i64 = conn
-            .query_row(
-                "SELECT id FROM permission_types WHERE code = 'PERSONAL'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let id = create(
-            &conn,
-            uid,
-            eid,
-            &PermissionCreate {
-                permission_type_id: tid as i32,
-                date: "2026-05-04".to_string(),
-                start_time: Some("10:00".to_string()),
-                end_time: Some("12:00".to_string()),
-                reason: "Keperluan keluarga".to_string(),
-            },
+    async fn type_id(db: &sea_orm::DatabaseConnection, code: &str) -> i64 {
+        q_one(
+            db,
+            "SELECT id FROM permission_types WHERE code = ?1".to_string(),
+            vec![Value::Text(code.to_string())],
+            1,
+            "test.typeid",
         )
-        .expect("buat") as i64;
-        assert_eq!(my_requests(&conn, eid).expect("mine").len(), 1);
-        assert_eq!(
-            pending_for(&conn, sup_uid, false).expect("antrean").len(),
-            1
-        );
-        // rekan kerja ditolak
-        let (other_uid, _) = mkuser(&conn, "lain2", "EMP-P3", None);
-        let other_emp = approval::employee_of_user(&conn, other_uid)
-            .unwrap()
-            .unwrap();
-        let e = decide(&conn, other_uid, Some(other_emp), false, id, "approved")
-            .expect_err("otorisasi");
-        assert!(e.contains("supervisor"));
-        // supervisor menyetujui langsung final
-        decide(&conn, sup_uid, Some(sup_eid), false, id, "approved").expect("setuju");
-        let status: String = conn
-            .query_row(
-                "SELECT status FROM permission_requests WHERE id = ?1",
-                params![id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(status, "approved");
-        let _ = sup_uid;
+        .await
+        .expect("typeid")
+        .and_then(|r| value_i64(&r[0]))
+        .expect("tid")
     }
 
-    #[test]
-    fn izin_tanpa_supervisor_masuk_antrean_hr() {
-        let (_d, pool) = live();
-        let conn = pool.get().expect("get");
-        let (uid, eid) = mkuser(&conn, "solo2", "EMP-P4", None);
-        let tid: i64 = conn
-            .query_row(
-                "SELECT id FROM permission_types WHERE code = 'SICK'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        create(
-            &conn,
-            uid,
-            eid,
-            &PermissionCreate {
-                permission_type_id: tid as i32,
-                date: "2026-05-05".to_string(),
-                start_time: None,
-                end_time: None,
-                reason: "Sakit".to_string(),
-            },
+    async fn status_of(db: &sea_orm::DatabaseConnection, pid: i64) -> String {
+        q_one(
+            db,
+            "SELECT status FROM permission_requests WHERE id = ?1".to_string(),
+            vec![Value::Int(pid)],
+            1,
+            "test.status",
         )
-        .expect("buat");
-        // tanpa supervisor: antrean supervisor kosong, tapi HR privileged melihatnya
-        assert!(pending_for(&conn, uid, false).expect("a").is_empty());
-        let admin: i64 = conn
-            .query_row("SELECT id FROM users WHERE username = 'admin'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(pending_for(&conn, admin, true).expect("b").len(), 1);
+        .await
+        .expect("status")
+        .map(|r| value_to_string(&r[0]))
+        .expect("val")
     }
 
     #[tokio::test]
-    async fn izin_sea_paritas_dengan_sync() {
+    async fn izin_sea_satu_tahap_oleh_supervisor() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = crate::init_state(dir.path().to_path_buf()).expect("state");
-        let conn = state.db.get().expect("get");
         let db = &state.sea;
-        let (sup_uid, sup_eid) = mkuser(&conn, "seapspv", "EMP-SEAP1", None);
-        let (uid, eid) = mkuser(&conn, "seapstaff", "EMP-SEAP2", Some(sup_eid));
+        let (sup_uid, sup_eid) = mkuser(db, "spv2", "EMP-P1", None).await;
+        let (uid, eid) = mkuser(db, "staff2", "EMP-P2", Some(sup_eid)).await;
         assert!(!types_sea(db).await.expect("tipe").is_empty());
-        let ty_sync = serde_json::to_string(&types(&conn).expect("tys")).unwrap();
-        let ty_sea = serde_json::to_string(&types_sea(db).await.expect("tys2")).unwrap();
-        assert_eq!(ty_sync, ty_sea);
-        let tid: i64 = conn
-            .query_row(
-                "SELECT id FROM permission_types WHERE code = 'PERSONAL'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
+        let tid = type_id(db, "PERSONAL").await;
         let pid = create_sea(
             db,
             uid,
@@ -816,39 +464,147 @@ mod tests {
         )
         .await
         .expect("buat") as i64;
-        let m_sync = serde_json::to_string(&my_requests(&conn, eid).expect("ms")).unwrap();
-        let m_sea = serde_json::to_string(&my_requests_sea(db, eid).await.expect("mse")).unwrap();
-        assert_eq!(m_sync, m_sea);
-        let p_sync =
-            serde_json::to_string(&pending_for(&conn, sup_uid, false).expect("ps")).unwrap();
-        let p_sea =
-            serde_json::to_string(&pending_for_sea(db, sup_uid, false).await.expect("pse"))
-                .unwrap();
-        assert_eq!(p_sync, p_sea);
-        let (other_uid, _) = mkuser(&conn, "seaplain", "EMP-SEAP3", None);
-        let other_emp = approval::employee_of_user(&conn, other_uid)
-            .unwrap()
-            .unwrap();
-        let e_sea = decide_sea(db, other_uid, Some(other_emp), false, pid, "approved")
+        assert_eq!(my_requests_sea(db, eid).await.expect("mine").len(), 1);
+        assert_eq!(
+            pending_for_sea(db, sup_uid, false)
+                .await
+                .expect("antrean")
+                .len(),
+            1
+        );
+        // rekan kerja ditolak
+        let (other_uid, _) = mkuser(db, "lain2", "EMP-P3", None).await;
+        let other_emp = approval::employee_of_user_sea(db, other_uid)
+            .await
+            .expect("emp")
+            .expect("ada");
+        let e = decide_sea(db, other_uid, Some(other_emp), false, pid, "approved")
             .await
             .expect_err("otorisasi");
-        let e_sync = decide(&conn, other_uid, Some(other_emp), false, pid, "approved")
-            .expect_err("otorisasi sync");
-        assert_eq!(e_sea, e_sync);
+        assert!(e.contains("supervisor"));
+        // supervisor menyetujui langsung final
         decide_sea(db, sup_uid, Some(sup_eid), false, pid, "approved")
             .await
             .expect("setuju");
-        let status: String = conn
-            .query_row(
-                "SELECT status FROM permission_requests WHERE id = ?1",
-                params![pid],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(status, "approved");
-        let a_sync = serde_json::to_string(&all_requests(&conn).expect("as")).unwrap();
-        let a_sea = serde_json::to_string(&all_requests_sea(db).await.expect("ase")).unwrap();
-        assert_eq!(a_sync, a_sea);
-        let _ = sup_uid;
+        assert_eq!(status_of(db, pid).await, "approved");
+        // sudah diproses: putusan kedua ditolak
+        assert!(decide_sea(db, sup_uid, Some(sup_eid), false, pid, "approved")
+            .await
+            .is_err());
+        assert_eq!(all_requests_sea(db).await.expect("all").len(), 1);
+        let _ = (sup_uid, uid);
+    }
+
+    #[tokio::test]
+    async fn izin_sea_tanpa_supervisor_masuk_antrean_hr() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let (uid, eid) = mkuser(db, "solo2", "EMP-P4", None).await;
+        let tid = type_id(db, "SICK").await;
+        create_sea(
+            db,
+            uid,
+            eid,
+            &PermissionCreate {
+                permission_type_id: tid as i32,
+                date: "2026-05-05".to_string(),
+                start_time: None,
+                end_time: None,
+                reason: "Sakit".to_string(),
+            },
+        )
+        .await
+        .expect("buat");
+        // tanpa supervisor: antrean supervisor kosong, tapi HR privileged melihatnya
+        assert!(pending_for_sea(db, uid, false).await.expect("a").is_empty());
+        let admin = q_one(
+            db,
+            "SELECT id FROM users WHERE username = 'admin'".to_string(),
+            vec![],
+            1,
+            "test.admin",
+        )
+        .await
+        .expect("admin")
+        .and_then(|r| value_i64(&r[0]))
+        .expect("aid");
+        assert_eq!(pending_for_sea(db, admin, true).await.expect("b").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn izin_sea_validasi_ditolak() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let (uid, eid) = mkuser(db, "val1", "EMP-P5", None).await;
+        let tid = type_id(db, "PERSONAL").await;
+        let base = || PermissionCreate {
+            permission_type_id: tid as i32,
+            date: "2026-05-06".to_string(),
+            start_time: None,
+            end_time: None,
+            reason: "Perlu".to_string(),
+        };
+        // tipe tidak dikenal
+        assert!(create_sea(
+            db,
+            uid,
+            eid,
+            &PermissionCreate {
+                permission_type_id: 99999,
+                ..base()
+            },
+        )
+        .await
+        .is_err());
+        // tanggal buruk
+        assert!(create_sea(
+            db,
+            uid,
+            eid,
+            &PermissionCreate {
+                date: "bukan-tanggal".to_string(),
+                ..base()
+            },
+        )
+        .await
+        .is_err());
+        // alasan kosong
+        assert!(create_sea(
+            db,
+            uid,
+            eid,
+            &PermissionCreate {
+                reason: "   ".to_string(),
+                ..base()
+            },
+        )
+        .await
+        .is_err());
+        // alasan > 255 karakter
+        assert!(create_sea(
+            db,
+            uid,
+            eid,
+            &PermissionCreate {
+                reason: "x".repeat(256),
+                ..base()
+            },
+        )
+        .await
+        .is_err());
+        let pid = create_sea(db, uid, eid, &base()).await.expect("buat") as i64;
+        // keputusan tidak valid
+        assert!(decide_sea(db, uid, Some(eid), true, pid, "maybe").await.is_err());
+        // id tidak dikenal
+        assert!(decide_sea(db, uid, Some(eid), true, 99999, "approved")
+            .await
+            .is_err());
+        // penolakan valid oleh HR mengubah status
+        decide_sea(db, uid, Some(eid), true, pid, "rejected")
+            .await
+            .expect("tolak");
+        assert_eq!(status_of(db, pid).await, "rejected");
     }
 }
