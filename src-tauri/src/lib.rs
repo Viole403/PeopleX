@@ -573,18 +573,18 @@ fn org_chart(
 
 #[tauri::command]
 #[specta::specta]
-fn list_workflows(
-    state: tauri::State<AppState>,
+async fn list_workflows(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::workflows::Workflow>, String> {
     let conn = pooled(&state)?;
     require(&state, &conn, &["workflow.manage"])?;
-    services::workflows::list(&conn)
+    services::workflows::list(&state.sea).await
 }
 
 #[tauri::command]
 #[specta::specta]
-fn add_workflow_step(
-    state: tauri::State<AppState>,
+async fn add_workflow_step(
+    state: tauri::State<'_, AppState>,
     workflow_id: i32,
     approver_type: String,
     role_id: Option<i32>,
@@ -592,22 +592,46 @@ fn add_workflow_step(
 ) -> Result<i32, String> {
     let conn = pooled(&state)?;
     let (uid, _) = require(&state, &conn, &["workflow.manage"])?;
-    services::workflows::add_step(
-        &conn,
-        uid,
+    let id = services::workflows::add_step(
+        &state.sea,
         workflow_id as i64,
         &approver_type,
         role_id.map(|v| v as i64),
         user_id.map(|v| v as i64),
     )
+    .await?;
+    services::audit::log_sea(
+        &state.sea,
+        Some(uid),
+        "CREATE",
+        "approval_step",
+        Some(&id.to_string()),
+        None,
+        None,
+        Some(&format!("Tahap ditambah ({approver_type})")),
+    )
+    .await?;
+    Ok(id)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn remove_workflow_step(state: tauri::State<AppState>, step_id: i32) -> Result<(), String> {
+async fn remove_workflow_step(state: tauri::State<'_, AppState>, step_id: i32) -> Result<(), String> {
     let conn = pooled(&state)?;
     let (uid, _) = require(&state, &conn, &["workflow.manage"])?;
-    services::workflows::remove_step(&conn, uid, step_id as i64)
+    services::workflows::remove_step(&state.sea, step_id as i64).await?;
+    services::audit::log_sea(
+        &state.sea,
+        Some(uid),
+        "DELETE",
+        "approval_step",
+        Some(&step_id.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    Ok(())
 }
 
 fn files_dir(state: &tauri::State<AppState>) -> std::path::PathBuf {

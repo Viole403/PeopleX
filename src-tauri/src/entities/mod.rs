@@ -318,3 +318,47 @@ pub mod audit_log {
 
     impl ActiveModelBehavior for ActiveModel {}
 }
+
+pub mod approval_workflow {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "approval_workflows")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        pub module: String,
+        pub name: String,
+        pub is_active: i32,
+        pub created_at: Option<String>,
+        pub updated_at: Option<String>,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod approval_step {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "approval_steps")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        pub approval_workflow_id: i32,
+        pub step_order: i32,
+        pub approver_type: String,
+        pub role_id: Option<i32>,
+        pub user_id: Option<i32>,
+        pub created_at: Option<String>,
+        pub updated_at: Option<String>,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
