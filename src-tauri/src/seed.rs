@@ -181,7 +181,7 @@ pub async fn seed(db: &sea_orm::DatabaseConnection) -> Result<SeedSummary, Strin
 }
 
 async fn count(db: &sea_orm::DatabaseConnection, table: &str) -> Result<i64, String> {
-    let rows = super::sea_raw::q_all(
+    let rows = crate::services::sea_raw::q_all(
         db,
         format!("SELECT COUNT(*) FROM {table}"),
         vec![],
@@ -192,7 +192,7 @@ async fn count(db: &sea_orm::DatabaseConnection, table: &str) -> Result<i64, Str
     .map_err(|e| format!("gagal menghitung {table}: {e}"))?;
     Ok(rows
         .first()
-        .and_then(|r| super::sea_raw::value_i64(&r[0]))
+        .and_then(|r| crate::services::sea_raw::value_i64(&r[0]))
         .unwrap_or(0))
 }
 

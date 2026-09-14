@@ -73,6 +73,16 @@ pub struct SkillCell {
     pub level: i32,
 }
 
+/// Satu materi e-learning milik training.
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct Material {
+    pub id: i32,
+    pub training_id: i32,
+    pub title: String,
+    pub kind: String,
+    pub url: Option<String>,
+}
+
 const TRAINING_STATUS: &[&str] = &["scheduled", "ongoing", "completed", "cancelled"];
 const PARTICIPANT_STATUS: &[&str] = &["registered", "attended", "absent", "completed"];
 
