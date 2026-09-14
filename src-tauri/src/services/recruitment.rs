@@ -1,7 +1,6 @@
 //! Rekrutmen: lowongan, kandidat, tahap, interview, assessment, hire.
 
 use chrono::NaiveDate;
-use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
 use super::approval;
@@ -153,533 +152,7 @@ pub struct HireInput {
     pub join_date: Option<String>,
 }
 
-// ---------------- Lowongan ----------------
-
-pub fn vacancy_list(conn: &Connection) -> Result<Vec<Vacancy>, String> {
-    let mut stmt = conn
-        .prepare("SELECT v.id, v.title, v.department_id, d.name, v.position_id, p.name, v.employment_type, v.description, v.requirements, v.quota, v.status, v.posted_date, v.closing_date, (SELECT COUNT(*) FROM candidates c WHERE c.vacancy_id = v.id AND c.deleted_at IS NULL) FROM vacancies v LEFT JOIN departments d ON d.id = v.department_id LEFT JOIN positions p ON p.id = v.position_id WHERE v.deleted_at IS NULL ORDER BY v.created_at DESC")
-        .map_err(|e| format!("gagal menyiapkan lowongan: {e}"))?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<i64>>(2)?,
-                r.get::<_, Option<String>>(3)?,
-                r.get::<_, Option<i64>>(4)?,
-                r.get::<_, Option<String>>(5)?,
-                r.get::<_, String>(6)?,
-                r.get::<_, Option<String>>(7)?,
-                r.get::<_, Option<String>>(8)?,
-                r.get::<_, i64>(9)?,
-                r.get::<_, String>(10)?,
-                r.get::<_, Option<String>>(11)?,
-                r.get::<_, Option<String>>(12)?,
-                r.get::<_, i64>(13)?,
-            ))
-        })
-        .map_err(|e| format!("gagal membaca lowongan: {e}"))?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (
-            id,
-            title,
-            dept,
-            dept_name,
-            pos,
-            pos_name,
-            etype,
-            desc,
-            req,
-            quota,
-            status,
-            posted,
-            closing,
-            count,
-        ) = row.map_err(|e| format!("gagal membaca baris: {e}"))?;
-        let opt_i = |v: Option<i64>, f: &str| v.map(|x| to_dto_int(x, f)).transpose();
-        out.push(Vacancy {
-            id: to_dto_int(id, "vacancy.id")?,
-            title,
-            department_id: opt_i(dept, "vacancy.dept")?,
-            department_name: dept_name,
-            position_id: opt_i(pos, "vacancy.pos")?,
-            position_name: pos_name,
-            employment_type: etype,
-            description: desc,
-            requirements: req,
-            quota: to_dto_int(quota, "vacancy.quota")?,
-            status,
-            posted_date: posted,
-            closing_date: closing,
-            candidate_count: to_dto_int(count, "vacancy.count")?,
-        });
-    }
-    Ok(out)
-}
-
-pub fn vacancy_get(conn: &Connection, id: i64) -> Result<Option<Vacancy>, String> {
-    Ok(vacancy_list(conn)?.into_iter().find(|v| v.id as i64 == id))
-}
-
-fn validate_vacancy(conn: &Connection, input: &VacancyInput) -> Result<(), String> {
-    if input.title.trim().is_empty() {
-        return Err("Judul lowongan wajib diisi.".to_string());
-    }
-    if input.title.len() > 150 {
-        return Err("Judul maksimal 150 karakter.".to_string());
-    }
-    if !["permanent", "contract", "intern", "daily", "freelance"]
-        .contains(&input.employment_type.as_str())
-    {
-        return Err("Jenis kepegawaian tidak valid.".to_string());
-    }
-    if !["open", "closed", "on_hold"].contains(&input.status.as_str()) {
-        return Err("Status tidak valid.".to_string());
-    }
-    if input.quota < 1 || input.quota > 1000 {
-        return Err("Kuota 1-1000.".to_string());
-    }
-    for (v, label) in [
-        (&input.posted_date, "Tanggal pasang"),
-        (&input.closing_date, "Tanggal tutup"),
-    ] {
-        if let Some(s) = v.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                .map_err(|_| format!("{label} harus valid (YYYY-MM-DD)."))?;
-        }
-    }
-    for (opt_id, table, label) in [
-        (input.department_id, "departments", "Departemen"),
-        (input.position_id, "positions", "Jabatan"),
-    ] {
-        if let Some(v) = opt_id {
-            let found: Option<i64> = conn
-                .query_row(
-                    &format!("SELECT id FROM {table} WHERE id = ?1 AND deleted_at IS NULL"),
-                    params![v as i64],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(|e| format!("gagal memeriksa {label}: {e}"))?;
-            if found.is_none() {
-                return Err(format!("{label} tidak ditemukan."));
-            }
-        }
-    }
-    Ok(())
-}
-
-pub fn vacancy_save(
-    conn: &Connection,
-    actor_id: i64,
-    id: Option<i64>,
-    input: &VacancyInput,
-) -> Result<i32, String> {
-    validate_vacancy(conn, input)?;
-    let posted = input
-        .posted_date
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let closing = input
-        .closing_date
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    if let Some(rid) = id {
-        let n = conn.execute(
-            "UPDATE vacancies SET title = ?1, department_id = ?2, position_id = ?3, employment_type = ?4, description = ?5, requirements = ?6, quota = ?7, status = ?8, posted_date = ?9, closing_date = ?10 WHERE id = ?11 AND deleted_at IS NULL",
-            params![
-                input.title.trim(), input.department_id.map(|v| v as i64),
-                input.position_id.map(|v| v as i64), input.employment_type,
-                input.description.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-                input.requirements.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-                input.quota as i64, input.status, posted, closing, rid,
-            ],
-        ).map_err(|e| format!("gagal menyimpan lowongan: {e}"))?;
-        if n == 0 {
-            return Err("Lowongan tidak ditemukan.".to_string());
-        }
-        audit::log(
-            conn,
-            Some(actor_id),
-            "UPDATE",
-            "recruitment.vacancy",
-            Some(&rid.to_string()),
-            None,
-            None,
-            None,
-        )?;
-        to_dto_int(rid, "vacancy.id")
-    } else {
-        conn.execute(
-            "INSERT INTO vacancies (title, department_id, position_id, employment_type, description, requirements, quota, status, posted_date, closing_date) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                input.title.trim(), input.department_id.map(|v| v as i64),
-                input.position_id.map(|v| v as i64), input.employment_type,
-                input.description.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-                input.requirements.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-                input.quota as i64, input.status, posted, closing,
-            ],
-        ).map_err(|e| format!("gagal menambah lowongan: {e}"))?;
-        let rid = conn.last_insert_rowid();
-        audit::log(
-            conn,
-            Some(actor_id),
-            "CREATE",
-            "recruitment.vacancy",
-            Some(&rid.to_string()),
-            None,
-            None,
-            None,
-        )?;
-        to_dto_int(rid, "vacancy.id")
-    }
-}
-
-pub fn vacancy_delete(conn: &Connection, actor_id: i64, id: i64) -> Result<(), String> {
-    let n: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM candidates WHERE vacancy_id = ?1 AND deleted_at IS NULL",
-            params![id],
-            |r| r.get(0),
-        )
-        .map_err(|e| format!("gagal memeriksa kandidat: {e}"))?;
-    if n > 0 {
-        return Err("Lowongan masih memiliki kandidat.".to_string());
-    }
-    let d = conn.execute(
-        "UPDATE vacancies SET deleted_at = datetime('now','localtime') WHERE id = ?1 AND deleted_at IS NULL",
-        params![id],
-    ).map_err(|e| format!("gagal menghapus lowongan: {e}"))?;
-    if d == 0 {
-        return Err("Lowongan tidak ditemukan.".to_string());
-    }
-    audit::log(
-        conn,
-        Some(actor_id),
-        "DELETE",
-        "recruitment.vacancy",
-        Some(&id.to_string()),
-        None,
-        None,
-        None,
-    )?;
-    Ok(())
-}
-
 // ---------------- Kandidat ----------------
-
-fn log_stage(
-    conn: &Connection,
-    candidate_id: i64,
-    stage: &str,
-    notes: Option<&str>,
-    by: Option<i64>,
-) -> Result<(), String> {
-    conn.execute(
-        "INSERT INTO recruitment_stages (candidate_id, stage, notes, changed_by, changed_at) VALUES (?1, ?2, ?3, ?4, datetime('now','localtime'))",
-        params![candidate_id, stage, notes.map(str::trim).filter(|s| !s.is_empty()), by],
-    )
-    .map_err(|e| format!("gagal mencatat tahap: {e}"))?;
-    Ok(())
-}
-
-pub fn candidates_by_vacancy(
-    conn: &Connection,
-    vacancy_id: i64,
-) -> Result<Vec<CandidateRow>, String> {
-    let mut stmt = conn
-        .prepare("SELECT id, full_name, email, phone, stage, rating, created_at FROM candidates WHERE vacancy_id = ?1 AND deleted_at IS NULL ORDER BY created_at DESC")
-        .map_err(|e| format!("gagal menyiapkan kandidat: {e}"))?;
-    collect_rows(conn, &mut stmt, vacancy_id)
-}
-
-fn collect_rows(
-    _conn: &Connection,
-    stmt: &mut rusqlite::Statement,
-    param: i64,
-) -> Result<Vec<CandidateRow>, String> {
-    let rows = stmt
-        .query_map(params![param], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, Option<String>>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, Option<f64>>(5)?,
-                r.get::<_, String>(6)?,
-            ))
-        })
-        .map_err(|e| format!("gagal membaca kandidat: {e}"))?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (id, name, email, phone, stage, rating, created) =
-            row.map_err(|e| format!("gagal membaca baris: {e}"))?;
-        out.push(CandidateRow {
-            id: to_dto_int(id, "candidate.id")?,
-            full_name: name,
-            email,
-            phone,
-            stage,
-            rating,
-            created_at: created,
-        });
-    }
-    Ok(out)
-}
-
-pub fn candidate_detail(conn: &Connection, id: i64) -> Result<Option<CandidateDetail>, String> {
-    let row: Option<(
-        i64, i64, String, String, Option<String>, Option<String>, Option<String>,
-        Option<String>, Option<String>, Option<String>, Option<String>, String,
-        Option<f64>, Option<String>, Option<i64>,
-    )> = conn
-        .query_row(
-            "SELECT c.id, c.vacancy_id, v.title, c.full_name, c.email, c.phone, c.birth_date, c.gender, c.address, c.cv_path, c.source, c.stage, c.rating, c.notes, c.employee_id FROM candidates c INNER JOIN vacancies v ON v.id = c.vacancy_id WHERE c.id = ?1 AND c.deleted_at IS NULL",
-            params![id],
-            |r| {
-                Ok((
-                    r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
-                    r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?,
-                    r.get(12)?, r.get(13)?, r.get(14)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(|e| format!("gagal memuat kandidat: {e}"))?;
-    let Some((
-        cid,
-        vid,
-        vtitle,
-        name,
-        email,
-        phone,
-        birth,
-        gender,
-        addr,
-        cv,
-        source,
-        stage,
-        rating,
-        notes,
-        emp,
-    )) = row
-    else {
-        return Ok(None);
-    };
-    let opt_i = |v: Option<i64>| v.map(|x| to_dto_int(x, "candidate.ref")).transpose();
-    let mut docs = Vec::new();
-    let mut dstmt = conn
-        .prepare("SELECT id, name, file_path, category FROM candidate_documents WHERE candidate_id = ?1 ORDER BY created_at DESC")
-        .map_err(|e| format!("gagal menyiapkan dokumen: {e}"))?;
-    for drow in dstmt
-        .query_map(params![cid], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, Option<String>>(3)?,
-            ))
-        })
-        .map_err(|e| format!("gagal membaca dokumen: {e}"))?
-    {
-        let (did, dname, dpath, dcat) = drow.map_err(|e| format!("gagal membaca baris: {e}"))?;
-        docs.push(CandidateDoc {
-            id: to_dto_int(did, "doc.id")?,
-            name: dname,
-            file_path: dpath,
-            category: dcat,
-        });
-    }
-    let mut interviews = Vec::new();
-    let mut istmt = conn
-        .prepare("SELECT i.id, i.interviewer_id, e.first_name || ' ' || COALESCE(e.last_name, ''), i.schedule_at, i.location, i.type, i.result, i.notes FROM interviews i LEFT JOIN employees e ON e.id = i.interviewer_id WHERE i.candidate_id = ?1 ORDER BY i.schedule_at DESC")
-        .map_err(|e| format!("gagal menyiapkan interview: {e}"))?;
-    for irow in istmt
-        .query_map(params![cid], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, Option<i64>>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, Option<String>>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, String>(6)?,
-                r.get::<_, Option<String>>(7)?,
-            ))
-        })
-        .map_err(|e| format!("gagal membaca interview: {e}"))?
-    {
-        let (iid, ivr, ivr_name, sched, loc, itype, res, note) =
-            irow.map_err(|e| format!("gagal membaca baris: {e}"))?;
-        interviews.push(Interview {
-            id: to_dto_int(iid, "interview.id")?,
-            interviewer_id: opt_i(ivr)?,
-            interviewer_name: ivr_name,
-            schedule_at: sched,
-            location: loc,
-            interview_type: itype,
-            result: res,
-            notes: note,
-        });
-    }
-    let mut assessments = Vec::new();
-    let mut astmt = conn
-        .prepare("SELECT id, assessment_name, score, notes FROM candidate_assessments WHERE candidate_id = ?1 ORDER BY created_at DESC")
-        .map_err(|e| format!("gagal menyiapkan assessment: {e}"))?;
-    for arow in astmt
-        .query_map(params![cid], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<f64>>(2)?,
-                r.get::<_, Option<String>>(3)?,
-            ))
-        })
-        .map_err(|e| format!("gagal membaca assessment: {e}"))?
-    {
-        let (aid, aname, score, note) = arow.map_err(|e| format!("gagal membaca baris: {e}"))?;
-        assessments.push(Assessment {
-            id: to_dto_int(aid, "assessment.id")?,
-            assessment_name: aname,
-            score,
-            notes: note,
-        });
-    }
-    let mut history = Vec::new();
-    let mut hstmt = conn
-        .prepare("SELECT stage, notes, changed_at FROM recruitment_stages WHERE candidate_id = ?1 ORDER BY changed_at DESC")
-        .map_err(|e| format!("gagal menyiapkan riwayat: {e}"))?;
-    for hrow in hstmt
-        .query_map(params![cid], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(|e| format!("gagal membaca riwayat: {e}"))?
-    {
-        let (stage, note, at) = hrow.map_err(|e| format!("gagal membaca baris: {e}"))?;
-        history.push(StageEvent {
-            stage,
-            notes: note,
-            changed_at: at,
-        });
-    }
-    Ok(Some(CandidateDetail {
-        id: to_dto_int(cid, "candidate.id")?,
-        vacancy_id: to_dto_int(vid, "candidate.vacancy")?,
-        vacancy_title: vtitle,
-        full_name: name,
-        email,
-        phone,
-        birth_date: birth,
-        gender,
-        address: addr,
-        cv_path: cv,
-        source,
-        stage,
-        rating,
-        notes,
-        employee_id: opt_i(emp)?,
-        documents: docs,
-        interviews,
-        assessments,
-        stage_history: history,
-    }))
-}
-
-pub fn candidate_create(
-    conn: &Connection,
-    files: &Path,
-    actor_id: i64,
-    vacancy_id: i64,
-    input: &CandidateInput,
-    cv: Option<&employees::FileUpload>,
-) -> Result<i32, String> {
-    let vac: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM vacancies WHERE id = ?1 AND deleted_at IS NULL",
-            params![vacancy_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("gagal memeriksa lowongan: {e}"))?;
-    if vac.is_none() {
-        return Err("Lowongan tidak ditemukan.".to_string());
-    }
-    if input.full_name.trim().is_empty() {
-        return Err("Nama lengkap wajib diisi.".to_string());
-    }
-    if input.full_name.len() > 150 {
-        return Err("Nama maksimal 150 karakter.".to_string());
-    }
-    if let Some(email) = input
-        .email
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        if !email.contains('@') {
-            return Err("Email tidak valid.".to_string());
-        }
-    }
-    if let Some(bd) = input
-        .birth_date
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        NaiveDate::parse_from_str(bd, "%Y-%m-%d")
-            .map_err(|_| "Tanggal lahir harus valid (YYYY-MM-DD).".to_string())?;
-    }
-    if let Some(g) = input
-        .gender
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        if g != "male" && g != "female" {
-            return Err("Jenis kelamin tidak valid.".to_string());
-        }
-    }
-    let cv_path = match cv {
-        Some(f) => Some(store_cv(files, f)?),
-        None => None,
-    };
-    conn.execute(
-        "INSERT INTO candidates (vacancy_id, full_name, email, phone, birth_date, gender, address, cv_path, source, stage) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'applied')",
-        params![
-            vacancy_id,
-            input.full_name.trim(),
-            input.email.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            input.phone.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            input.birth_date.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            input.gender.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            input.address.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            cv_path,
-            input.source.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-        ],
-    )
-    .map_err(|e| format!("gagal menambah kandidat: {e}"))?;
-    let rid = conn.last_insert_rowid();
-    log_stage(conn, rid, "applied", Some("Kandidat mendaftar"), None)?;
-    audit::log(
-        conn,
-        Some(actor_id),
-        "CREATE",
-        "recruitment.candidate",
-        Some(&rid.to_string()),
-        None,
-        None,
-        None,
-    )?;
-    to_dto_int(rid, "candidate.id")
-}
 
 const CV_MIMES: &[&str] = &[
     "application/pdf",
@@ -717,347 +190,6 @@ fn store_cv(files: &Path, file: &employees::FileUpload) -> Result<String, String
     std::fs::write(files.join(&rel), &file.bytes)
         .map_err(|e| format!("gagal menyimpan CV: {e}"))?;
     Ok(rel)
-}
-
-pub fn candidate_delete(conn: &Connection, actor_id: i64, id: i64) -> Result<(), String> {
-    let n = conn.execute(
-        "UPDATE candidates SET deleted_at = datetime('now','localtime') WHERE id = ?1 AND deleted_at IS NULL",
-        params![id],
-    ).map_err(|e| format!("gagal menghapus kandidat: {e}"))?;
-    if n == 0 {
-        return Err("Kandidat tidak ditemukan.".to_string());
-    }
-    audit::log(
-        conn,
-        Some(actor_id),
-        "DELETE",
-        "recruitment.candidate",
-        Some(&id.to_string()),
-        None,
-        None,
-        None,
-    )?;
-    Ok(())
-}
-
-pub fn update_stage(
-    conn: &Connection,
-    actor_id: i64,
-    candidate_id: i64,
-    stage: &str,
-    notes: Option<&str>,
-) -> Result<(), String> {
-    if !STAGES.contains(&stage) {
-        return Err("Tahap tidak valid.".to_string());
-    }
-    let exists: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM candidates WHERE id = ?1 AND deleted_at IS NULL",
-            params![candidate_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("gagal memuat kandidat: {e}"))?;
-    if exists.is_none() {
-        return Err("Kandidat tidak ditemukan.".to_string());
-    }
-    conn.execute(
-        "UPDATE candidates SET stage = ?1 WHERE id = ?2",
-        params![stage, candidate_id],
-    )
-    .map_err(|e| format!("gagal mengubah tahap: {e}"))?;
-    log_stage(conn, candidate_id, stage, notes, Some(actor_id))?;
-    audit::log(
-        conn,
-        Some(actor_id),
-        "UPDATE",
-        "recruitment.candidate_stage",
-        Some(&candidate_id.to_string()),
-        None,
-        None,
-        Some(&format!("Tahap menjadi {stage}")),
-    )?;
-    Ok(())
-}
-
-pub fn add_interview(
-    conn: &Connection,
-    actor_id: i64,
-    candidate_id: i64,
-    input: &InterviewInput,
-) -> Result<i32, String> {
-    let exists: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM candidates WHERE id = ?1 AND deleted_at IS NULL",
-            params![candidate_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("gagal memuat kandidat: {e}"))?;
-    if exists.is_none() {
-        return Err("Kandidat tidak ditemukan.".to_string());
-    }
-    if !["hr", "user", "technical"].contains(&input.interview_type.as_str()) {
-        return Err("Jenis interview tidak valid.".to_string());
-    }
-    if let Some(iv) = input.interviewer_id {
-        let found: Option<i64> = conn
-            .query_row(
-                "SELECT id FROM employees WHERE id = ?1 AND deleted_at IS NULL",
-                params![iv as i64],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(|e| format!("gagal memeriksa pewawancara: {e}"))?;
-        if found.is_none() {
-            return Err("Pewawancara tidak ditemukan.".to_string());
-        }
-    }
-    conn.execute(
-        "INSERT INTO interviews (candidate_id, interviewer_id, schedule_at, location, type, result, notes) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
-        params![
-            candidate_id,
-            input.interviewer_id.map(|v| v as i64),
-            input.schedule_at.trim(),
-            input.location.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            input.interview_type,
-            input.notes.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-        ],
-    )
-    .map_err(|e| format!("gagal menjadwalkan interview: {e}"))?;
-    let rid = conn.last_insert_rowid();
-    audit::log(
-        conn,
-        Some(actor_id),
-        "CREATE",
-        "recruitment.interview",
-        Some(&rid.to_string()),
-        None,
-        None,
-        None,
-    )?;
-    to_dto_int(rid, "interview.id")
-}
-
-pub fn decide_interview(
-    conn: &Connection,
-    actor_id: i64,
-    interview_id: i64,
-    result: &str,
-    notes: Option<&str>,
-) -> Result<(), String> {
-    if result != "pass" && result != "fail" {
-        return Err("Hasil tidak valid.".to_string());
-    }
-    let n = conn
-        .execute(
-            "UPDATE interviews SET result = ?1, notes = ?2 WHERE id = ?3",
-            params![
-                result,
-                notes.map(str::trim).filter(|s| !s.is_empty()),
-                interview_id
-            ],
-        )
-        .map_err(|e| format!("gagal menyimpan hasil: {e}"))?;
-    if n == 0 {
-        return Err("Interview tidak ditemukan.".to_string());
-    }
-    audit::log(
-        conn,
-        Some(actor_id),
-        "UPDATE",
-        "recruitment.interview",
-        Some(&interview_id.to_string()),
-        None,
-        None,
-        Some(&format!("Hasil: {result}")),
-    )?;
-    Ok(())
-}
-
-pub fn add_assessment(
-    conn: &Connection,
-    actor_id: i64,
-    candidate_id: i64,
-    input: &AssessmentInput,
-) -> Result<i32, String> {
-    let exists: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM candidates WHERE id = ?1 AND deleted_at IS NULL",
-            params![candidate_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("gagal memuat kandidat: {e}"))?;
-    if exists.is_none() {
-        return Err("Kandidat tidak ditemukan.".to_string());
-    }
-    if input.assessment_name.trim().is_empty() {
-        return Err("Nama assessment wajib diisi.".to_string());
-    }
-    if input.assessment_name.len() > 150 {
-        return Err("Nama assessment maksimal 150 karakter.".to_string());
-    }
-    conn.execute(
-        "INSERT INTO candidate_assessments (candidate_id, assessment_name, score, notes, assessed_by) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            candidate_id,
-            input.assessment_name.trim(),
-            input.score,
-            input.notes.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            actor_id,
-        ],
-    )
-    .map_err(|e| format!("gagal menyimpan assessment: {e}"))?;
-    let rid = conn.last_insert_rowid();
-    audit::log(
-        conn,
-        Some(actor_id),
-        "CREATE",
-        "recruitment.assessment",
-        Some(&rid.to_string()),
-        None,
-        None,
-        None,
-    )?;
-    to_dto_int(rid, "assessment.id")
-}
-
-pub fn candidate_document_bytes(
-    conn: &Connection,
-    files: &Path,
-    candidate_id: i64,
-    id: i64,
-) -> Result<super::employees::DocumentBytes, String> {
-    let row: Option<(String, String)> = conn
-        .query_row(
-            "SELECT file_path, name FROM candidate_documents WHERE id = ?1 AND candidate_id = ?2",
-            params![id, candidate_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(|e| format!("gagal memuat dokumen: {e}"))?;
-    let Some((rel, name)) = row else {
-        return Err("Dokumen tidak ditemukan.".to_string());
-    };
-    let path = files.join(&rel);
-    if !path.starts_with(files) {
-        return Err("Path tidak valid.".to_string());
-    }
-    let bytes = std::fs::read(&path).map_err(|_| "Berkas hilang dari penyimpanan.".to_string())?;
-    Ok(super::employees::DocumentBytes {
-        mime: "application/octet-stream".to_string(),
-        name,
-        bytes,
-    })
-}
-
-/// Terima kandidat: buat karyawan + onboarding. Satu kandidat satu karyawan.
-pub fn hire(
-    conn: &Connection,
-    files: &Path,
-    actor_id: i64,
-    candidate_id: i64,
-    join_date: Option<&str>,
-) -> Result<i32, String> {
-    let cand: Option<(i64, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>)> = conn
-        .query_row(
-            "SELECT vacancy_id, full_name, gender, email, phone, birth_date, address, employee_id FROM candidates WHERE id = ?1 AND deleted_at IS NULL",
-            params![candidate_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
-        )
-        .optional()
-        .map_err(|e| format!("gagal memuat kandidat: {e}"))?;
-    let Some((vacancy_id, full_name, gender, email, phone, birth_date, _address, already)) = cand
-    else {
-        return Err("Kandidat tidak ditemukan.".to_string());
-    };
-    if already.is_some() {
-        return Err("Kandidat ini sudah menjadi karyawan.".to_string());
-    }
-    let vac: Option<(Option<i64>, Option<i64>, String)> = conn
-        .query_row(
-            "SELECT department_id, position_id, employment_type FROM vacancies WHERE id = ?1",
-            params![vacancy_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()
-        .map_err(|e| format!("gagal memuat lowongan: {e}"))?;
-    let (dept, pos, etype) = vac.unwrap_or((None, None, "contract".to_string()));
-    let company: i64 = conn
-        .query_row(
-            "SELECT id FROM companies WHERE deleted_at IS NULL ORDER BY id LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("gagal memuat perusahaan: {e}"))?
-        .ok_or("Perusahaan belum ada.".to_string())?;
-    let join = join_date
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&chrono::Local::now().format("%Y-%m-%d").to_string())
-        .to_string();
-    NaiveDate::parse_from_str(&join, "%Y-%m-%d")
-        .map_err(|_| "Tanggal masuk tidak valid.".to_string())?;
-    let (first, last) = full_name
-        .split_once(' ')
-        .unwrap_or((full_name.as_str(), ""));
-    let input = employees::EmployeeInput {
-        first_name: first.to_string(),
-        last_name: if last.is_empty() {
-            None
-        } else {
-            Some(last.to_string())
-        },
-        gender: gender.unwrap_or_else(|| "male".to_string()),
-        marital_status: "single".to_string(),
-        company_id: to_dto_int(company, "hire.company")?,
-        department_id: dept.map(|v| to_dto_int(v, "hire.dept")).transpose()?,
-        position_id: pos.map(|v| to_dto_int(v, "hire.pos")).transpose()?,
-        employment_type: etype,
-        employment_status: "probation".to_string(),
-        join_date: join.clone(),
-        personal_email: email,
-        phone,
-        birth_date,
-        ..Default::default()
-    };
-    let employee_id = employees::create(conn, files, actor_id, &input, None)?;
-    conn.execute(
-        "UPDATE candidates SET stage = 'hired', employee_id = ?1 WHERE id = ?2",
-        params![employee_id as i64, candidate_id],
-    )
-    .map_err(|e| format!("gagal menandai hire: {e}"))?;
-    log_stage(
-        conn,
-        candidate_id,
-        "hired",
-        Some("Diterima menjadi karyawan"),
-        Some(actor_id),
-    )?;
-    super::onboarding::create_for_employee(conn, actor_id, employee_id as i64, None, &join)?;
-    if let Some(uid) = approval::user_of_employee(conn, employee_id as i64)? {
-        approval::notify(
-            conn,
-            uid,
-            "recruitment",
-            "Selamat Bergabung",
-            "Akun karyawan Anda telah dibuat.",
-            "/employees",
-        )?;
-    }
-    audit::log(
-        conn,
-        Some(actor_id),
-        "HIRE",
-        "recruitment.candidate",
-        Some(&candidate_id.to_string()),
-        None,
-        None,
-        Some(&format!("employee {employee_id}")),
-    )?;
-    Ok(employee_id)
 }
 
 // ---------------- Varian SeaORM ----------------
@@ -2033,194 +1165,76 @@ pub async fn hire_sea(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db, seed};
 
-    fn live() -> (tempfile::TempDir, crate::db::DbPool, tempfile::TempDir) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let files = tempfile::tempdir().expect("files");
-        let pool = db::init_pool(&dir.path().join("t.db")).expect("pool");
-        let mut c = pool.get().expect("get");
-        db::migrate(&mut c).expect("migrate");
-        seed::seed(&mut c).expect("seed");
-        (dir, pool, files)
-    }
-
-    fn admin(conn: &Connection) -> i64 {
-        conn.query_row("SELECT id FROM users WHERE username = 'admin'", [], |r| {
-            r.get(0)
-        })
-        .unwrap()
-    }
-
-    fn vacancy(conn: &Connection, actor: i64) -> i32 {
-        vacancy_save(
-            conn,
-            actor,
-            None,
-            &VacancyInput {
-                title: "Staff IT".to_string(),
-                department_id: None,
-                position_id: None,
-                employment_type: "contract".to_string(),
-                description: None,
-                requirements: None,
-                quota: 2,
-                status: "open".to_string(),
-                posted_date: None,
-                closing_date: None,
-            },
+    async fn admin(db: &sea_orm::DatabaseConnection) -> i64 {
+        let row = q_one(
+            db,
+            "SELECT id FROM users WHERE username = 'admin'".to_string(),
+            vec![],
+            1,
+            "test.admin",
         )
-        .expect("lowongan")
+        .await
+        .expect("admin")
+        .expect("baris admin");
+        value_i64(&row[0]).expect("id admin")
     }
 
-    #[test]
-    fn kandidat_mengalir_sampai_hire() {
-        let (_d, pool, files) = live();
-        let conn = pool.get().expect("get");
-        let actor = admin(&conn);
-        let vid = vacancy(&conn, actor);
-        assert_eq!(vacancy_list(&conn).expect("list").len(), 1);
-        let cid = candidate_create(
-            &conn,
-            files.path(),
+    async fn text(db: &sea_orm::DatabaseConnection, sql: &str) -> String {
+        let row = q_one(db, sql.to_string(), vec![], 1, "test.q")
+            .await
+            .expect("q")
+            .expect("baris");
+        value_to_string(&row[0])
+    }
+
+    fn vac_input() -> VacancyInput {
+        VacancyInput {
+            title: "Staff IT".to_string(),
+            employment_type: "contract".to_string(),
+            quota: 2,
+            status: "open".to_string(),
+            ..Default::default()
+        }
+    }
+
+    async fn vacancy(db: &sea_orm::DatabaseConnection, actor: i64) -> i32 {
+        vacancy_save_sea(db, actor, None, &vac_input())
+            .await
+            .expect("lowongan")
+    }
+
+    async fn kandidat(
+        db: &sea_orm::DatabaseConnection,
+        files: &std::path::Path,
+        actor: i64,
+        vid: i32,
+        name: &str,
+    ) -> i32 {
+        candidate_create_sea(
+            db,
+            files,
             actor,
             vid as i64,
             &CandidateInput {
-                full_name: "Citra Ayu".to_string(),
-                email: Some("citra@x.local".to_string()),
-                phone: None,
-                birth_date: None,
-                gender: Some("female".to_string()),
-                address: None,
-                source: Some("web".to_string()),
-            },
-            None,
-        )
-        .expect("kandidat");
-        assert!(candidate_create(
-            &conn,
-            files.path(),
-            actor,
-            9999,
-            &CandidateInput {
-                full_name: "X".to_string(),
+                full_name: name.to_string(),
                 ..Default::default()
             },
             None,
         )
-        .is_err());
-        update_stage(&conn, actor, cid as i64, "screening", None).expect("tahap");
-        assert!(update_stage(&conn, actor, cid as i64, "ngawur", None).is_err());
-        let iid = add_interview(
-            &conn,
-            actor,
-            cid as i64,
-            &InterviewInput {
-                interviewer_id: None,
-                schedule_at: "2026-10-01 09:00:00".to_string(),
-                location: Some("Ruang 1".to_string()),
-                interview_type: "hr".to_string(),
-                notes: None,
-            },
-        )
-        .expect("interview");
-        decide_interview(&conn, actor, iid as i64, "pass", None).expect("lulus");
-        assert!(decide_interview(&conn, actor, iid as i64, "bagus", None).is_err());
-        add_assessment(
-            &conn,
-            actor,
-            cid as i64,
-            &AssessmentInput {
-                assessment_name: "Tes logika".to_string(),
-                score: Some(85.0),
-                notes: None,
-            },
-        )
-        .expect("assessment");
-        let det = candidate_detail(&conn, cid as i64)
-            .expect("det")
-            .expect("ada");
-        assert_eq!(det.interviews.len(), 1);
-        assert_eq!(det.assessments.len(), 1);
-        assert!(det.stage_history.len() >= 2);
-        let eid = hire(&conn, files.path(), actor, cid as i64, Some("2026-10-06")).expect("hire");
-        let det = candidate_detail(&conn, cid as i64)
-            .expect("det")
-            .expect("ada");
-        assert_eq!(det.stage, "hired");
-        assert_eq!(det.employee_id, Some(eid));
-        assert!(hire(&conn, files.path(), actor, cid as i64, None).is_err());
-        let status: String = conn
-            .query_row(
-                "SELECT employment_status FROM employees WHERE id = ?1",
-                params![eid as i64],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(status, "probation");
-        let ob = crate::services::onboarding::for_employee(&conn, eid as i64)
-            .expect("ob")
-            .expect("ada");
-        assert_eq!(ob.tasks.len(), 10);
-        candidate_delete(&conn, actor, cid as i64).expect("hapus");
-        assert!(candidate_detail(&conn, cid as i64).expect("det").is_none());
-    }
-
-    #[test]
-    fn lowongan_bertuan_tidak_bisa_dihapus() {
-        let (_d, pool, files) = live();
-        let conn = pool.get().expect("get");
-        let actor = admin(&conn);
-        let vid = vacancy(&conn, actor);
-        candidate_create(
-            &conn,
-            files.path(),
-            actor,
-            vid as i64,
-            &CandidateInput {
-                full_name: "Tamu".to_string(),
-                ..Default::default()
-            },
-            None,
-        )
-        .expect("kandidat");
-        assert!(vacancy_delete(&conn, actor, vid as i64).is_err());
+        .await
+        .expect("kandidat")
     }
 
     #[tokio::test]
-    async fn rekrutmen_sea_paritas_dengan_sync() {
+    async fn kandidat_mengalir_sampai_hire_sea() {
         let dir = tempfile::tempdir().expect("tempdir");
         let files = tempfile::tempdir().expect("files");
         let state = crate::init_state(dir.path().to_path_buf()).expect("state");
-        let conn = state.db.get().expect("get");
         let db = &state.sea;
-        let actor: i64 = conn
-            .query_row("SELECT id FROM users WHERE username = 'admin'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        let vid = vacancy_save_sea(
-            db,
-            actor,
-            None,
-            &VacancyInput {
-                title: "Staff IT".to_string(),
-                department_id: None,
-                position_id: None,
-                employment_type: "contract".to_string(),
-                description: None,
-                requirements: None,
-                quota: 2,
-                status: "open".to_string(),
-                posted_date: None,
-                closing_date: None,
-            },
-        )
-        .await
-        .expect("lowongan");
-        let v_sync = serde_json::to_string(&vacancy_list(&conn).expect("vs")).unwrap();
-        let v_sea = serde_json::to_string(&vacancy_list_sea(db).await.expect("vse")).unwrap();
-        assert_eq!(v_sync, v_sea);
+        let actor = admin(db).await;
+        let vid = vacancy(db, actor).await;
+        assert_eq!(vacancy_list_sea(db).await.expect("list").len(), 1);
         let cid = candidate_create_sea(
             db,
             files.path(),
@@ -2239,15 +1253,26 @@ mod tests {
         )
         .await
         .expect("kandidat");
+        assert!(candidate_create_sea(
+            db,
+            files.path(),
+            actor,
+            9999,
+            &CandidateInput {
+                full_name: "X".to_string(),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .is_err());
         update_stage_sea(db, actor, cid as i64, "screening", None)
             .await
             .expect("tahap");
-        let e_sea = update_stage_sea(db, actor, cid as i64, "ngawur", None)
+        let e = update_stage_sea(db, actor, cid as i64, "ngawur", None)
             .await
             .expect_err("tahap salah");
-        let e_sync = update_stage(&conn, actor, cid as i64, "ngawur", None)
-            .expect_err("tahap salah sync");
-        assert_eq!(e_sea, e_sync);
+        assert!(e.contains("Tahap tidak valid"));
         let iid = add_interview_sea(
             db,
             actor,
@@ -2265,6 +1290,10 @@ mod tests {
         decide_interview_sea(db, actor, iid as i64, "pass", None)
             .await
             .expect("lulus");
+        let e = decide_interview_sea(db, actor, iid as i64, "bagus", None)
+            .await
+            .expect_err("hasil salah");
+        assert!(e.contains("Hasil tidak valid"));
         add_assessment_sea(
             db,
             actor,
@@ -2277,19 +1306,15 @@ mod tests {
         )
         .await
         .expect("assessment");
-        let c_sync =
-            serde_json::to_string(&candidates_by_vacancy(&conn, vid as i64).expect("cs"))
-                .unwrap();
-        let c_sea =
-            serde_json::to_string(&candidates_by_vacancy_sea(db, vid as i64).await.expect("cse"))
-                .unwrap();
-        assert_eq!(c_sync, c_sea);
-        let d_sync =
-            serde_json::to_string(&candidate_detail(&conn, cid as i64).expect("ds")).unwrap();
-        let d_sea =
-            serde_json::to_string(&candidate_detail_sea(db, cid as i64).await.expect("dse"))
-                .unwrap();
-        assert_eq!(d_sync, d_sea);
+        let det = candidate_detail_sea(db, cid as i64)
+            .await
+            .expect("det")
+            .expect("ada");
+        assert_eq!(det.interviews.len(), 1);
+        assert_eq!(det.interviews[0].result, "pass");
+        assert_eq!(det.assessments.len(), 1);
+        assert_eq!(det.assessments[0].score, Some(85.0));
+        assert!(det.stage_history.len() >= 2);
         let eid = hire_sea(db, files.path(), actor, cid as i64, Some("2026-10-06"))
             .await
             .expect("hire");
@@ -2299,19 +1324,290 @@ mod tests {
             .expect("ada");
         assert_eq!(det.stage, "hired");
         assert_eq!(det.employee_id, Some(eid));
-        let e2 = hire_sea(db, files.path(), actor, cid as i64, None)
+        let e = hire_sea(db, files.path(), actor, cid as i64, None)
             .await
             .expect_err("hire ganda");
-        assert!(e2.contains("sudah menjadi karyawan"));
+        assert!(e.contains("sudah menjadi karyawan"));
+        assert_eq!(
+            text(db, &format!("SELECT employment_status FROM employees WHERE id = {eid}"))
+                .await,
+            "probation"
+        );
         let ob = crate::services::onboarding::for_employee_sea(db, eid as i64)
             .await
             .expect("ob")
             .expect("ada");
         assert_eq!(ob.tasks.len(), 10);
-        candidate_delete_sea(db, actor, cid as i64).await.expect("hapus");
+        candidate_delete_sea(db, actor, cid as i64)
+            .await
+            .expect("hapus");
         assert!(candidate_detail_sea(db, cid as i64)
             .await
             .expect("det")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn lowongan_bertuan_tidak_bisa_dihapus_sea() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files = tempfile::tempdir().expect("files");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = admin(db).await;
+        let vid = vacancy(db, actor).await;
+        let cid = kandidat(db, files.path(), actor, vid, "Tamu").await;
+        let e = vacancy_delete_sea(db, actor, vid as i64)
+            .await
+            .expect_err("masih punya kandidat");
+        assert!(e.contains("masih memiliki kandidat"));
+        candidate_delete_sea(db, actor, cid as i64)
+            .await
+            .expect("hapus kandidat");
+        vacancy_delete_sea(db, actor, vid as i64)
+            .await
+            .expect("hapus lowongan");
+        assert!(vacancy_get_sea(db, vid as i64)
+            .await
+            .expect("get")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn validasi_batas_lowongan_dan_kandidat_sea() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files = tempfile::tempdir().expect("files");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = admin(db).await;
+
+        let mut input = vac_input();
+        input.title = "   ".to_string();
+        let e = vacancy_save_sea(db, actor, None, &input)
+            .await
+            .expect_err("judul kosong");
+        assert!(e.contains("Judul lowongan wajib diisi"));
+        let mut input = vac_input();
+        input.title = "x".repeat(151);
+        let e = vacancy_save_sea(db, actor, None, &input)
+            .await
+            .expect_err("judul kepanjangan");
+        assert!(e.contains("Judul maksimal 150 karakter"));
+        let mut input = vac_input();
+        input.employment_type = "magang".to_string();
+        let e = vacancy_save_sea(db, actor, None, &input)
+            .await
+            .expect_err("jenis kepegawaian");
+        assert!(e.contains("Jenis kepegawaian tidak valid"));
+        let mut input = vac_input();
+        input.status = "draft".to_string();
+        let e = vacancy_save_sea(db, actor, None, &input)
+            .await
+            .expect_err("status");
+        assert!(e.contains("Status tidak valid"));
+        let mut input = vac_input();
+        input.quota = 0;
+        let e = vacancy_save_sea(db, actor, None, &input)
+            .await
+            .expect_err("kuota nol");
+        assert!(e.contains("Kuota 1-1000"));
+        input.quota = 1001;
+        let e = vacancy_save_sea(db, actor, None, &input)
+            .await
+            .expect_err("kuota lewat");
+        assert!(e.contains("Kuota 1-1000"));
+        let mut input = vac_input();
+        input.posted_date = Some("2026-02-30".to_string());
+        let e = vacancy_save_sea(db, actor, None, &input)
+            .await
+            .expect_err("tanggal pasang");
+        assert!(e.contains("Tanggal pasang harus valid"));
+        let mut input = vac_input();
+        input.closing_date = Some("bukan-tanggal".to_string());
+        let e = vacancy_save_sea(db, actor, None, &input)
+            .await
+            .expect_err("tanggal tutup");
+        assert!(e.contains("Tanggal tutup harus valid"));
+        let mut input = vac_input();
+        input.department_id = Some(9999);
+        let e = vacancy_save_sea(db, actor, None, &input)
+            .await
+            .expect_err("departemen asing");
+        assert!(e.contains("Departemen tidak ditemukan"));
+        let mut input = vac_input();
+        input.position_id = Some(9999);
+        let e = vacancy_save_sea(db, actor, None, &input)
+            .await
+            .expect_err("jabatan asing");
+        assert!(e.contains("Jabatan tidak ditemukan"));
+        let mut input = vac_input();
+        input.quota = 1000;
+        let vid = vacancy_save_sea(db, actor, None, &input)
+            .await
+            .expect("kuota batas atas");
+
+        let e = candidate_create_sea(
+            db,
+            files.path(),
+            actor,
+            vid as i64,
+            &CandidateInput {
+                full_name: "  ".to_string(),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .expect_err("nama kosong");
+        assert!(e.contains("Nama lengkap wajib diisi"));
+        let e = candidate_create_sea(
+            db,
+            files.path(),
+            actor,
+            vid as i64,
+            &CandidateInput {
+                full_name: "y".repeat(151),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .expect_err("nama kepanjangan");
+        assert!(e.contains("Nama maksimal 150 karakter"));
+        let e = candidate_create_sea(
+            db,
+            files.path(),
+            actor,
+            vid as i64,
+            &CandidateInput {
+                full_name: "Sah".to_string(),
+                email: Some("tanpa-at".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .expect_err("email");
+        assert!(e.contains("Email tidak valid"));
+        let e = candidate_create_sea(
+            db,
+            files.path(),
+            actor,
+            vid as i64,
+            &CandidateInput {
+                full_name: "Sah".to_string(),
+                birth_date: Some("2026-13-01".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .expect_err("tanggal lahir");
+        assert!(e.contains("Tanggal lahir harus valid"));
+        let e = candidate_create_sea(
+            db,
+            files.path(),
+            actor,
+            vid as i64,
+            &CandidateInput {
+                full_name: "Sah".to_string(),
+                gender: Some("other".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .expect_err("gender");
+        assert!(e.contains("Jenis kelamin tidak valid"));
+        let cid = candidate_create_sea(
+            db,
+            files.path(),
+            actor,
+            vid as i64,
+            &CandidateInput {
+                full_name: "z".repeat(150),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .expect("nama batas 150");
+
+        let e = update_stage_sea(db, actor, 9999, "screening", None)
+            .await
+            .expect_err("kandidat asing");
+        assert!(e.contains("Kandidat tidak ditemukan"));
+        let e = add_interview_sea(
+            db,
+            actor,
+            cid as i64,
+            &InterviewInput {
+                interviewer_id: None,
+                schedule_at: "2026-10-02 10:00:00".to_string(),
+                location: None,
+                interview_type: "psikotes".to_string(),
+                notes: None,
+            },
+        )
+        .await
+        .expect_err("jenis interview");
+        assert!(e.contains("Jenis interview tidak valid"));
+        let e = add_interview_sea(
+            db,
+            actor,
+            cid as i64,
+            &InterviewInput {
+                interviewer_id: Some(9999),
+                schedule_at: "2026-10-02 10:00:00".to_string(),
+                location: None,
+                interview_type: "hr".to_string(),
+                notes: None,
+            },
+        )
+        .await
+        .expect_err("pewawancara asing");
+        assert!(e.contains("Pewawancara tidak ditemukan"));
+        let e = decide_interview_sea(db, actor, 9999, "pass", None)
+            .await
+            .expect_err("interview asing");
+        assert!(e.contains("Interview tidak ditemukan"));
+        let e = add_assessment_sea(
+            db,
+            actor,
+            cid as i64,
+            &AssessmentInput {
+                assessment_name: " ".to_string(),
+                score: None,
+                notes: None,
+            },
+        )
+        .await
+        .expect_err("nama assessment kosong");
+        assert!(e.contains("Nama assessment wajib diisi"));
+        let e = add_assessment_sea(
+            db,
+            actor,
+            cid as i64,
+            &AssessmentInput {
+                assessment_name: "a".repeat(151),
+                score: None,
+                notes: None,
+            },
+        )
+        .await
+        .expect_err("nama assessment panjang");
+        assert!(e.contains("Nama assessment maksimal 150"));
+        let e = add_assessment_sea(
+            db,
+            actor,
+            9999,
+            &AssessmentInput {
+                assessment_name: "Tes".to_string(),
+                score: None,
+                notes: None,
+            },
+        )
+        .await
+        .expect_err("kandidat asing");
+        assert!(e.contains("Kandidat tidak ditemukan"));
     }
 }
