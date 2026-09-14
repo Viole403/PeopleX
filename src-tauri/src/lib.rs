@@ -1584,9 +1584,8 @@ async fn payroll_deduction_delete(state: tauri::State<'_, AppState>, id: i32) ->
 async fn vacancy_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::recruitment::Vacancy>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["recruitment.view", "system.manage"]).await?;
-    services::recruitment::vacancy_list(&conn)
+    services::recruitment::vacancy_list_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -1595,9 +1594,8 @@ async fn vacancy_get(
     state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::recruitment::Vacancy>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["recruitment.view", "system.manage"]).await?;
-    services::recruitment::vacancy_get(&conn, id as i64)
+    services::recruitment::vacancy_get_sea(&state.sea, id as i64).await
 }
 
 #[tauri::command]
@@ -1607,19 +1605,17 @@ async fn vacancy_save(
     id: Option<i32>,
     input: services::recruitment::VacancyInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["recruitment.create", "recruitment.update", "system.manage"],
     ).await?;
-    services::recruitment::vacancy_save(&conn, uid, id.map(|v| v as i64), &input)
+    services::recruitment::vacancy_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn vacancy_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["recruitment.delete", "system.manage"]).await?;
-    services::recruitment::vacancy_delete(&conn, uid, id as i64)
+    services::recruitment::vacancy_delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
@@ -1628,9 +1624,8 @@ async fn candidates_by_vacancy(
     state: tauri::State<'_, AppState>,
     vacancy_id: i32,
 ) -> Result<Vec<services::recruitment::CandidateRow>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["recruitment.view", "system.manage"]).await?;
-    services::recruitment::candidates_by_vacancy(&conn, vacancy_id as i64)
+    services::recruitment::candidates_by_vacancy_sea(&state.sea, vacancy_id as i64).await
 }
 
 #[tauri::command]
@@ -1639,9 +1634,8 @@ async fn candidate_detail(
     state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::recruitment::CandidateDetail>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["recruitment.view", "system.manage"]).await?;
-    services::recruitment::candidate_detail(&conn, id as i64)
+    services::recruitment::candidate_detail_sea(&state.sea, id as i64).await
 }
 
 #[tauri::command]
@@ -1652,25 +1646,24 @@ async fn candidate_create(
     input: services::recruitment::CandidateInput,
     cv: Option<services::employees::FileUpload>,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["recruitment.create", "system.manage"]).await?;
     let dir = files_dir(&state);
-    services::recruitment::candidate_create(
-        &conn,
+    services::recruitment::candidate_create_sea(
+        &state.sea,
         &dir,
         uid,
         vacancy_id as i64,
         &input,
         cv.as_ref(),
     )
+    .await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn candidate_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["recruitment.delete", "system.manage"]).await?;
-    services::recruitment::candidate_delete(&conn, uid, id as i64)
+    services::recruitment::candidate_delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
@@ -1681,9 +1674,8 @@ async fn candidate_stage(
     stage: String,
     notes: Option<String>,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["recruitment.update", "system.manage"]).await?;
-    services::recruitment::update_stage(&conn, uid, id as i64, &stage, notes.as_deref())
+    services::recruitment::update_stage_sea(&state.sea, uid, id as i64, &stage, notes.as_deref()).await
 }
 
 #[tauri::command]
@@ -1693,9 +1685,8 @@ async fn interview_add(
     candidate_id: i32,
     input: services::recruitment::InterviewInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["recruitment.update", "system.manage"]).await?;
-    services::recruitment::add_interview(&conn, uid, candidate_id as i64, &input)
+    services::recruitment::add_interview_sea(&state.sea, uid, candidate_id as i64, &input).await
 }
 
 #[tauri::command]
@@ -1706,9 +1697,8 @@ async fn interview_decide(
     result: String,
     notes: Option<String>,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["recruitment.update", "system.manage"]).await?;
-    services::recruitment::decide_interview(&conn, uid, id as i64, &result, notes.as_deref())
+    services::recruitment::decide_interview_sea(&state.sea, uid, id as i64, &result, notes.as_deref()).await
 }
 
 #[tauri::command]
@@ -1718,9 +1708,8 @@ async fn assessment_add(
     candidate_id: i32,
     input: services::recruitment::AssessmentInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["recruitment.update", "system.manage"]).await?;
-    services::recruitment::add_assessment(&conn, uid, candidate_id as i64, &input)
+    services::recruitment::add_assessment_sea(&state.sea, uid, candidate_id as i64, &input).await
 }
 
 #[tauri::command]
@@ -1730,10 +1719,9 @@ async fn candidate_hire(
     id: i32,
     join_date: Option<String>,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["recruitment.update", "system.manage"]).await?;
     let dir = files_dir(&state);
-    services::recruitment::hire(&conn, &dir, uid, id as i64, join_date.as_deref())
+    services::recruitment::hire_sea(&state.sea, &dir, uid, id as i64, join_date.as_deref()).await
 }
 
 #[tauri::command]
@@ -1743,10 +1731,9 @@ async fn candidate_cv(
     candidate_id: i32,
     id: i32,
 ) -> Result<services::employees::DocumentBytes, String> {
-    let conn = pooled(&state)?;
     require(&state, &["recruitment.view", "system.manage"]).await?;
     let dir = files_dir(&state);
-    services::recruitment::candidate_document_bytes(&conn, &dir, candidate_id as i64, id as i64)
+    services::recruitment::candidate_document_bytes_sea(&state.sea, &dir, candidate_id as i64, id as i64).await
 }
 
 #[tauri::command]
@@ -1754,9 +1741,8 @@ async fn candidate_cv(
 async fn onboarding_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::onboarding::Onboarding>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["onboarding.view", "system.manage"]).await?;
-    services::onboarding::list(&conn)
+    services::onboarding::list_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -1765,9 +1751,8 @@ async fn onboarding_get(
     state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::onboarding::Onboarding>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["onboarding.view", "system.manage"]).await?;
-    services::onboarding::find(&conn, id as i64)
+    services::onboarding::find_sea(&state.sea, id as i64).await
 }
 
 #[tauri::command]
@@ -1775,9 +1760,8 @@ async fn onboarding_get(
 async fn onboarding_mine(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<services::onboarding::Onboarding>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::onboarding::for_employee(&conn, my_employee(&conn, uid)?)
+    services::onboarding::for_employee_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
 }
 
 #[tauri::command]
@@ -1787,11 +1771,10 @@ async fn onboarding_toggle(
     task_id: i32,
     completed: bool,
 ) -> Result<(i32, String), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["onboarding.create", "onboarding.update", "system.manage"],
     ).await?;
-    services::onboarding::toggle_task(&conn, uid, task_id as i64, completed)
+    services::onboarding::toggle_task_sea(&state.sea, uid, task_id as i64, completed).await
 }
 
 #[tauri::command]
@@ -1799,9 +1782,8 @@ async fn onboarding_toggle(
 async fn offboarding_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::offboarding::OffboardingRow>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["offboarding.view", "system.manage"]).await?;
-    services::offboarding::list(&conn)
+    services::offboarding::list_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -1809,9 +1791,8 @@ async fn offboarding_list(
 async fn offboarding_my(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::offboarding::OffboardingRow>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::offboarding::my_requests(&conn, my_employee(&conn, uid)?)
+    services::offboarding::my_requests_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
 }
 
 #[tauri::command]
@@ -1820,9 +1801,8 @@ async fn offboarding_get(
     state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::offboarding::OffboardingDetail>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["offboarding.view", "system.manage"]).await?;
-    services::offboarding::find(&conn, id as i64)
+    services::offboarding::find_sea(&state.sea, id as i64).await
 }
 
 #[tauri::command]
@@ -1831,9 +1811,8 @@ async fn offboarding_create(
     state: tauri::State<'_, AppState>,
     input: services::offboarding::OffboardingCreate,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::offboarding::create(&conn, uid, my_employee(&conn, uid)?, &input)
+    services::offboarding::create_sea(&state.sea, uid, my_employee_sea(&state.sea, uid).await?, &input).await
 }
 
 #[tauri::command]
@@ -1843,11 +1822,10 @@ async fn offboarding_decide(
     id: i32,
     action: String,
 ) -> Result<String, String> {
-    let conn = pooled(&state)?;
     let (uid, user) = current_actor(&state).await?;
-    let actor_emp = my_employee(&conn, uid).ok();
+    let actor_emp = my_employee_sea(&state.sea, uid).await.ok();
     let privileged = privileged(&user, "offboarding.approve");
-    services::offboarding::decide(&conn, uid, actor_emp, privileged, id as i64, &action, None)
+    services::offboarding::decide_sea(&state.sea, uid, actor_emp, privileged, id as i64, &action, None).await
 }
 
 #[tauri::command]
@@ -1857,11 +1835,10 @@ async fn offboarding_exit_save(
     id: i32,
     input: services::offboarding::ExitInterviewInput,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["offboarding.create", "offboarding.update", "system.manage"],
     ).await?;
-    services::offboarding::save_exit_interview(&conn, uid, id as i64, &input)
+    services::offboarding::save_exit_interview_sea(&state.sea, uid, id as i64, &input).await
 }
 
 #[tauri::command]
@@ -1872,11 +1849,10 @@ async fn offboarding_clearance(
     cleared: bool,
     notes: Option<String>,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["offboarding.create", "offboarding.update", "system.manage"],
     ).await?;
-    services::offboarding::toggle_clearance(&conn, uid, item_id as i64, cleared, notes.as_deref())
+    services::offboarding::toggle_clearance_sea(&state.sea, uid, item_id as i64, cleared, notes.as_deref()).await
 }
 
 #[tauri::command]
