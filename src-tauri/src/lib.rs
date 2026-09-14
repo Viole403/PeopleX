@@ -864,9 +864,8 @@ async fn employee_salary_current(
     state: tauri::State<'_, AppState>,
     employee_id: i32,
 ) -> Result<Option<services::employees::SalaryRow>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["employee.view", "system.manage"]).await?;
-    services::employees::salary_current(&conn, employee_id as i64)
+    services::employees::salary_current_sea(&state.sea, employee_id as i64).await
 }
 
 #[tauri::command]
@@ -875,9 +874,8 @@ async fn employee_salary_history(
     state: tauri::State<'_, AppState>,
     employee_id: i32,
 ) -> Result<Vec<services::employees::SalaryRow>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["employee.view", "system.manage"]).await?;
-    services::employees::salary_history(&conn, employee_id as i64)
+    services::employees::salary_history_sea(&state.sea, employee_id as i64).await
 }
 
 #[tauri::command]
@@ -886,9 +884,8 @@ async fn employee_salary_components(
     state: tauri::State<'_, AppState>,
     salary_id: i32,
 ) -> Result<Vec<services::employees::SalaryComponentRow>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["employee.view", "system.manage"]).await?;
-    services::employees::salary_components(&conn, salary_id as i64)
+    services::employees::salary_components_sea(&state.sea, salary_id as i64).await
 }
 
 #[tauri::command]
@@ -896,9 +893,8 @@ async fn employee_salary_components(
 async fn employee_available_components(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::employees::SalaryComponentRow>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["employee.view", "system.manage"]).await?;
-    services::employees::available_components(&conn)
+    services::employees::available_components_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -910,17 +906,17 @@ async fn employee_set_salary(
     effective_date: String,
     components: Vec<(i32, f64)>,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["employee.update", "system.manage"]).await?;
     let comps: Vec<(i64, f64)> = components.iter().map(|(c, a)| (*c as i64, *a)).collect();
-    services::employees::set_salary(
-        &conn,
+    services::employees::set_salary_sea(
+        &state.sea,
         uid,
         employee_id as i64,
         basic_salary,
         &effective_date,
         &comps,
     )
+    .await
 }
 
 /// employee_id dari user login (aksi mandiri). Galat bila akun tak tertaut karyawan.

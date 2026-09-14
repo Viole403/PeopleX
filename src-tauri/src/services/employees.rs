@@ -3556,6 +3556,202 @@ pub fn set_salary(
     to_dto_int(salary_id, "salary.id")
 }
 
+// ====== Varian SeaORM (gaji) ======
+fn salary_f64(v: &Value) -> f64 {
+    match v {
+        Value::Float(f) => *f,
+        Value::Int(i) => *i as f64,
+        _ => value_to_string(v).parse::<f64>().unwrap_or(0.0),
+    }
+}
+
+fn salary_opt_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Null => None,
+        Value::Float(f) => Some(*f),
+        Value::Int(i) => Some(*i as f64),
+        Value::Text(s) => s.parse().ok(),
+    }
+}
+
+fn salary_row_sea(cols: &[Value]) -> Result<SalaryRow, String> {
+    Ok(SalaryRow {
+        id: to_dto_int(value_i64(&cols[0]).unwrap_or(0), "salary.id")?,
+        basic_salary: salary_f64(&cols[1]),
+        effective_date: value_to_string(&cols[2]),
+        is_active: value_i64(&cols[3]).unwrap_or(0) != 0,
+    })
+}
+
+fn salary_component_row_sea(
+    cols: &[Value],
+    with_amount: bool,
+) -> Result<SalaryComponentRow, String> {
+    Ok(SalaryComponentRow {
+        id: to_dto_int(value_i64(&cols[0]).unwrap_or(0), "component.id")?,
+        code: value_to_string(&cols[1]),
+        name: value_to_string(&cols[2]),
+        component_type: value_to_string(&cols[3]),
+        amount: if with_amount {
+            Some(salary_f64(&cols[4]))
+        } else {
+            None
+        },
+    })
+}
+
+pub async fn salary_current_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+) -> Result<Option<SalaryRow>, String> {
+    employee_exists_sea(db, employee_id).await?;
+    let cols = q_one(
+        db,
+        "SELECT id, basic_salary, effective_date, is_active FROM employee_salaries WHERE employee_id = ?1 AND is_active = 1 ORDER BY effective_date DESC LIMIT 1".to_string(),
+        vec![Value::from(employee_id)],
+        4,
+        "memuat gaji",
+    )
+    .await?;
+    cols.map(|c| salary_row_sea(&c)).transpose()
+}
+
+pub async fn salary_history_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+) -> Result<Vec<SalaryRow>, String> {
+    employee_exists_sea(db, employee_id).await?;
+    let rows = q_all(
+        db,
+        "SELECT id, basic_salary, effective_date, is_active FROM employee_salaries WHERE employee_id = ?1 ORDER BY effective_date DESC".to_string(),
+        vec![Value::from(employee_id)],
+        4,
+        "memuat riwayat gaji",
+    )
+    .await?;
+    rows.iter().map(salary_row_sea_ref).collect()
+}
+
+fn salary_row_sea_ref(c: &Vec<Value>) -> Result<SalaryRow, String> {
+    salary_row_sea(c)
+}
+
+pub async fn salary_components_sea(
+    db: &sea_orm::DatabaseConnection,
+    salary_id: i64,
+) -> Result<Vec<SalaryComponentRow>, String> {
+    let rows = q_all(
+        db,
+        "SELECT esc.salary_component_id, sc.code, sc.name, sc.type, esc.amount FROM employee_salary_components esc INNER JOIN salary_components sc ON sc.id = esc.salary_component_id WHERE esc.employee_salary_id = ?1 ORDER BY sc.name".to_string(),
+        vec![Value::from(salary_id)],
+        5,
+        "memuat komponen",
+    )
+    .await?;
+    rows.iter().map(|c| salary_component_row_sea(c, true)).collect()
+}
+
+pub async fn available_components_sea(
+    db: &sea_orm::DatabaseConnection,
+) -> Result<Vec<SalaryComponentRow>, String> {
+    let rows = q_all(
+        db,
+        "SELECT id, code, name, type FROM salary_components WHERE is_active = 1 AND type = 'income' ORDER BY name".to_string(),
+        vec![],
+        4,
+        "memuat katalog",
+    )
+    .await?;
+    rows.iter().map(|c| salary_component_row_sea(c, false)).collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn set_salary_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    employee_id: i64,
+    basic_salary: f64,
+    effective_date: &str,
+    components: &[(i64, f64)],
+) -> Result<i32, String> {
+    employee_exists_sea(db, employee_id).await?;
+    if !(basic_salary >= 0.0) {
+        return Err("Gaji pokok minimal 0.".to_string());
+    }
+    let band = q_one(
+        db,
+        "SELECT g.min_salary, g.max_salary, g.name FROM job_grades g INNER JOIN employees e ON e.job_grade_id = g.id WHERE e.id = ?1".to_string(),
+        vec![Value::from(employee_id)],
+        3,
+        "memuat band gaji",
+    )
+    .await?;
+    if let Some(b) = band {
+        let min = salary_opt_f64(&b[0]);
+        let max = salary_opt_f64(&b[1]);
+        let name = value_to_string(&b[2]);
+        if min.is_some_and(|m| basic_salary < m) || max.is_some_and(|m| basic_salary > m) {
+            return Err(format!("Gaji pokok di luar band {name}."));
+        }
+    }
+    chrono::NaiveDate::parse_from_str(effective_date.trim(), "%Y-%m-%d")
+        .map_err(|_| "Tanggal efektif harus valid (YYYY-MM-DD).".to_string())?;
+    exec(
+        db,
+        "UPDATE employee_salaries SET is_active = 0 WHERE employee_id = ?1".to_string(),
+        vec![Value::from(employee_id)],
+        "menonaktifkan gaji lama",
+    )
+    .await?;
+    exec(
+        db,
+        "INSERT INTO employee_salaries (employee_id, basic_salary, effective_date, is_active, created_by) VALUES (?1, ?2, ?3, 1, ?4)".to_string(),
+        vec![
+            Value::from(employee_id),
+            Value::Float(basic_salary),
+            Value::from(effective_date.trim()),
+            Value::from(actor_id),
+        ],
+        "menetapkan gaji",
+    )
+    .await?;
+    let salary_id = q_one(
+        db,
+        "SELECT last_insert_rowid()".to_string(),
+        vec![],
+        1,
+        "memuat id gaji",
+    )
+    .await?
+    .map(|c| value_i64(&c[0]).unwrap_or(0))
+    .unwrap_or(0);
+    for (comp_id, amount) in components {
+        exec(
+            db,
+            "INSERT INTO employee_salary_components (employee_salary_id, salary_component_id, amount) VALUES (?1, ?2, ?3)".to_string(),
+            vec![
+                Value::from(salary_id),
+                Value::from(*comp_id),
+                Value::Float(*amount),
+            ],
+            "menyimpan komponen",
+        )
+        .await?;
+    }
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "CREATE",
+        "employee.salary",
+        Some(&salary_id.to_string()),
+        None,
+        None,
+        Some(&format!("Gaji baru karyawan {employee_id}")),
+    )
+    .await?;
+    to_dto_int(salary_id, "salary.id")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3995,5 +4191,94 @@ mod tests {
             serde_json::to_string(&db_).unwrap()
         );
         assert_eq!(da.len(), 1);
+    }
+
+    fn gaji_grade_baru_id(conn: &Connection) -> i64 {
+        conn.execute(
+            "INSERT INTO job_grades (code, name, grade_order, min_salary, max_salary) VALUES ('JHT01', 'Junior', 1, 5000000, 7000000)",
+            [],
+        )
+        .expect("grade");
+        conn.query_row("SELECT id FROM job_grades WHERE code = 'JHT01'", [], |r| {
+            r.get(0)
+        })
+        .expect("grade id")
+    }
+
+    #[tokio::test]
+    async fn gaji_sea_paritas_dengan_sync() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files = tempfile::tempdir().expect("files");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("init_state");
+        let conn = state.db.get().expect("get");
+        let actor_id = actor(&conn);
+        let grade_id = gaji_grade_baru_id(&conn);
+        let mut input = base_input(&conn);
+        input.job_grade_id = Some(grade_id as i32);
+        let emp = create_sea(&state.sea, files.path(), actor_id, &input, None)
+            .await
+            .expect("create_sea") as i64;
+        let comp_id: i64 = conn
+            .query_row(
+                "SELECT id FROM salary_components WHERE code = 'TRANSPORT'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("komponen");
+        let sid = set_salary_sea(
+            &state.sea,
+            actor_id,
+            emp,
+            5_000_000.0,
+            "2026-09-01",
+            &[(comp_id, 1_500_000.0)],
+        )
+        .await
+        .expect("set_sea");
+        assert!(sid > 0);
+        let scur = salary_current_sea(&state.sea, emp).await.expect("cur_sea").expect("gaji sea ada");
+        let cur = salary_current(&conn, emp).expect("cur").expect("gaji sync ada");
+        assert_eq!(
+            serde_json::to_value(&scur).expect("json"),
+            serde_json::to_value(&cur).expect("json")
+        );
+        let shist = salary_history_sea(&state.sea, emp).await.expect("hist_sea");
+        let hist = salary_history(&conn, emp).expect("hist");
+        assert_eq!(
+            serde_json::to_value(&shist).expect("json"),
+            serde_json::to_value(&hist).expect("json")
+        );
+        let scomps = salary_components_sea(&state.sea, sid as i64).await.expect("comps_sea");
+        let comps_sync = salary_components(&conn, sid as i64).expect("comps");
+        assert_eq!(
+            serde_json::to_value(&scomps).expect("json"),
+            serde_json::to_value(&comps_sync).expect("json")
+        );
+        let savail = available_components_sea(&state.sea).await.expect("katalog_sea");
+        let avail = available_components(&conn).expect("katalog");
+        assert_eq!(
+            serde_json::to_value(&savail).expect("json"),
+            serde_json::to_value(&avail).expect("json")
+        );
+        assert!(!savail.is_empty());
+        let err_sea = set_salary_sea(&state.sea, actor_id, emp, 4_999_999.0, "2026-10-01", &[])
+            .await
+            .expect_err("gaji sea di luar band ditolak");
+        let err_sync = set_salary(&conn, actor_id, emp, 4_999_999.0, "2026-10-01", &[])
+            .expect_err("gaji sync di luar band ditolak");
+        assert_eq!(err_sea, err_sync);
+        conn.execute("UPDATE employees SET job_grade_id = NULL WHERE id = ?1", [emp])
+            .expect("lepas grade");
+        let sid0 = set_salary_sea(&state.sea, actor_id, emp, 0.0, "2026-11-01", &[])
+            .await
+            .expect("gaji nol");
+        let comps0 = salary_components_sea(&state.sea, sid0 as i64).await.expect("comps0");
+        assert!(comps0.is_empty());
+        let cur0 = salary_current_sea(&state.sea, emp).await.expect("cur0_sea").expect("gaji nol sea ada");
+        let cur0_sync = salary_current(&conn, emp).expect("cur0").expect("gaji nol sync ada");
+        assert_eq!(
+            serde_json::to_value(&cur0).expect("json"),
+            serde_json::to_value(&cur0_sync).expect("json")
+        );
     }
 }
