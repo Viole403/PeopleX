@@ -353,6 +353,373 @@ pub fn decide(
     Ok(())
 }
 
+// ---------------- Varian SeaORM ----------------
+
+use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
+
+async fn sea_rowid_ot(db: &sea_orm::DatabaseConnection) -> i64 {
+    q_one(
+        db,
+        "SELECT last_insert_rowid()".to_string(),
+        vec![],
+        1,
+        "overtime.rowid",
+    )
+    .await
+    .ok()
+    .flatten()
+    .as_ref()
+    .and_then(|r| value_i64(&r[0]))
+    .unwrap_or(0)
+}
+
+fn map_overtime_sea(r: &[Value]) -> Result<Overtime, String> {
+    Ok(Overtime {
+        id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "overtime.id")?,
+        employee_id: to_dto_int(value_i64(&r[1]).unwrap_or(0), "overtime.emp")?,
+        employee_name: value_to_string(&r[2]),
+        employee_number: value_to_string(&r[3]),
+        date: value_to_string(&r[4]),
+        start_time: value_to_string(&r[5]),
+        end_time: value_to_string(&r[6]),
+        duration_minutes: to_dto_int(value_i64(&r[7]).unwrap_or(0), "overtime.dur")?,
+        reason: match &r[8] {
+            Value::Null => None,
+            _ => Some(value_to_string(&r[8])),
+        },
+        status: value_to_string(&r[9]),
+        current_step: to_dto_int(value_i64(&r[10]).unwrap_or(0), "overtime.step")?,
+        created_at: value_to_string(&r[11]),
+    })
+}
+
+pub async fn my_requests_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+) -> Result<Vec<Overtime>, String> {
+    let rows = q_all(
+        db,
+        "SELECT ot.id, ot.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), e.employee_number, ot.date, ot.start_time, ot.end_time, ot.duration_minutes, ot.reason, ot.status, ot.current_step, ot.created_at FROM overtime_requests ot INNER JOIN employees e ON e.id = ot.employee_id WHERE ot.employee_id = ?1 ORDER BY ot.created_at DESC".to_string(),
+        vec![Value::Int(employee_id)],
+        12,
+        "overtime.mine",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca daftar: {e}"))?;
+    rows.iter().map(|r| map_overtime_sea(r)).collect()
+}
+
+pub async fn pending_for_sea(
+    db: &sea_orm::DatabaseConnection,
+    user_id: i64,
+) -> Result<Vec<Overtime>, String> {
+    let rows = q_all(
+        db,
+        "SELECT ot.id, ot.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), e.employee_number, ot.date, ot.start_time, ot.end_time, ot.duration_minutes, ot.reason, ot.status, ot.current_step, ot.created_at FROM overtime_approvals oa INNER JOIN overtime_requests ot ON ot.id = oa.overtime_request_id INNER JOIN employees e ON e.id = ot.employee_id WHERE oa.approver_id = ?1 AND oa.status = 'pending' AND ot.status = 'pending' AND ot.current_step = oa.step_order ORDER BY ot.created_at ASC".to_string(),
+        vec![Value::Int(user_id)],
+        12,
+        "overtime.pending",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca daftar: {e}"))?;
+    rows.iter().map(|r| map_overtime_sea(r)).collect()
+}
+
+pub async fn all_requests_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Overtime>, String> {
+    let rows = q_all(
+        db,
+        "SELECT ot.id, ot.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), e.employee_number, ot.date, ot.start_time, ot.end_time, ot.duration_minutes, ot.reason, ot.status, ot.current_step, ot.created_at FROM overtime_requests ot INNER JOIN employees e ON e.id = ot.employee_id ORDER BY CASE ot.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, ot.created_at DESC".to_string(),
+        vec![],
+        12,
+        "overtime.all",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca daftar: {e}"))?;
+    rows.iter().map(|r| map_overtime_sea(r)).collect()
+}
+
+pub async fn create_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    employee_id: i64,
+    input: &OvertimeCreate,
+) -> Result<i32, String> {
+    NaiveDate::parse_from_str(input.date.trim(), "%Y-%m-%d")
+        .map_err(|_| "Tanggal tidak valid.".to_string())?;
+    if let Some(reason) = input.reason.as_deref() {
+        if reason.len() > 255 {
+            return Err("Alasan maksimal 255 karakter.".to_string());
+        }
+    }
+    let start = parse_time(&input.date, &input.start_time)?;
+    let mut end = parse_time(&input.date, &input.end_time)?;
+    if end <= start {
+        end += chrono::Duration::days(1);
+    }
+    let duration = ((end - start).num_seconds() + 30) / 60;
+    if duration < MIN_MINUTES {
+        return Err("Durasi lembur minimal 30 menit.".to_string());
+    }
+    let fmt = "%Y-%m-%d %H:%M:%S";
+    let reason = input
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    exec(
+        db,
+        "INSERT INTO overtime_requests (employee_id, date, start_time, end_time, duration_minutes, reason, rate_multiplier, status, current_step) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', 1)".to_string(),
+        vec![
+            Value::Int(employee_id),
+            Value::Text(input.date.trim().to_string()),
+            Value::Text(start.format(fmt).to_string()),
+            Value::Text(end.format(fmt).to_string()),
+            Value::Int(duration),
+            match reason {
+                Some(s) => Value::Text(s.to_string()),
+                None => Value::Null,
+            },
+            Value::Float(RATE),
+        ],
+        "overtime.create",
+    )
+    .await
+    .map_err(|e| format!("gagal mengajukan lembur: {e}"))?;
+    let rid = sea_rowid_ot(db).await;
+    let chain = approval::build_chain_sea(db, "overtime", employee_id).await?;
+    if chain.is_empty() {
+        exec(
+            db,
+            "UPDATE overtime_requests SET status = 'approved', current_step = 0 WHERE id = ?1".to_string(),
+            vec![Value::Int(rid)],
+            "overtime.auto",
+        )
+        .await
+        .map_err(|e| format!("gagal menyetujui langsung: {e}"))?;
+    } else {
+        for step in &chain {
+            exec(
+                db,
+                "INSERT INTO overtime_approvals (overtime_request_id, approver_id, step_order, step_role, status) VALUES (?1, ?2, ?3, ?4, 'pending')".to_string(),
+                vec![
+                    Value::Int(rid),
+                    Value::Int(step.approver_id),
+                    Value::Int(step.order),
+                    Value::Text(step.role.clone()),
+                ],
+                "overtime.chain",
+            )
+            .await
+            .map_err(|e| format!("gagal menyimpan rantai: {e}"))?;
+        }
+        let name_row = q_one(
+            db,
+            "SELECT first_name || ' ' || COALESCE(last_name, '') FROM employees WHERE id = ?1".to_string(),
+            vec![Value::Int(employee_id)],
+            1,
+            "overtime.empname",
+        )
+        .await
+        .unwrap_or(None);
+        let name = name_row
+            .as_ref()
+            .map(|r| value_to_string(&r[0]))
+            .unwrap_or_default();
+        approval::notify_sea(
+            db,
+            chain[0].approver_id,
+            "overtime_approval",
+            "Pengajuan Lembur Baru",
+            &format!("{name} mengajukan lembur."),
+            "/leave",
+        )
+        .await?;
+    }
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "CREATE",
+        "overtime",
+        Some(&rid.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    to_dto_int(rid, "overtime.id")
+}
+
+pub async fn decide_sea(
+    db: &sea_orm::DatabaseConnection,
+    approver_user_id: i64,
+    request_id: i64,
+    decision: &str,
+    notes: Option<&str>,
+) -> Result<(), String> {
+    if decision != "approved" && decision != "rejected" {
+        return Err("Keputusan tidak valid.".to_string());
+    }
+    let req = q_one(
+        db,
+        "SELECT current_step, status FROM overtime_requests WHERE id = ?1".to_string(),
+        vec![Value::Int(request_id)],
+        2,
+        "overtime.req",
+    )
+    .await
+    .map_err(|e| format!("gagal memuat pengajuan: {e}"))?;
+    let Some(req) = req else {
+        return Err("Pengajuan tidak ditemukan.".to_string());
+    };
+    let (step, status) = (
+        value_i64(&req[0]).unwrap_or(0),
+        value_to_string(&req[1]),
+    );
+    if status != "pending" {
+        return Err("Pengajuan sudah diproses.".to_string());
+    }
+    let ap = q_one(
+        db,
+        "SELECT id, approver_id, step_role FROM overtime_approvals WHERE overtime_request_id = ?1 AND step_order = ?2 AND status = 'pending'".to_string(),
+        vec![Value::Int(request_id), Value::Int(step)],
+        3,
+        "overtime.step",
+    )
+    .await
+    .map_err(|e| format!("gagal memuat tahap: {e}"))?;
+    let Some(ap) = ap else {
+        return Err("Tahap persetujuan tidak ditemukan.".to_string());
+    };
+    let (approval_id, approver_id, step_role) = (
+        value_i64(&ap[0]).unwrap_or(0),
+        value_i64(&ap[1]).unwrap_or(0),
+        value_to_string(&ap[2]),
+    );
+    if !approval::user_has_access_sea(db, approver_user_id, approver_id, &step_role).await? {
+        return Err("Tidak berwenang memutus pengajuan ini.".to_string());
+    }
+    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let note = notes.map(str::trim).filter(|s| !s.is_empty());
+    exec(
+        db,
+        "UPDATE overtime_approvals SET status = ?1, approver_id = ?2, notes = ?3, acted_at = ?4 WHERE id = ?5".to_string(),
+        vec![
+            Value::Text(decision.to_string()),
+            Value::Int(approver_user_id),
+            match note {
+                Some(s) => Value::Text(s.to_string()),
+                None => Value::Null,
+            },
+            Value::Text(now),
+            Value::Int(approval_id),
+        ],
+        "overtime.decide",
+    )
+    .await
+    .map_err(|e| format!("gagal menyimpan putusan: {e}"))?;
+    let emp_row = q_one(
+        db,
+        "SELECT employee_id FROM overtime_requests WHERE id = ?1".to_string(),
+        vec![Value::Int(request_id)],
+        1,
+        "overtime.emp",
+    )
+    .await
+    .unwrap_or(None);
+    let emp_id = emp_row
+        .as_ref()
+        .and_then(|r| value_i64(&r[0]))
+        .unwrap_or(0);
+    let emp_user = approval::user_of_employee_sea(db, emp_id).await.unwrap_or(None);
+    if decision == "rejected" {
+        exec(
+            db,
+            "UPDATE overtime_requests SET status = 'rejected' WHERE id = ?1".to_string(),
+            vec![Value::Int(request_id)],
+            "overtime.reject",
+        )
+        .await
+        .map_err(|e| format!("gagal menolak: {e}"))?;
+        if let Some(uid) = emp_user {
+            approval::notify_sea(
+                db,
+                uid,
+                "overtime_approval",
+                "Lembur Ditolak",
+                "Pengajuan lembur Anda ditolak.",
+                "/leave",
+            )
+            .await?;
+        }
+    } else {
+        let next = q_one(
+            db,
+            "SELECT step_order, approver_id FROM overtime_approvals WHERE overtime_request_id = ?1 AND step_order > ?2 ORDER BY step_order LIMIT 1".to_string(),
+            vec![Value::Int(request_id), Value::Int(step)],
+            2,
+            "overtime.next",
+        )
+        .await
+        .map_err(|e| format!("gagal mencari tahap berikut: {e}"))?;
+        match next {
+            Some(n) => {
+                let (next_order, next_approver) =
+                    (value_i64(&n[0]).unwrap_or(0), value_i64(&n[1]).unwrap_or(0));
+                exec(
+                    db,
+                    "UPDATE overtime_requests SET current_step = ?1 WHERE id = ?2".to_string(),
+                    vec![Value::Int(next_order), Value::Int(request_id)],
+                    "overtime.advance",
+                )
+                .await
+                .map_err(|e| format!("gagal maju tahap: {e}"))?;
+                approval::notify_sea(
+                    db,
+                    next_approver,
+                    "overtime_approval",
+                    "Lembur Menunggu Persetujuan",
+                    "Ada pengajuan lembur menunggu persetujuan Anda.",
+                    "/leave",
+                )
+                .await?;
+            }
+            None => {
+                exec(
+                    db,
+                    "UPDATE overtime_requests SET status = 'approved' WHERE id = ?1".to_string(),
+                    vec![Value::Int(request_id)],
+                    "overtime.approve",
+                )
+                .await
+                .map_err(|e| format!("gagal menyetujui: {e}"))?;
+                if let Some(uid) = emp_user {
+                    approval::notify_sea(
+                        db,
+                        uid,
+                        "overtime_approval",
+                        "Lembur Disetujui",
+                        "Pengajuan lembur Anda disetujui.",
+                        "/leave",
+                    )
+                    .await?;
+                }
+            }
+        }
+    }
+    audit::log_sea(
+        db,
+        Some(approver_user_id),
+        decision.to_uppercase().as_str(),
+        "overtime",
+        Some(&request_id.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,5 +856,44 @@ mod tests {
             .unwrap();
         assert_eq!(status, "approved");
         let _ = sup_uid;
+    }
+
+    #[tokio::test]
+    async fn lembur_sea_paritas_dengan_sync() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let conn = state.db.get().expect("get");
+        let db = &state.sea;
+        let (uid, eid) = mkuser(&conn, "seaot", "EMP-SEAO", None);
+        let oid = create_sea(
+            db,
+            uid,
+            eid,
+            &OvertimeCreate {
+                date: "2026-04-06".to_string(),
+                start_time: "22:00".to_string(),
+                end_time: "01:00".to_string(),
+                reason: None,
+            },
+        )
+        .await
+        .expect("buat");
+        assert!(oid > 0);
+        let m_sync = serde_json::to_string(&my_requests(&conn, eid).expect("ms")).unwrap();
+        let m_sea = serde_json::to_string(&my_requests_sea(db, eid).await.expect("mse")).unwrap();
+        assert_eq!(m_sync, m_sea);
+        assert!(m_sea.contains("\"duration_minutes\":180"));
+        let a_sync = serde_json::to_string(&all_requests(&conn).expect("as")).unwrap();
+        let a_sea = serde_json::to_string(&all_requests_sea(db).await.expect("ase")).unwrap();
+        assert_eq!(a_sync, a_sea);
+        let pendek = OvertimeCreate {
+            date: "2026-04-07".to_string(),
+            start_time: "18:00".to_string(),
+            end_time: "18:20".to_string(),
+            reason: None,
+        };
+        let e_sea = create_sea(db, uid, eid, &pendek).await.expect_err("minimal");
+        let e_sync = create(&conn, uid, eid, &pendek).expect_err("minimal sync");
+        assert_eq!(e_sea, e_sync);
     }
 }

@@ -1208,17 +1208,15 @@ async fn leave_balances(
     state: tauri::State<'_, AppState>,
     year: i32,
 ) -> Result<Vec<services::leave::Balance>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::leave::balances(&conn, my_employee(&conn, uid)?, year)
+    services::leave::balances_sea(&state.sea, my_employee_sea(&state.sea, uid).await?, year).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn leave_types(state: tauri::State<'_, AppState>) -> Result<Vec<services::leave::LeaveType>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["leave.view", "system.manage"]).await?;
-    services::leave::type_list(&conn)
+    services::leave::type_list_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -1228,25 +1226,22 @@ async fn leave_type_save(
     id: Option<i32>,
     input: services::leave::LeaveTypeInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["leave.update", "system.manage"]).await?;
-    services::leave::type_save(&conn, uid, id.map(|v| v as i64), &input)
+    services::leave::type_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn leave_type_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["leave.update", "system.manage"]).await?;
-    services::leave::type_delete(&conn, uid, id as i64)
+    services::leave::type_delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn leave_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::leave::LeaveRequest>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::leave::my_requests(&conn, my_employee(&conn, uid)?)
+    services::leave::my_requests_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
 }
 
 #[tauri::command]
@@ -1254,17 +1249,15 @@ async fn leave_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::lea
 async fn leave_pending(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::leave::LeaveRequest>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::leave::pending_for(&conn, uid)
+    services::leave::pending_for_sea(&state.sea, uid).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn leave_all(state: tauri::State<'_, AppState>) -> Result<Vec<services::leave::LeaveRequest>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["leave.view", "system.manage"]).await?;
-    services::leave::all_requests(&conn)
+    services::leave::all_requests_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -1273,9 +1266,8 @@ async fn leave_create(
     state: tauri::State<'_, AppState>,
     input: services::leave::LeaveCreate,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::leave::create(&conn, uid, my_employee(&conn, uid)?, &input)
+    services::leave::create_sea(&state.sea, uid, my_employee_sea(&state.sea, uid).await?, &input).await
 }
 
 #[tauri::command]
@@ -1286,17 +1278,15 @@ async fn leave_decide(
     decision: String,
     notes: Option<String>,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::leave::decide(&conn, uid, id as i64, &decision, notes.as_deref())
+    services::leave::decide_sea(&state.sea, uid, id as i64, &decision, notes.as_deref()).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn leave_cancel(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::leave::cancel(&conn, uid, my_employee(&conn, uid)?, id as i64)
+    services::leave::cancel_sea(&state.sea, uid, my_employee_sea(&state.sea, uid).await?, id as i64).await
 }
 
 #[tauri::command]
@@ -1305,17 +1295,15 @@ async fn leave_calendar(
     state: tauri::State<'_, AppState>,
     month: String,
 ) -> Result<Vec<services::leave::CalendarDay>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["leave.view", "system.manage"]).await?;
-    services::leave::calendar(&conn, &month)
+    services::leave::calendar_sea(&state.sea, &month).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn overtime_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::overtime::Overtime>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::overtime::my_requests(&conn, my_employee(&conn, uid)?)
+    services::overtime::my_requests_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
 }
 
 #[tauri::command]
@@ -1323,9 +1311,8 @@ async fn overtime_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::
 async fn overtime_pending(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::overtime::Overtime>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::overtime::pending_for(&conn, uid)
+    services::overtime::pending_for_sea(&state.sea, uid).await
 }
 
 #[tauri::command]
@@ -1333,9 +1320,8 @@ async fn overtime_pending(
 async fn overtime_all(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::overtime::Overtime>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["overtime.view", "system.manage"]).await?;
-    services::overtime::all_requests(&conn)
+    services::overtime::all_requests_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -1344,9 +1330,8 @@ async fn overtime_create(
     state: tauri::State<'_, AppState>,
     input: services::overtime::OvertimeCreate,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::overtime::create(&conn, uid, my_employee(&conn, uid)?, &input)
+    services::overtime::create_sea(&state.sea, uid, my_employee_sea(&state.sea, uid).await?, &input).await
 }
 
 #[tauri::command]
@@ -1357,9 +1342,8 @@ async fn overtime_decide(
     decision: String,
     notes: Option<String>,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::overtime::decide(&conn, uid, id as i64, &decision, notes.as_deref())
+    services::overtime::decide_sea(&state.sea, uid, id as i64, &decision, notes.as_deref()).await
 }
 
 #[tauri::command]
@@ -1367,9 +1351,8 @@ async fn overtime_decide(
 async fn permission_types(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::permission::PermissionType>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["permission.view", "system.manage"]).await?;
-    services::permission::types(&conn)
+    services::permission::types_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -1377,9 +1360,8 @@ async fn permission_types(
 async fn permission_my(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::permission::PermissionRequest>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::permission::my_requests(&conn, my_employee(&conn, uid)?)
+    services::permission::my_requests_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
 }
 
 #[tauri::command]
@@ -1387,10 +1369,9 @@ async fn permission_my(
 async fn permission_pending(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::permission::PermissionRequest>, String> {
-    let conn = pooled(&state)?;
     let (uid, user) = current_actor(&state).await?;
     let privileged = privileged(&user, "permission.approve");
-    services::permission::pending_for(&conn, uid, privileged)
+    services::permission::pending_for_sea(&state.sea, uid, privileged).await
 }
 
 #[tauri::command]
@@ -1398,9 +1379,8 @@ async fn permission_pending(
 async fn permission_all(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::permission::PermissionRequest>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["permission.view", "system.manage"]).await?;
-    services::permission::all_requests(&conn)
+    services::permission::all_requests_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -1409,9 +1389,8 @@ async fn permission_create(
     state: tauri::State<'_, AppState>,
     input: services::permission::PermissionCreate,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::permission::create(&conn, uid, my_employee(&conn, uid)?, &input)
+    services::permission::create_sea(&state.sea, uid, my_employee_sea(&state.sea, uid).await?, &input).await
 }
 
 #[tauri::command]
@@ -1421,11 +1400,10 @@ async fn permission_decide(
     id: i32,
     decision: String,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, user) = current_actor(&state).await?;
-    let actor_emp = my_employee(&conn, uid).ok();
+    let actor_emp = my_employee_sea(&state.sea, uid).await.ok();
     let privileged = privileged(&user, "permission.approve");
-    services::permission::decide(&conn, uid, actor_emp, privileged, id as i64, &decision)
+    services::permission::decide_sea(&state.sea, uid, actor_emp, privileged, id as i64, &decision).await
 }
 
 #[tauri::command]
