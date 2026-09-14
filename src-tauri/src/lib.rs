@@ -2183,9 +2183,8 @@ async fn training_skill_set(
 async fn asset_categories(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::assets::Category>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["asset.view", "system.manage"]).await?;
-    services::assets::category_list(&conn)
+    services::assets::category_list_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -2196,19 +2195,17 @@ async fn asset_category_save(
     code: String,
     name: String,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["asset.create", "asset.update", "system.manage"],
     ).await?;
-    services::assets::category_save(&conn, uid, id.map(|v| v as i64), &code, &name)
+    services::assets::category_save_sea(&state.sea, uid, id.map(|v| v as i64), &code, &name).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn asset_category_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["asset.delete", "system.manage"]).await?;
-    services::assets::category_delete(&conn, uid, id as i64)
+    services::assets::category_delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
@@ -2217,9 +2214,8 @@ async fn assets_list(
     state: tauri::State<'_, AppState>,
     search: String,
 ) -> Result<Vec<services::assets::Asset>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["asset.view", "system.manage"]).await?;
-    services::assets::asset_list(&conn, &search)
+    services::assets::asset_list_sea(&state.sea, &search).await
 }
 
 #[tauri::command]
@@ -2228,9 +2224,8 @@ async fn asset_detail(
     state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::assets::AssetDetail>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["asset.view", "system.manage"]).await?;
-    services::assets::asset_detail(&conn, id as i64)
+    services::assets::asset_detail_sea(&state.sea, id as i64).await
 }
 
 #[tauri::command]
@@ -2240,27 +2235,24 @@ async fn asset_save(
     id: Option<i32>,
     input: services::assets::AssetInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["asset.create", "asset.update", "system.manage"],
     ).await?;
-    services::assets::asset_save(&conn, uid, id.map(|v| v as i64), &input)
+    services::assets::asset_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn asset_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["asset.delete", "system.manage"]).await?;
-    services::assets::asset_delete(&conn, uid, id as i64)
+    services::assets::asset_delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn asset_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::assets::MyAsset>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::assets::my_assets(&conn, my_employee(&conn, uid)?)
+    services::assets::my_assets_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
 }
 
 #[tauri::command]
@@ -2270,11 +2262,10 @@ async fn asset_assign(
     asset_id: i32,
     input: services::assets::AssignInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["asset.create", "asset.update", "system.manage"],
     ).await?;
-    services::assets::assign(&conn, uid, asset_id as i64, &input)
+    services::assets::assign_sea(&state.sea, uid, asset_id as i64, &input).await
 }
 
 #[tauri::command]
@@ -2284,11 +2275,10 @@ async fn asset_return(
     assignment_id: i32,
     input: services::assets::ReturnInput,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["asset.create", "asset.update", "system.manage"],
     ).await?;
-    services::assets::return_asset(&conn, uid, uid, assignment_id as i64, &input)
+    services::assets::return_asset_sea(&state.sea, uid, uid, assignment_id as i64, &input).await
 }
 
 #[tauri::command]
@@ -2298,45 +2288,40 @@ async fn asset_maintenance_add(
     asset_id: i32,
     input: services::assets::MaintenanceInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["asset.create", "asset.update", "system.manage"],
     ).await?;
-    services::assets::add_maintenance(&conn, uid, asset_id as i64, &input)
+    services::assets::add_maintenance_sea(&state.sea, uid, asset_id as i64, &input).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn asset_mark_available(state: tauri::State<'_, AppState>, asset_id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["asset.create", "asset.update", "system.manage"],
     ).await?;
-    services::assets::mark_available(&conn, uid, asset_id as i64)
+    services::assets::mark_available_sea(&state.sea, uid, asset_id as i64).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn trip_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::travel::Trip>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::travel::my_trips(&conn, my_employee(&conn, uid)?)
+    services::travel::my_trips_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn trip_all(state: tauri::State<'_, AppState>) -> Result<Vec<services::travel::Trip>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["business_trip.view", "system.manage"]).await?;
-    services::travel::all_trips(&conn)
+    services::travel::all_trips_sea(&state.sea).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn trip_pending(state: tauri::State<'_, AppState>) -> Result<Vec<services::travel::Trip>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::travel::pending_for(&conn, uid)
+    services::travel::pending_for_sea(&state.sea, uid).await
 }
 
 #[tauri::command]
@@ -2345,9 +2330,8 @@ async fn trip_expenses(
     state: tauri::State<'_, AppState>,
     trip_id: i32,
 ) -> Result<Vec<services::travel::TripExpense>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["business_trip.view", "system.manage"]).await?;
-    services::travel::trip_expenses(&conn, trip_id as i64)
+    services::travel::trip_expenses_sea(&state.sea, trip_id as i64).await
 }
 
 #[tauri::command]
@@ -2356,17 +2340,15 @@ async fn trip_create(
     state: tauri::State<'_, AppState>,
     input: services::travel::TripInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::travel::trip_create(&conn, uid, my_employee(&conn, uid)?, &input)
+    services::travel::trip_create_sea(&state.sea, uid, my_employee_sea(&state.sea, uid).await?, &input).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn trip_decide(state: tauri::State<'_, AppState>, id: i32, decision: String) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::travel::trip_decide(&conn, uid, id as i64, &decision)
+    services::travel::trip_decide_sea(&state.sea, uid, id as i64, &decision).await
 }
 
 #[tauri::command]
@@ -2377,18 +2359,16 @@ async fn trip_expense_add(
     input: services::travel::TripExpenseInput,
     receipt: Option<services::employees::FileUpload>,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
     let dir = files_dir(&state);
-    services::travel::trip_add_expense(&conn, &dir, uid, trip_id as i64, &input, receipt.as_ref())
+    services::travel::trip_add_expense_sea(&state.sea, &dir, uid, trip_id as i64, &input, receipt.as_ref()).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn trip_settle(state: tauri::State<'_, AppState>, trip_id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["business_trip.approve", "system.manage"]).await?;
-    services::travel::trip_settle(&conn, uid, trip_id as i64)
+    services::travel::trip_settle_sea(&state.sea, uid, trip_id as i64).await
 }
 
 #[tauri::command]
@@ -2396,9 +2376,8 @@ async fn trip_settle(state: tauri::State<'_, AppState>, trip_id: i32) -> Result<
 async fn reimburse_categories(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::travel::ReimburseCategory>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["reimbursement.view", "system.manage"]).await?;
-    services::travel::category_list(&conn)
+    services::travel::category_list_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -2410,25 +2389,22 @@ async fn reimburse_category_save(
     name: String,
     max_amount: Option<f64>,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["system.manage"]).await?;
-    services::travel::category_save(&conn, uid, id.map(|v| v as i64), &code, &name, max_amount)
+    services::travel::category_save_sea(&state.sea, uid, id.map(|v| v as i64), &code, &name, max_amount).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn reimburse_category_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["system.manage"]).await?;
-    services::travel::category_delete(&conn, uid, id as i64)
+    services::travel::category_delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn reimburse_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::travel::Reimburse>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::travel::my_reimburse(&conn, my_employee(&conn, uid)?)
+    services::travel::my_reimburse_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
 }
 
 #[tauri::command]
@@ -2436,9 +2412,8 @@ async fn reimburse_my(state: tauri::State<'_, AppState>) -> Result<Vec<services:
 async fn reimburse_all(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::travel::Reimburse>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["reimbursement.view", "system.manage"]).await?;
-    services::travel::all_reimburse(&conn)
+    services::travel::all_reimburse_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -2448,17 +2423,17 @@ async fn reimburse_create(
     input: services::travel::ReimburseInput,
     receipt: Option<services::employees::FileUpload>,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
     let dir = files_dir(&state);
-    services::travel::reimburse_create(
-        &conn,
+    services::travel::reimburse_create_sea(
+        &state.sea,
         &dir,
         uid,
-        my_employee(&conn, uid)?,
+        my_employee_sea(&state.sea, uid).await?,
         &input,
         receipt.as_ref(),
     )
+    .await
 }
 
 #[tauri::command]
@@ -2468,11 +2443,10 @@ async fn reimburse_decide(
     id: i32,
     action: String,
 ) -> Result<String, String> {
-    let conn = pooled(&state)?;
     let (uid, user) = current_actor(&state).await?;
-    let actor_emp = my_employee(&conn, uid).ok();
+    let actor_emp = my_employee_sea(&state.sea, uid).await.ok();
     let privileged = privileged(&user, "reimbursement.approve");
-    services::travel::reimburse_decide(&conn, uid, actor_emp, privileged, id as i64, &action)
+    services::travel::reimburse_decide_sea(&state.sea, uid, actor_emp, privileged, id as i64, &action).await
 }
 
 // ---------------- Dasbor ----------------
