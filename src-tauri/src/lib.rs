@@ -1860,9 +1860,8 @@ async fn offboarding_clearance(
 async fn performance_periods(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::performance::PerfPeriod>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["performance.view", "system.manage"]).await?;
-    services::performance::period_list(&conn)
+    services::performance::period_list_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -1872,19 +1871,17 @@ async fn performance_period_save(
     id: Option<i32>,
     input: services::performance::PerfPeriodInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["performance.create", "performance.update", "system.manage"],
     ).await?;
-    services::performance::period_save(&conn, uid, id.map(|v| v as i64), &input)
+    services::performance::period_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn performance_period_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["performance.delete", "system.manage"]).await?;
-    services::performance::period_delete(&conn, uid, id as i64)
+    services::performance::period_delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
@@ -1892,9 +1889,8 @@ async fn performance_period_delete(state: tauri::State<'_, AppState>, id: i32) -
 async fn performance_kpis(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::performance::Kpi>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["performance.view", "system.manage"]).await?;
-    services::performance::kpi_list(&conn)
+    services::performance::kpi_list_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -1904,19 +1900,17 @@ async fn performance_kpi_save(
     id: Option<i32>,
     input: services::performance::KpiInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["performance.create", "performance.update", "system.manage"],
     ).await?;
-    services::performance::kpi_save(&conn, uid, id.map(|v| v as i64), &input)
+    services::performance::kpi_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn performance_kpi_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["performance.delete", "system.manage"]).await?;
-    services::performance::kpi_delete(&conn, uid, id as i64)
+    services::performance::kpi_delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
@@ -1925,9 +1919,8 @@ async fn performance_reviews(
     state: tauri::State<'_, AppState>,
     period_id: i32,
 ) -> Result<Vec<services::performance::ReviewRow>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["performance.view", "system.manage"]).await?;
-    services::performance::reviews_for_period(&conn, period_id as i64)
+    services::performance::reviews_for_period_sea(&state.sea, period_id as i64).await
 }
 
 #[tauri::command]
@@ -1935,9 +1928,8 @@ async fn performance_reviews(
 async fn performance_my_reviews(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::performance::ReviewRow>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::performance::my_reviews(&conn, my_employee(&conn, uid)?)
+    services::performance::my_reviews_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
 }
 
 #[tauri::command]
@@ -1946,9 +1938,8 @@ async fn performance_review_detail(
     state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::performance::ReviewDetail>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["performance.view", "system.manage"]).await?;
-    services::performance::review_detail(&conn, id as i64)
+    services::performance::review_detail_sea(&state.sea, id as i64).await
 }
 
 #[tauri::command]
@@ -1958,11 +1949,10 @@ async fn performance_ensure_review(
     period_id: i32,
     employee_id: i32,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     require(&state,
         &["performance.create", "performance.update", "system.manage"],
     ).await?;
-    services::performance::ensure_review(&conn, period_id as i64, employee_id as i64)
+    services::performance::ensure_review_sea(&state.sea, period_id as i64, employee_id as i64).await
 }
 
 #[tauri::command]
@@ -1975,12 +1965,11 @@ async fn performance_assign_kpi(
     target: f64,
     weight: f64,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["performance.create", "performance.update", "system.manage"],
     ).await?;
-    services::performance::assign_kpi(
-        &conn,
+    services::performance::assign_kpi_sea(
+        &state.sea,
         uid,
         period_id as i64,
         employee_id as i64,
@@ -1988,6 +1977,7 @@ async fn performance_assign_kpi(
         target,
         weight,
     )
+    .await
 }
 
 #[tauri::command]
@@ -1997,11 +1987,10 @@ async fn performance_submit_actual(
     employee_kpi_id: i32,
     actual: f64,
 ) -> Result<f64, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["performance.create", "performance.update", "system.manage"],
     ).await?;
-    services::performance::submit_actual(&conn, uid, employee_kpi_id as i64, actual)
+    services::performance::submit_actual_sea(&state.sea, uid, employee_kpi_id as i64, actual).await
 }
 
 #[tauri::command]
@@ -2013,18 +2002,18 @@ async fn performance_submit_review(
     score: f64,
     comments: Option<String>,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["performance.create", "performance.review", "system.manage"],
     ).await?;
-    services::performance::submit_review(
-        &conn,
+    services::performance::submit_review_sea(
+        &state.sea,
         uid,
         review_id as i64,
         &role,
         score,
         comments.as_deref(),
     )
+    .await
 }
 
 #[tauri::command]
@@ -2032,9 +2021,8 @@ async fn performance_submit_review(
 async fn training_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::training::Training>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["training.view", "system.manage"]).await?;
-    services::training::list(&conn)
+    services::training::list_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -2043,9 +2031,8 @@ async fn training_participants(
     state: tauri::State<'_, AppState>,
     training_id: i32,
 ) -> Result<Vec<services::training::Participant>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["training.view", "system.manage"]).await?;
-    services::training::detail_participants(&conn, training_id as i64)
+    services::training::detail_participants_sea(&state.sea, training_id as i64).await
 }
 
 #[tauri::command]
@@ -2055,19 +2042,17 @@ async fn training_save(
     id: Option<i32>,
     input: services::training::TrainingInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["training.create", "training.update", "system.manage"],
     ).await?;
-    services::training::save(&conn, uid, id.map(|v| v as i64), &input)
+    services::training::save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn training_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["training.delete", "system.manage"]).await?;
-    services::training::delete(&conn, uid, id as i64)
+    services::training::delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
@@ -2077,11 +2062,10 @@ async fn training_add_participant(
     training_id: i32,
     employee_id: i32,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["training.create", "training.update", "system.manage"],
     ).await?;
-    services::training::add_participant(&conn, uid, training_id as i64, employee_id as i64)
+    services::training::add_participant_sea(&state.sea, uid, training_id as i64, employee_id as i64).await
 }
 
 #[tauri::command]
@@ -2091,11 +2075,10 @@ async fn training_participant_status(
     participant_id: i32,
     status: String,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["training.create", "training.update", "system.manage"],
     ).await?;
-    services::training::set_participant_status(&conn, uid, participant_id as i64, &status)
+    services::training::set_participant_status_sea(&state.sea, uid, participant_id as i64, &status).await
 }
 
 #[tauri::command]
@@ -2103,9 +2086,8 @@ async fn training_participant_status(
 async fn training_certifications(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::training::Certification>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["training.view", "system.manage"]).await?;
-    services::training::certifications(&conn)
+    services::training::certifications_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -2114,11 +2096,10 @@ async fn training_certification_add(
     state: tauri::State<'_, AppState>,
     input: services::training::CertificationInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["training.create", "training.update", "system.manage"],
     ).await?;
-    services::training::add_certification(&conn, uid, &input)
+    services::training::add_certification_sea(&state.sea, uid, &input).await
 }
 
 #[tauri::command]
@@ -2127,9 +2108,8 @@ async fn training_materials(
     state: tauri::State<'_, AppState>,
     training_id: i32,
 ) -> Result<Vec<services::training::Material>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["training.view", "system.manage"]).await?;
-    services::training::material_list(&conn, training_id as i64)
+    services::training::material_list_sea(&state.sea, training_id as i64).await
 }
 
 #[tauri::command]
@@ -2141,26 +2121,25 @@ async fn training_material_add(
     kind: String,
     url: Option<String>,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["training.create", "training.update", "system.manage"],
     ).await?;
-    services::training::material_add(
-        &conn,
+    services::training::material_add_sea(
+        &state.sea,
         uid,
         training_id as i64,
         &title,
         &kind,
         url.as_deref(),
     )
+    .await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn training_material_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["training.delete", "system.manage"]).await?;
-    services::training::material_delete(&conn, uid, id as i64)
+    services::training::material_delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
@@ -2170,11 +2149,10 @@ async fn training_quiz_score(
     participant_id: i32,
     score: f64,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["training.create", "training.update", "system.manage"],
     ).await?;
-    services::training::set_quiz_score(&conn, uid, participant_id as i64, score)
+    services::training::set_quiz_score_sea(&state.sea, uid, participant_id as i64, score).await
 }
 
 #[tauri::command]
@@ -2182,9 +2160,8 @@ async fn training_quiz_score(
 async fn training_skill_matrix(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::training::SkillCell>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["training.view", "system.manage"]).await?;
-    services::training::skill_matrix(&conn)
+    services::training::skill_matrix_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -2195,11 +2172,10 @@ async fn training_skill_set(
     skill_name: String,
     level: i32,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["training.create", "training.update", "system.manage"],
     ).await?;
-    services::training::set_skill(&conn, uid, employee_id as i64, &skill_name, level)
+    services::training::set_skill_sea(&state.sea, uid, employee_id as i64, &skill_name, level).await
 }
 
 #[tauri::command]
