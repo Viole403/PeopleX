@@ -1,7 +1,4 @@
-//! Entity SeaORM berdampingan dengan rusqlite.
-//!
-//! Jalur produksi tetap memakai rusqlite; modul ini untuk spike paritas:
-//! membaca database yang sama lewat SeaORM dan membandingkan hasilnya.
+//! Entity SeaORM untuk seluruh tabel aplikasi.
 
 pub mod system_setting {
     use sea_orm::entity::prelude::*;
@@ -242,10 +239,44 @@ pub mod employee {
         #[sea_orm(primary_key)]
         pub id: i32,
         pub employee_number: String,
+        pub nik: Option<String>,
         pub first_name: String,
         pub last_name: Option<String>,
-        pub department_id: Option<i32>,
+        pub photo: Option<String>,
+        pub birth_place: Option<String>,
+        pub birth_date: Option<String>,
+        pub gender: String,
+        pub religion: Option<String>,
+        pub marital_status: String,
+        pub phone: Option<String>,
+        pub personal_email: Option<String>,
+        pub company_id: i32,
         pub branch_id: Option<i32>,
+        pub department_id: Option<i32>,
+        pub division_id: Option<i32>,
+        pub section_id: Option<i32>,
+        pub position_id: Option<i32>,
+        pub job_level_id: Option<i32>,
+        pub job_grade_id: Option<i32>,
+        pub work_location_id: Option<i32>,
+        pub cost_center_id: Option<i32>,
+        pub supervisor_id: Option<i32>,
+        pub manager_id: Option<i32>,
+        pub join_date: String,
+        pub appointment_date: Option<String>,
+        pub resign_date: Option<String>,
+        pub employment_status: String,
+        pub employment_type: String,
+        pub bank_name: Option<String>,
+        pub bank_account_number: Option<String>,
+        pub bank_account_holder: Option<String>,
+        pub npwp: Option<String>,
+        pub ptkp_status: Option<String>,
+        pub bpjs_health_number: Option<String>,
+        pub bpjs_employment_number: Option<String>,
+        pub created_at: Option<String>,
+        pub updated_at: Option<String>,
+        pub deleted_at: Option<String>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -429,6 +460,118 @@ pub mod login_activity {
         pub user_agent: Option<String>,
         pub status: String,
         pub created_at: Option<String>,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod division {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "divisions")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod section {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "sections")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod position {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "positions")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod job_level {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "job_levels")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod job_grade {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "job_grades")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod work_location {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "work_locations")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod cost_center {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "cost_centers")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
