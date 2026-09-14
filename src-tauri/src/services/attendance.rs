@@ -4,6 +4,7 @@ use chrono::{Datelike, Local, NaiveDate, NaiveDateTime};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::audit;
+use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
 use crate::to_dto_int;
 
 // ---------------- DTO ----------------
@@ -1671,6 +1672,821 @@ pub fn decide_correction(
     Ok(())
 }
 
+// ---------------- Varian SeaORM (master data) ----------------
+
+fn sea_text(row: &[Value], i: usize) -> String {
+    value_to_string(&row[i])
+}
+
+fn sea_int(row: &[Value], i: usize) -> i64 {
+    value_i64(&row[i]).unwrap_or(0)
+}
+
+fn sea_opt_text(row: &[Value], i: usize) -> Option<String> {
+    match &row[i] {
+        Value::Null => None,
+        v => {
+            let s = value_to_string(v);
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        }
+    }
+}
+
+fn sea_opt_int(row: &[Value], i: usize) -> Option<i64> {
+    value_i64(&row[i])
+}
+
+fn sea_text_val(v: &str) -> Value {
+    Value::Text(v.to_string())
+}
+
+fn sea_opt_str(v: Option<&str>) -> Value {
+    match v.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => Value::Text(s.to_string()),
+        None => Value::Null,
+    }
+}
+
+fn sea_opt_int_val(v: Option<i64>) -> Value {
+    match v {
+        Some(x) => Value::Int(x),
+        None => Value::Null,
+    }
+}
+
+async fn sea_rowid(db: &sea_orm::DatabaseConnection, label: &str) -> Result<i64, String> {
+    Ok(q_one(
+        db,
+        "SELECT last_insert_rowid()".to_string(),
+        vec![],
+        1,
+        label,
+    )
+    .await?
+    .map(|r| sea_int(&r, 0))
+    .unwrap_or(0))
+}
+
+pub async fn shift_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Shift>, String> {
+    let rows = q_all(db, "SELECT id, name, start_time, end_time, break_start, break_end, grace_period_minutes, is_overnight FROM shifts WHERE deleted_at IS NULL ORDER BY name".to_string(), vec![], 8, "attendance.shift.list").await?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(Shift {
+            id: to_dto_int(sea_int(r, 0), "shift.id")?,
+            name: sea_text(r, 1),
+            start_time: sea_text(r, 2),
+            end_time: sea_text(r, 3),
+            break_start: sea_opt_text(r, 4),
+            break_end: sea_opt_text(r, 5),
+            grace_period_minutes: to_dto_int(sea_int(r, 6), "shift.grace")?,
+            is_overnight: sea_int(r, 7) != 0,
+        });
+    }
+    Ok(out)
+}
+
+pub async fn shift_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: Option<i64>,
+    input: &ShiftInput,
+) -> Result<i32, String> {
+    if input.name.trim().is_empty() {
+        return Err("Nama shift wajib diisi.".to_string());
+    }
+    for (v, label) in [
+        (&input.start_time, "Jam masuk"),
+        (&input.end_time, "Jam pulang"),
+    ] {
+        if !valid_time(v) {
+            return Err(format!("{label} harus format JJ:MM:SS."));
+        }
+    }
+    for (v, label) in [
+        (&input.break_start, "Istirahat mulai"),
+        (&input.break_end, "Istirahat selesai"),
+    ] {
+        if let Some(s) = v {
+            if !s.trim().is_empty() && !valid_time(s.trim()) {
+                return Err(format!("{label} harus format JJ:MM:SS."));
+            }
+        }
+    }
+    if input.grace_period_minutes < 0 || input.grace_period_minutes > 180 {
+        return Err("Toleransi 0-180 menit.".to_string());
+    }
+    let over = if input.is_overnight { 1 } else { 0 };
+    if let Some(rid) = id {
+        let n = exec(db, "UPDATE shifts SET name = ?1, start_time = ?2, end_time = ?3, break_start = ?4, break_end = ?5, grace_period_minutes = ?6, is_overnight = ?7 WHERE id = ?8 AND deleted_at IS NULL".to_string(), vec![sea_text_val(input.name.trim()), sea_text_val(&input.start_time), sea_text_val(&input.end_time), sea_opt_str(input.break_start.as_deref()), sea_opt_str(input.break_end.as_deref()), Value::Int(input.grace_period_minutes as i64), Value::Int(over), Value::Int(rid)], "attendance.shift.update").await.map_err(|e| format!("gagal menyimpan shift: {e}"))?;
+        if n == 0 {
+            return Err("Shift tidak ditemukan.".to_string());
+        }
+        super::audit::log_sea(db, Some(actor_id), "UPDATE", "schedule.shift", Some(&rid.to_string()), None, None, None).await?;
+        to_dto_int(rid, "shift.id")
+    } else {
+        exec(db, "INSERT INTO shifts (name, start_time, end_time, break_start, break_end, grace_period_minutes, is_overnight) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)".to_string(), vec![sea_text_val(input.name.trim()), sea_text_val(&input.start_time), sea_text_val(&input.end_time), sea_opt_str(input.break_start.as_deref()), sea_opt_str(input.break_end.as_deref()), Value::Int(input.grace_period_minutes as i64), Value::Int(over)], "attendance.shift.insert").await.map_err(|e| format!("gagal menambah shift: {e}"))?;
+        let rid = sea_rowid(db, "attendance.shift.rowid").await?;
+        super::audit::log_sea(db, Some(actor_id), "CREATE", "schedule.shift", Some(&rid.to_string()), None, None, None).await?;
+        to_dto_int(rid, "shift.id")
+    }
+}
+
+pub async fn shift_delete_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: i64,
+) -> Result<(), String> {
+    for (table, col) in [
+        ("work_schedule_days", "shift_id"),
+        ("shift_assignments", "shift_id"),
+        ("attendances", "shift_id"),
+    ] {
+        let n = q_one(db, format!("SELECT COUNT(*) FROM {table} WHERE {col} = ?1"), vec![Value::Int(id)], 1, "attendance.shift.rel").await.map_err(|e| format!("gagal memeriksa relasi: {e}"))?.map(|r| sea_int(&r, 0)).unwrap_or(0);
+        if n > 0 {
+            return Err("Shift masih dipakai dan tidak dapat dihapus.".to_string());
+        }
+    }
+    let n = exec(db, "UPDATE shifts SET deleted_at = datetime('now','localtime') WHERE id = ?1 AND deleted_at IS NULL".to_string(), vec![Value::Int(id)], "attendance.shift.delete").await.map_err(|e| format!("gagal menghapus shift: {e}"))?;
+    if n == 0 {
+        return Err("Shift tidak ditemukan.".to_string());
+    }
+    super::audit::log_sea(db, Some(actor_id), "DELETE", "schedule.shift", Some(&id.to_string()), None, None, None).await?;
+    Ok(())
+}
+
+pub async fn schedule_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Schedule>, String> {
+    let rows = q_all(db, "SELECT id, name, description FROM work_schedules WHERE deleted_at IS NULL ORDER BY name".to_string(), vec![], 3, "attendance.schedule.list").await?;
+    let mut out = Vec::new();
+    for r in &rows {
+        let id = sea_int(r, 0);
+        out.push(Schedule {
+            id: to_dto_int(id, "schedule.id")?,
+            name: sea_text(r, 1),
+            description: sea_opt_text(r, 2),
+            days: schedule_days_sea(db, id).await?,
+        });
+    }
+    Ok(out)
+}
+
+pub async fn schedule_days_sea(
+    db: &sea_orm::DatabaseConnection,
+    schedule_id: i64,
+) -> Result<Vec<ScheduleDay>, String> {
+    let rows = q_all(db, "SELECT day_of_week, shift_id, is_working_day FROM work_schedule_days WHERE work_schedule_id = ?1 ORDER BY day_of_week".to_string(), vec![Value::Int(schedule_id)], 3, "attendance.schedule.days").await?;
+    let mut out = Vec::new();
+    for r in &rows {
+        let dow = sea_int(r, 0);
+        let shift = sea_opt_int(r, 1);
+        out.push(ScheduleDay {
+            day_of_week: to_dto_int(dow, "day.dow")?,
+            day_name: DAY_NAMES[dow.clamp(0, 6) as usize].to_string(),
+            shift_id: shift.map(|v| to_dto_int(v, "day.shift")).transpose()?,
+            is_working_day: sea_int(r, 2) != 0,
+        });
+    }
+    Ok(out)
+}
+
+pub async fn schedule_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: Option<i64>,
+    input: &ScheduleInput,
+) -> Result<i32, String> {
+    if input.name.trim().is_empty() {
+        return Err("Nama jadwal wajib diisi.".to_string());
+    }
+    if let Some(rid) = id {
+        let n = exec(db, "UPDATE work_schedules SET name = ?1, description = ?2 WHERE id = ?3 AND deleted_at IS NULL".to_string(), vec![sea_text_val(input.name.trim()), sea_opt_str(input.description.as_deref()), Value::Int(rid)], "attendance.schedule.update").await.map_err(|e| format!("gagal menyimpan jadwal: {e}"))?;
+        if n == 0 {
+            return Err("Jadwal tidak ditemukan.".to_string());
+        }
+        super::audit::log_sea(db, Some(actor_id), "UPDATE", "schedule.work", Some(&rid.to_string()), None, None, None).await?;
+        to_dto_int(rid, "schedule.id")
+    } else {
+        exec(db, "INSERT INTO work_schedules (name, description) VALUES (?1, ?2)".to_string(), vec![sea_text_val(input.name.trim()), sea_opt_str(input.description.as_deref())], "attendance.schedule.insert").await.map_err(|e| format!("gagal menambah jadwal: {e}"))?;
+        let rid = sea_rowid(db, "attendance.schedule.rowid").await?;
+        for dow in 0..=6 {
+            let working = (1..=5).contains(&dow) as i64;
+            exec(db, "INSERT INTO work_schedule_days (work_schedule_id, day_of_week, shift_id, is_working_day) VALUES (?1, ?2, NULL, ?3)".to_string(), vec![Value::Int(rid), Value::Int(dow), Value::Int(working)], "attendance.schedule.initdays").await.map_err(|e| format!("gagal membuat hari default: {e}"))?;
+        }
+        super::audit::log_sea(db, Some(actor_id), "CREATE", "schedule.work", Some(&rid.to_string()), None, None, None).await?;
+        to_dto_int(rid, "schedule.id")
+    }
+}
+
+pub async fn schedule_save_days_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    schedule_id: i64,
+    days: &[(i64, Option<i64>, bool)],
+) -> Result<(), String> {
+    for (dow, shift, working) in days {
+        if !(0..=6).contains(dow) {
+            return Err("Hari tidak valid.".to_string());
+        }
+        if let Some(sid) = shift {
+            let found = q_one(db, "SELECT id FROM shifts WHERE id = ?1 AND deleted_at IS NULL".to_string(), vec![Value::Int(*sid)], 1, "attendance.schedule.checkshift").await.map_err(|e| format!("gagal memeriksa shift: {e}"))?;
+            if found.is_none() {
+                return Err("Shift tidak ditemukan.".to_string());
+            }
+        }
+        exec(db, "UPDATE work_schedule_days SET shift_id = ?1, is_working_day = ?2 WHERE work_schedule_id = ?3 AND day_of_week = ?4".to_string(), vec![sea_opt_int_val(*shift), Value::Int(if *working { 1 } else { 0 }), Value::Int(schedule_id), Value::Int(*dow)], "attendance.schedule.savedays").await.map_err(|e| format!("gagal menyimpan hari: {e}"))?;
+    }
+    super::audit::log_sea(db, Some(actor_id), "UPDATE", "schedule.days", Some(&schedule_id.to_string()), None, None, None).await?;
+    Ok(())
+}
+
+pub async fn schedule_delete_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: i64,
+) -> Result<(), String> {
+    let n = q_one(db, "SELECT COUNT(*) FROM shift_assignments WHERE work_schedule_id = ?1".to_string(), vec![Value::Int(id)], 1, "attendance.schedule.rel").await.map_err(|e| format!("gagal memeriksa relasi: {e}"))?.map(|r| sea_int(&r, 0)).unwrap_or(0);
+    if n > 0 {
+        return Err("Jadwal masih dipakai penugasan.".to_string());
+    }
+    exec(db, "DELETE FROM work_schedule_days WHERE work_schedule_id = ?1".to_string(), vec![Value::Int(id)], "attendance.schedule.cleardays").await.map_err(|e| format!("gagal menghapus hari: {e}"))?;
+    let n = exec(db, "UPDATE work_schedules SET deleted_at = datetime('now','localtime') WHERE id = ?1 AND deleted_at IS NULL".to_string(), vec![Value::Int(id)], "attendance.schedule.delete").await.map_err(|e| format!("gagal menghapus jadwal: {e}"))?;
+    if n == 0 {
+        return Err("Jadwal tidak ditemukan.".to_string());
+    }
+    super::audit::log_sea(db, Some(actor_id), "DELETE", "schedule.work", Some(&id.to_string()), None, None, None).await?;
+    Ok(())
+}
+
+pub async fn assignment_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Assignment>, String> {
+    let rows = q_all(db, "SELECT sa.id, sa.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), sa.work_schedule_id, ws.name, sa.shift_id, s.name, sa.date, sa.start_date, sa.end_date FROM shift_assignments sa JOIN employees e ON e.id = sa.employee_id LEFT JOIN work_schedules ws ON ws.id = sa.work_schedule_id LEFT JOIN shifts s ON s.id = sa.shift_id ORDER BY sa.start_date DESC, e.first_name".to_string(), vec![], 10, "attendance.assign.list").await?;
+    let mut out = Vec::new();
+    for r in &rows {
+        let opt_i = |v: Option<i64>| v.map(|x| to_dto_int(x, "assign.ref")).transpose();
+        out.push(Assignment {
+            id: to_dto_int(sea_int(r, 0), "assign.id")?,
+            employee_id: to_dto_int(sea_int(r, 1), "assign.emp")?,
+            employee_name: sea_text(r, 2),
+            work_schedule_id: opt_i(sea_opt_int(r, 3))?,
+            schedule_name: sea_opt_text(r, 4),
+            shift_id: opt_i(sea_opt_int(r, 5))?,
+            shift_name: sea_opt_text(r, 6),
+            date: sea_opt_text(r, 7),
+            start_date: sea_text(r, 8),
+            end_date: sea_opt_text(r, 9),
+        });
+    }
+    Ok(out)
+}
+
+pub async fn assignment_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: Option<i64>,
+    input: &AssignmentInput,
+) -> Result<i32, String> {
+    let emp = q_one(db, "SELECT id FROM employees WHERE id = ?1 AND deleted_at IS NULL".to_string(), vec![Value::Int(input.employee_id as i64)], 1, "attendance.assign.checkemp").await.map_err(|e| format!("gagal memeriksa karyawan: {e}"))?;
+    if emp.is_none() {
+        return Err("Karyawan tidak ditemukan.".to_string());
+    }
+    if input.work_schedule_id.is_none() && input.shift_id.is_none() {
+        return Err("Pilih jadwal atau shift.".to_string());
+    }
+    let date = input.date.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let start = input.start_date.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if date.is_none() && start.is_none() {
+        return Err("Isi tanggal spesifik atau tanggal mulai rentang.".to_string());
+    }
+    for (v, label) in [
+        (date, "Tanggal"),
+        (start, "Tanggal mulai"),
+        (input.end_date.as_deref().map(str::trim).filter(|s| !s.is_empty()), "Tanggal selesai"),
+    ] {
+        if let Some(s) = v {
+            NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| format!("{label} harus valid (YYYY-MM-DD)."))?;
+        }
+    }
+    if let (Some(s), Some(e)) = (start, input.end_date.as_deref().map(str::trim).filter(|s| !s.is_empty())) {
+        if e < s {
+            return Err("Tanggal selesai sebelum tanggal mulai.".to_string());
+        }
+    }
+    let end = input.end_date.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let ws = input.work_schedule_id.map(|v| v as i64);
+    let sh = input.shift_id.map(|v| v as i64);
+    if let Some(rid) = id {
+        let n = exec(db, "UPDATE shift_assignments SET work_schedule_id = ?1, shift_id = ?2, date = ?3, start_date = ?4, end_date = ?5 WHERE id = ?6 AND employee_id = ?7".to_string(), vec![sea_opt_int_val(ws), sea_opt_int_val(sh), sea_opt_str(date), sea_text_val(start.unwrap_or("")), sea_opt_str(end), Value::Int(rid), Value::Int(input.employee_id as i64)], "attendance.assign.update").await.map_err(|e| format!("gagal menyimpan penugasan: {e}"))?;
+        if n == 0 {
+            return Err("Penugasan tidak ditemukan.".to_string());
+        }
+        super::audit::log_sea(db, Some(actor_id), "UPDATE", "schedule.assign", Some(&rid.to_string()), None, None, None).await?;
+        to_dto_int(rid, "assign.id")
+    } else {
+        exec(db, "INSERT INTO shift_assignments (employee_id, work_schedule_id, shift_id, date, start_date, end_date) VALUES (?1, ?2, ?3, ?4, ?5, ?6)".to_string(), vec![Value::Int(input.employee_id as i64), sea_opt_int_val(ws), sea_opt_int_val(sh), sea_opt_str(date), sea_text_val(start.unwrap_or("")), sea_opt_str(end)], "attendance.assign.insert").await.map_err(|e| format!("gagal menambah penugasan: {e}"))?;
+        let rid = sea_rowid(db, "attendance.assign.rowid").await?;
+        super::audit::log_sea(db, Some(actor_id), "CREATE", "schedule.assign", Some(&rid.to_string()), None, None, None).await?;
+        to_dto_int(rid, "assign.id")
+    }
+}
+
+pub async fn assignment_delete_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: i64,
+) -> Result<(), String> {
+    let n = exec(db, "DELETE FROM shift_assignments WHERE id = ?1".to_string(), vec![Value::Int(id)], "attendance.assign.delete").await.map_err(|e| format!("gagal menghapus penugasan: {e}"))?;
+    if n == 0 {
+        return Err("Penugasan tidak ditemukan.".to_string());
+    }
+    super::audit::log_sea(db, Some(actor_id), "DELETE", "schedule.assign", Some(&id.to_string()), None, None, None).await?;
+    Ok(())
+}
+
+pub async fn holiday_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Holiday>, String> {
+    let rows = q_all(db, "SELECT id, name, date, type, description FROM holidays ORDER BY date DESC".to_string(), vec![], 5, "attendance.holiday.list").await?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(Holiday {
+            id: to_dto_int(sea_int(r, 0), "holiday.id")?,
+            name: sea_text(r, 1),
+            date: sea_text(r, 2),
+            holiday_type: sea_text(r, 3),
+            description: sea_opt_text(r, 4),
+        });
+    }
+    Ok(out)
+}
+
+pub async fn holiday_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: Option<i64>,
+    input: &HolidayInput,
+) -> Result<i32, String> {
+    if input.name.trim().is_empty() {
+        return Err("Nama libur wajib diisi.".to_string());
+    }
+    NaiveDate::parse_from_str(input.date.trim(), "%Y-%m-%d").map_err(|_| "Tanggal harus valid (YYYY-MM-DD).".to_string())?;
+    if !["national", "company", "collective_leave", "custom"].contains(&input.holiday_type.as_str()) {
+        return Err("Jenis libur tidak valid.".to_string());
+    }
+    if let Some(rid) = id {
+        let n = exec(db, "UPDATE holidays SET name = ?1, date = ?2, type = ?3, description = ?4 WHERE id = ?5".to_string(), vec![sea_text_val(input.name.trim()), sea_text_val(input.date.trim()), sea_text_val(&input.holiday_type), sea_opt_str(input.description.as_deref()), Value::Int(rid)], "attendance.holiday.update").await.map_err(|e| format!("gagal menyimpan libur: {e}"))?;
+        if n == 0 {
+            return Err("Libur tidak ditemukan.".to_string());
+        }
+        super::audit::log_sea(db, Some(actor_id), "UPDATE", "schedule.holiday", Some(&rid.to_string()), None, None, None).await?;
+        to_dto_int(rid, "holiday.id")
+    } else {
+        exec(db, "INSERT INTO holidays (name, date, type, description) VALUES (?1, ?2, ?3, ?4)".to_string(), vec![sea_text_val(input.name.trim()), sea_text_val(input.date.trim()), sea_text_val(&input.holiday_type), sea_opt_str(input.description.as_deref())], "attendance.holiday.insert").await.map_err(|e| {
+            if e.to_string().contains("UNIQUE") {
+                "Libur tanggal dan nama tersebut sudah ada.".to_string()
+            } else {
+                format!("gagal menambah libur: {e}")
+            }
+        })?;
+        let rid = sea_rowid(db, "attendance.holiday.rowid").await?;
+        super::audit::log_sea(db, Some(actor_id), "CREATE", "schedule.holiday", Some(&rid.to_string()), None, None, None).await?;
+        to_dto_int(rid, "holiday.id")
+    }
+}
+
+pub async fn holiday_delete_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: i64,
+) -> Result<(), String> {
+    let n = exec(db, "DELETE FROM holidays WHERE id = ?1".to_string(), vec![Value::Int(id)], "attendance.holiday.delete").await.map_err(|e| format!("gagal menghapus libur: {e}"))?;
+    if n == 0 {
+        return Err("Libur tidak ditemukan.".to_string());
+    }
+    super::audit::log_sea(db, Some(actor_id), "DELETE", "schedule.holiday", Some(&id.to_string()), None, None, None).await?;
+    Ok(())
+}
+
+// ---------------- Varian SeaORM (transaksi) ----------------
+
+fn sea_opt_float(v: Option<f64>) -> Value {
+    match v {
+        Some(x) => Value::Float(x),
+        None => Value::Null,
+    }
+}
+
+async fn notify_sea(
+    db: &sea_orm::DatabaseConnection,
+    user_id: i64,
+    notif_type: &str,
+    title: &str,
+    message: &str,
+    link: &str,
+) -> Result<(), String> {
+    exec(db, "INSERT INTO notifications (user_id, type, title, message, link) VALUES (?1, ?2, ?3, ?4, ?5)".to_string(), vec![Value::Int(user_id), sea_text_val(notif_type), sea_text_val(title), sea_text_val(message), sea_text_val(link)], "attendance.notify").await.map_err(|e| format!("gagal mengirim notifikasi: {e}"))?;
+    Ok(())
+}
+
+async fn user_of_employee_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+) -> Result<Option<i64>, String> {
+    let rows = q_all(db, "SELECT id FROM users WHERE employee_id = ?1 AND status = 'active'".to_string(), vec![Value::Int(employee_id)], 1, "attendance.userof").await.map_err(|e| format!("gagal mencari user karyawan: {e}"))?;
+    Ok(rows.into_iter().next().map(|r| sea_int(&r, 0)))
+}
+
+async fn resolve_shift_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+    date: &str,
+) -> Result<Option<ResolvedShift>, String> {
+    let day: NaiveDate = NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|_| "Tanggal tidak valid.".to_string())?;
+    let rows = q_all(db, "SELECT s.id, s.start_time, s.end_time, s.grace_period_minutes, s.is_overnight FROM shift_assignments sa INNER JOIN shifts s ON s.id = sa.shift_id WHERE sa.employee_id = ?1 AND sa.date = ?2 AND s.deleted_at IS NULL LIMIT 1".to_string(), vec![Value::Int(employee_id), sea_text_val(date)], 5, "attendance.resolve").await.map_err(|e| format!("gagal resolve shift: {e}"))?;
+    if let Some(r) = rows.into_iter().next() {
+        let (sid, start, end, grace) = (sea_int(&r, 0), sea_text(&r, 1), sea_text(&r, 2), sea_int(&r, 3));
+        let s = parse_hm(day, &start)?;
+        parse_hm(day, &end)?;
+        return Ok(Some(ResolvedShift { id: sid, start: s, grace }));
+    }
+    let dow = day.weekday().num_days_from_sunday() as i64;
+    let rows = q_all(db, "SELECT s.id, s.start_time, s.end_time, s.grace_period_minutes, s.is_overnight FROM shift_assignments sa INNER JOIN work_schedules ws ON ws.id = sa.work_schedule_id INNER JOIN work_schedule_days wsd ON wsd.work_schedule_id = ws.id AND wsd.day_of_week = ?1 INNER JOIN shifts s ON s.id = wsd.shift_id WHERE sa.employee_id = ?2 AND sa.date IS NULL AND sa.start_date <= ?3 AND (sa.end_date IS NULL OR sa.end_date >= ?3) AND wsd.is_working_day = 1 AND s.deleted_at IS NULL ORDER BY sa.start_date DESC LIMIT 1".to_string(), vec![Value::Int(dow), Value::Int(employee_id), sea_text_val(date)], 5, "attendance.resolvesched").await.map_err(|e| format!("gagal resolve jadwal: {e}"))?;
+    rows.into_iter().next().map(|r| {
+        let (sid, start, end, grace) = (sea_int(&r, 0), sea_text(&r, 1), sea_text(&r, 2), sea_int(&r, 3));
+        let s = parse_hm(day, &start)?;
+        parse_hm(day, &end)?;
+        Ok(ResolvedShift { id: sid, start: s, grace })
+    }).transpose()
+}
+
+async fn is_holiday_sea(db: &sea_orm::DatabaseConnection, date: &str) -> Result<bool, String> {
+    let rows = q_all(db, "SELECT id FROM holidays WHERE date = ?1".to_string(), vec![sea_text_val(date)], 1, "attendance.isholiday").await.map_err(|e| format!("gagal memeriksa libur: {e}"))?;
+    Ok(!rows.is_empty())
+}
+
+async fn active_employee_sea(db: &sea_orm::DatabaseConnection, id: i64) -> Result<(), String> {
+    let rows = q_all(db, "SELECT employment_status FROM employees WHERE id = ?1 AND deleted_at IS NULL".to_string(), vec![Value::Int(id)], 1, "attendance.active").await.map_err(|e| format!("gagal memuat karyawan: {e}"))?;
+    match rows.into_iter().next().map(|r| sea_text(&r, 0)) {
+        Some(s) if s == "active" => Ok(()),
+        _ => Err("Karyawan tidak aktif, tidak dapat absensi.".to_string()),
+    }
+}
+
+async fn read_attendance_sea(db: &sea_orm::DatabaseConnection, id: i64) -> Result<Attendance, String> {
+    let row = q_one(db, "SELECT id, employee_id, date, clock_in, clock_out, status, late_minutes, early_minutes, work_minutes, notes, shift_id FROM attendances WHERE id = ?1".to_string(), vec![Value::Int(id)], 11, "attendance.read").await.map_err(|e| format!("gagal memuat absensi: {e}"))?.ok_or_else(|| "Absensi tidak ditemukan.".to_string())?;
+    Ok(Attendance {
+        id: to_dto_int(sea_int(&row, 0), "attendance.id")?,
+        employee_id: to_dto_int(sea_int(&row, 1), "attendance.emp")?,
+        date: sea_text(&row, 2),
+        clock_in: sea_opt_text(&row, 3),
+        clock_out: sea_opt_text(&row, 4),
+        status: sea_text(&row, 5),
+        late_minutes: to_dto_int(sea_int(&row, 6), "attendance.late")?,
+        early_minutes: to_dto_int(sea_int(&row, 7), "attendance.early")?,
+        work_minutes: to_dto_int(sea_int(&row, 8), "attendance.work")?,
+        notes: sea_opt_text(&row, 9),
+        shift_id: sea_opt_int(&row, 10).map(|v| to_dto_int(v, "attendance.shift")).transpose()?,
+    })
+}
+
+pub async fn today_sea(db: &sea_orm::DatabaseConnection, employee_id: i64) -> Result<Option<Attendance>, String> {
+    let rows = q_all(db, "SELECT id FROM attendances WHERE employee_id = ?1 AND date = ?2".to_string(), vec![Value::Int(employee_id), sea_text_val(&today_str())], 1, "attendance.today").await.map_err(|e| format!("gagal memuat absensi hari ini: {e}"))?;
+    match rows.into_iter().next() {
+        Some(r) => Ok(Some(read_attendance_sea(db, sea_int(&r, 0)).await?)),
+        None => Ok(None),
+    }
+}
+
+pub async fn clock_in_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    employee_id: i64,
+    lat: Option<f64>,
+    lng: Option<f64>,
+    device: Option<&str>,
+) -> Result<ClockResult, String> {
+    active_employee_sea(db, employee_id).await?;
+    let today = today_str();
+    let rows = q_all(db, "SELECT id FROM attendances WHERE employee_id = ?1 AND date = ?2".to_string(), vec![Value::Int(employee_id), sea_text_val(&today)], 1, "attendance.check").await.map_err(|e| format!("gagal memeriksa absensi: {e}"))?;
+    if !rows.is_empty() {
+        return Err("Sudah clock in hari ini.".to_string());
+    }
+    if is_holiday_sea(db, &today).await? {
+        return Err("Hari ini libur.".to_string());
+    }
+    let now = Local::now().naive_local();
+    let shift = resolve_shift_sea(db, employee_id, &today).await?;
+    let (status, late) = match &shift {
+        Some(s) => {
+            let limit = s.start + chrono::Duration::minutes(s.grace);
+            if now > limit {
+                let mins = ((now - limit).num_seconds() + 59) / 60;
+                ("late".to_string(), mins)
+            } else {
+                ("present".to_string(), 0)
+            }
+        }
+        None => ("present".to_string(), 0),
+    };
+    exec(db, "INSERT INTO attendances (employee_id, date, clock_in, clock_in_lat, clock_in_lng, clock_in_device, shift_id, status, late_minutes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)".to_string(), vec![Value::Int(employee_id), sea_text_val(&today), sea_text_val(&now.format("%Y-%m-%d %H:%M:%S").to_string()), sea_opt_float(lat), sea_opt_float(lng), sea_opt_str(device), match shift.as_ref().map(|s| s.id) { Some(x) => Value::Int(x), None => Value::Null }, sea_text_val(&status), Value::Int(late)], "attendance.clockin").await.map_err(|e| format!("gagal clock in: {e}"))?;
+    let id = sea_rowid(db, "attendance.clockin").await?;
+    super::audit::log_sea(db, Some(actor_id), "CLOCK_IN", "attendance", Some(&id.to_string()), None, None, None).await?;
+    Ok(ClockResult {
+        message: if status == "late" {
+            format!("Clock in berhasil. Terlambat {late} menit.")
+        } else {
+            "Clock in berhasil.".to_string()
+        },
+        status,
+    })
+}
+
+pub async fn clock_out_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    employee_id: i64,
+    lat: Option<f64>,
+    lng: Option<f64>,
+    device: Option<&str>,
+) -> Result<ClockResult, String> {
+    let today = today_str();
+    let rows = q_all(db, "SELECT id, clock_in, clock_out, status, shift_id FROM attendances WHERE employee_id = ?1 AND date = ?2".to_string(), vec![Value::Int(employee_id), sea_text_val(&today)], 5, "attendance.clockout.read").await.map_err(|e| format!("gagal memuat absensi: {e}"))?;
+    let r = rows.into_iter().next().ok_or_else(|| "Belum clock in hari ini.".to_string())?;
+    let (aid, clock_in, clock_out, status, shift_id) = (sea_int(&r, 0), sea_text(&r, 1), sea_opt_text(&r, 2), sea_text(&r, 3), sea_opt_int(&r, 4));
+    if clock_out.is_some() {
+        return Err("Sudah clock out hari ini.".to_string());
+    }
+    let now = Local::now().naive_local();
+    let fmt = "%Y-%m-%d %H:%M:%S";
+    let cin = NaiveDateTime::parse_from_str(&clock_in, fmt)
+        .map_err(|_| "Data clock in rusak.".to_string())?;
+    let work = (now - cin).num_minutes().max(0);
+    let (status, early) = match shift_id {
+        Some(sid) => {
+            let srows = q_all(db, "SELECT start_time, end_time, is_overnight FROM shifts WHERE id = ?1".to_string(), vec![Value::Int(sid)], 3, "attendance.shift").await.map_err(|e| format!("gagal memuat shift: {e}"))?;
+            match srows.into_iter().next() {
+                Some(sr) => {
+                    let end_s = sea_text(&sr, 1);
+                    let over = sea_int(&sr, 2);
+                    let day = NaiveDate::parse_from_str(&today, "%Y-%m-%d")
+                        .map_err(|_| "Tanggal rusak.".to_string())?;
+                    let end_t = chrono::NaiveTime::parse_from_str(&end_s, "%H:%M:%S")
+                        .map_err(|_| "Jam shift rusak.".to_string())?;
+                    let mut end = day.and_time(end_t);
+                    if over != 0 {
+                        end += chrono::Duration::days(1);
+                    }
+                    if now < end {
+                        let mins = ((end - now).num_seconds() + 59) / 60;
+                        let st = if status == "present" {
+                            "early_checkout".to_string()
+                        } else {
+                            status
+                        };
+                        (st, mins)
+                    } else {
+                        (status, 0)
+                    }
+                }
+                None => (status, 0),
+            }
+        }
+        None => (status, 0),
+    };
+    exec(db, "UPDATE attendances SET clock_out = ?1, clock_out_lat = ?2, clock_out_lng = ?3, clock_out_device = ?4, work_minutes = ?5, early_minutes = ?6, status = ?7 WHERE id = ?8".to_string(), vec![sea_text_val(&now.format("%Y-%m-%d %H:%M:%S").to_string()), sea_opt_float(lat), sea_opt_float(lng), sea_opt_str(device), Value::Int(work), Value::Int(early), sea_text_val(&status), Value::Int(aid)], "attendance.clockout").await.map_err(|e| format!("gagal clock out: {e}"))?;
+    super::audit::log_sea(db, Some(actor_id), "CLOCK_OUT", "attendance", Some(&aid.to_string()), None, None, None).await?;
+    Ok(ClockResult {
+        status,
+        message: "Clock out berhasil.".to_string(),
+    })
+}
+
+pub async fn history_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+    month: &str,
+) -> Result<Vec<Attendance>, String> {
+    if NaiveDate::parse_from_str(&format!("{month}-01"), "%Y-%m-%d").is_err() {
+        return Err("Bulan harus format YYYY-MM.".to_string());
+    }
+    let rows = q_all(db, "SELECT id FROM attendances WHERE employee_id = ?1 AND substr(date, 1, 7) = ?2 ORDER BY date DESC".to_string(), vec![Value::Int(employee_id), sea_text_val(month)], 1, "attendance.history").await.map_err(|e| format!("gagal membaca riwayat: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(read_attendance_sea(db, sea_int(r, 0)).await?);
+    }
+    Ok(out)
+}
+
+pub async fn recap_sea(db: &sea_orm::DatabaseConnection, date: &str, search: &str) -> Result<Vec<RecapRow>, String> {
+    NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|_| "Tanggal harus valid (YYYY-MM-DD).".to_string())?;
+    let search = search.trim();
+    let has_search = !search.is_empty();
+    let base =
+        "SELECT e.id, e.employee_number, e.first_name || ' ' || COALESCE(e.last_name, ''), d.name,
+                       a.clock_in, a.clock_out, a.status, a.late_minutes, a.work_minutes
+                FROM employees e
+                LEFT JOIN departments d ON d.id = e.department_id
+                LEFT JOIN attendances a ON a.employee_id = e.id AND a.date = ?1
+                WHERE e.deleted_at IS NULL";
+    let sql = if has_search {
+        format!("{base} AND (e.first_name LIKE ?2 OR e.last_name LIKE ?2 OR e.employee_number LIKE ?2) ORDER BY e.first_name ASC")
+    } else {
+        format!("{base} ORDER BY e.first_name ASC")
+    };
+    let like = format!("%{search}%");
+    let mut vals = vec![sea_text_val(date)];
+    if has_search {
+        vals.push(sea_text_val(&like));
+    }
+    let rows = q_all(db, sql, vals, 9, "attendance.recap").await.map_err(|e| format!("gagal membaca rekap: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        let opt_i = |v: Option<i64>| v.map(|x| to_dto_int(x, "recap.num")).transpose();
+        out.push(RecapRow {
+            employee_id: to_dto_int(sea_int(r, 0), "recap.emp")?,
+            employee_number: sea_text(r, 1),
+            name: sea_text(r, 2),
+            department_name: sea_opt_text(r, 3),
+            clock_in: sea_opt_text(r, 4),
+            clock_out: sea_opt_text(r, 5),
+            status: sea_opt_text(r, 6),
+            late_minutes: opt_i(sea_opt_int(r, 7))?,
+            work_minutes: opt_i(sea_opt_int(r, 8))?,
+        });
+    }
+    Ok(out)
+}
+
+pub async fn manual_entry_sea(db: &sea_orm::DatabaseConnection, actor_id: i64, input: &ManualInput) -> Result<i32, String> {
+    let rows = q_all(db, "SELECT id FROM employees WHERE id = ?1 AND deleted_at IS NULL".to_string(), vec![Value::Int(input.employee_id as i64)], 1, "attendance.manual.emp").await.map_err(|e| format!("gagal memeriksa karyawan: {e}"))?;
+    if rows.is_empty() {
+        return Err("Karyawan tidak ditemukan.".to_string());
+    }
+    NaiveDate::parse_from_str(input.date.trim(), "%Y-%m-%d")
+        .map_err(|_| "Tanggal harus valid (YYYY-MM-DD).".to_string())?;
+    if !MANUAL_STATUSES.contains(&input.status.as_str()) {
+        return Err("Status tidak valid.".to_string());
+    }
+    let with_date = |t: Option<&String>| {
+        t.map(|x| x.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("{} {s}", input.date.trim()))
+    };
+    let cin = with_date(input.clock_in.as_ref());
+    let cout = with_date(input.clock_out.as_ref());
+    for (v, label) in [(&cin, "Jam masuk"), (&cout, "Jam pulang")] {
+        if let Some(s) = v {
+            NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M")
+                .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
+                .map_err(|_| format!("{label} harus format JJ:MM."))?;
+        }
+    }
+    if let Some(n) = input.notes.as_deref() {
+        if n.len() > 255 {
+            return Err("Catatan maksimal 255 karakter.".to_string());
+        }
+    }
+    let existing = q_all(db, "SELECT id FROM attendances WHERE employee_id = ?1 AND date = ?2".to_string(), vec![Value::Int(input.employee_id as i64), sea_text_val(input.date.trim())], 1, "attendance.manual.check").await.map_err(|e| format!("gagal memeriksa absensi: {e}"))?;
+    let notes_val = sea_opt_str(input.notes.as_deref());
+    if let Some(r) = existing.into_iter().next() {
+        let rid = sea_int(&r, 0);
+        exec(db, "UPDATE attendances SET clock_in = ?1, clock_out = ?2, status = ?3, notes = ?4 WHERE id = ?5".to_string(), vec![match &cin { Some(s) => sea_text_val(s), None => Value::Null }, match &cout { Some(s) => sea_text_val(s), None => Value::Null }, sea_text_val(&input.status), notes_val, Value::Int(rid)], "attendance.manual.update").await.map_err(|e| format!("gagal memperbarui absensi: {e}"))?;
+        super::audit::log_sea(db, Some(actor_id), "UPDATE", "attendance.manual", Some(&rid.to_string()), None, None, None).await?;
+        to_dto_int(rid, "attendance.id")
+    } else {
+        exec(db, "INSERT INTO attendances (employee_id, date, clock_in, clock_out, status, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6)".to_string(), vec![Value::Int(input.employee_id as i64), sea_text_val(input.date.trim()), match &cin { Some(s) => sea_text_val(s), None => Value::Null }, match &cout { Some(s) => sea_text_val(s), None => Value::Null }, sea_text_val(&input.status), notes_val], "attendance.manual.insert").await.map_err(|e| format!("gagal mencatat absensi: {e}"))?;
+        let rid = sea_rowid(db, "attendance.manual.insert").await?;
+        super::audit::log_sea(db, Some(actor_id), "CREATE", "attendance.manual", Some(&rid.to_string()), None, None, None).await?;
+        to_dto_int(rid, "attendance.id")
+    }
+}
+
+async fn read_corrections_sea(
+    db: &sea_orm::DatabaseConnection,
+    where_sql: &str,
+    param: i64,
+) -> Result<Vec<Correction>, String> {
+    let rows = q_all(db, format!("SELECT c.id, c.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), c.date, c.requested_clock_in, c.requested_clock_out, c.reason, c.status, c.notes, c.created_at FROM attendance_corrections c JOIN employees e ON e.id = c.employee_id WHERE {where_sql} ORDER BY c.id DESC"), vec![Value::Int(param)], 10, "attendance.corrections").await.map_err(|e| format!("gagal membaca koreksi: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(correction_row(
+            sea_int(r, 0), sea_int(r, 1), sea_text(r, 2), sea_text(r, 3),
+            sea_opt_text(r, 4), sea_opt_text(r, 5), sea_text(r, 6), sea_text(r, 7),
+            sea_opt_text(r, 8), sea_text(r, 9),
+        )?);
+    }
+    Ok(out)
+}
+
+pub async fn my_corrections_sea(db: &sea_orm::DatabaseConnection, employee_id: i64) -> Result<Vec<Correction>, String> {
+    read_corrections_sea(db, "c.employee_id = ?1", employee_id).await
+}
+
+pub async fn pending_corrections_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Correction>, String> {
+    let rows = q_all(db, "SELECT c.id, c.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), c.date, c.requested_clock_in, c.requested_clock_out, c.reason, c.status, c.notes, c.created_at FROM attendance_corrections c JOIN employees e ON e.id = c.employee_id WHERE c.status = 'pending' ORDER BY c.id DESC".to_string(), vec![], 10, "attendance.corrections.pending").await.map_err(|e| format!("gagal membaca koreksi: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(correction_row(
+            sea_int(r, 0), sea_int(r, 1), sea_text(r, 2), sea_text(r, 3),
+            sea_opt_text(r, 4), sea_opt_text(r, 5), sea_text(r, 6), sea_text(r, 7),
+            sea_opt_text(r, 8), sea_text(r, 9),
+        )?);
+    }
+    Ok(out)
+}
+
+pub async fn request_correction_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    employee_id: i64,
+    input: &CorrectionInput,
+) -> Result<i32, String> {
+    active_employee_sea(db, employee_id).await?;
+    NaiveDate::parse_from_str(input.date.trim(), "%Y-%m-%d")
+        .map_err(|_| "Tanggal harus valid (YYYY-MM-DD).".to_string())?;
+    if input.reason.trim().is_empty() {
+        return Err("Alasan wajib diisi.".to_string());
+    }
+    if input.reason.len() > 255 {
+        return Err("Alasan maksimal 255 karakter.".to_string());
+    }
+    let cin = with_date(input.date.trim(), input.requested_clock_in.as_ref())?;
+    let cout = with_date(input.date.trim(), input.requested_clock_out.as_ref())?;
+    let att = q_all(db, "SELECT id FROM attendances WHERE employee_id = ?1 AND date = ?2".to_string(), vec![Value::Int(employee_id), sea_text_val(input.date.trim())], 1, "attendance.correction.check").await.map_err(|e| format!("gagal memeriksa absensi: {e}"))?.into_iter().next().map(|r| sea_int(&r, 0));
+    exec(db, "INSERT INTO attendance_corrections (employee_id, attendance_id, date, requested_clock_in, requested_clock_out, reason, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending')".to_string(), vec![Value::Int(employee_id), match att { Some(x) => Value::Int(x), None => Value::Null }, sea_text_val(input.date.trim()), match &cin { Some(s) => sea_text_val(s), None => Value::Null }, match &cout { Some(s) => sea_text_val(s), None => Value::Null }, sea_text_val(input.reason.trim())], "attendance.correction.insert").await.map_err(|e| format!("gagal mengajukan koreksi: {e}"))?;
+    let rid = sea_rowid(db, "attendance.correction.insert").await?;
+    let sup = q_all(db, "SELECT supervisor_id FROM employees WHERE id = ?1".to_string(), vec![Value::Int(employee_id)], 1, "attendance.supervisor").await.map_err(|e| format!("gagal memuat supervisor: {e}"))?.into_iter().next().and_then(|r| sea_opt_int(&r, 0));
+    if let Some(sid) = sup {
+        if let Some(uid) = user_of_employee_sea(db, sid).await? {
+            notify_sea(
+                db,
+                uid,
+                "attendance_correction",
+                "Pengajuan Koreksi Absensi",
+                "Ada pengajuan koreksi absensi yang menunggu persetujuan Anda.",
+                "/attendance",
+            ).await?;
+        }
+    }
+    super::audit::log_sea(db, Some(actor_id), "CREATE", "attendance.correction", Some(&rid.to_string()), None, None, None).await?;
+    to_dto_int(rid, "correction.id")
+}
+
+pub async fn decide_correction_sea(
+    db: &sea_orm::DatabaseConnection,
+    approver_user_id: i64,
+    approver_employee_id: Option<i64>,
+    is_privileged: bool,
+    correction_id: i64,
+    decision: &str,
+    notes: Option<&str>,
+) -> Result<(), String> {
+    if decision != "approved" && decision != "rejected" {
+        return Err("Keputusan tidak valid.".to_string());
+    }
+    let rows = q_all(db, "SELECT employee_id, date, status, requested_clock_in, requested_clock_out, attendance_id FROM attendance_corrections WHERE id = ?1".to_string(), vec![Value::Int(correction_id)], 6, "attendance.decide.read").await.map_err(|e| format!("gagal memuat koreksi: {e}"))?;
+    let r = rows.into_iter().next().ok_or_else(|| "Data koreksi tidak ditemukan.".to_string())?;
+    let (emp_id, date, status, req_in, req_out) = (sea_int(&r, 0), sea_text(&r, 1), sea_text(&r, 2), sea_opt_text(&r, 3), sea_opt_text(&r, 4));
+    if status != "pending" {
+        return Err("Koreksi sudah diproses.".to_string());
+    }
+    let supervisor = q_all(db, "SELECT supervisor_id FROM employees WHERE id = ?1".to_string(), vec![Value::Int(emp_id)], 1, "attendance.decide.sup").await.map_err(|e| format!("gagal memuat supervisor: {e}"))?.into_iter().next().and_then(|x| sea_opt_int(&x, 0));
+    let is_supervisor = approver_employee_id == supervisor;
+    if !is_supervisor && !is_privileged {
+        return Err("Hanya supervisor atau HR yang boleh memutuskan.".to_string());
+    }
+    let now = now_str();
+    exec(db, "UPDATE attendance_corrections SET status = ?1, approved_by = ?2, approved_at = ?3, notes = ?4 WHERE id = ?5".to_string(), vec![sea_text_val(decision), Value::Int(approver_user_id), sea_text_val(&now), sea_opt_str(notes), Value::Int(correction_id)], "attendance.decide").await.map_err(|e| format!("gagal menyimpan keputusan: {e}"))?;
+    if decision == "approved" {
+        let existing = q_all(db, "SELECT id FROM attendances WHERE employee_id = ?1 AND date = ?2".to_string(), vec![Value::Int(emp_id), sea_text_val(&date)], 1, "attendance.decide.check").await.map_err(|e| format!("gagal memeriksa absensi: {e}"))?.into_iter().next().map(|x| sea_int(&x, 0));
+        match existing {
+            Some(aid) => {
+                exec(db, "UPDATE attendances SET clock_in = COALESCE(?1, clock_in), clock_out = COALESCE(?2, clock_out) WHERE id = ?3".to_string(), vec![match &req_in { Some(s) => sea_text_val(s), None => Value::Null }, match &req_out { Some(s) => sea_text_val(s), None => Value::Null }, Value::Int(aid)], "attendance.decide.apply").await.map_err(|e| format!("gagal menerapkan koreksi: {e}"))?;
+            }
+            None => {
+                exec(db, "INSERT INTO attendances (employee_id, date, clock_in, clock_out, status) VALUES (?1, ?2, ?3, ?4, 'present')".to_string(), vec![Value::Int(emp_id), sea_text_val(&date), match &req_in { Some(s) => sea_text_val(s), None => Value::Null }, match &req_out { Some(s) => sea_text_val(s), None => Value::Null }], "attendance.decide.insert").await.map_err(|e| format!("gagal menerapkan koreksi: {e}"))?;
+            }
+        }
+    }
+    if let Some(uid) = user_of_employee_sea(db, emp_id).await? {
+        notify_sea(
+            db,
+            uid,
+            "attendance_correction",
+            if decision == "approved" {
+                "Koreksi Absensi Disetujui"
+            } else {
+                "Koreksi Absensi Ditolak"
+            },
+            &format!("Pengajuan koreksi absensi tanggal {date} telah {decision}."),
+            "/attendance",
+        ).await?;
+    }
+    super::audit::log_sea(db, Some(approver_user_id), decision.to_uppercase().as_str(), "attendance.correction", Some(&correction_id.to_string()), None, None, None).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2039,5 +2855,132 @@ mod tests {
         );
         input.reason = String::new();
         assert!(request_correction(&conn, actor, emp, &input).is_err());
+    }
+
+    #[tokio::test]
+    async fn absensi_sea_paritas_dengan_sync() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let conn = state.db.get().expect("get");
+        let db = &state.sea;
+        let actor: i64 = conn
+            .query_row("SELECT id FROM users WHERE username = 'admin'", [], |r| {
+                r.get(0)
+            })
+            .expect("admin");
+        let sup: i64 = conn
+            .query_row(
+                "SELECT id FROM employees WHERE employee_number = 'EMP-0001'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("emp");
+        conn.execute(
+            "INSERT INTO employees (employee_number, first_name, gender, marital_status, company_id, supervisor_id, join_date, employment_status, employment_type) VALUES ('EMP-SEA1', 'Tes', 'male', 'single', 1, ?1, '2026-01-01', 'active', 'permanent')",
+            params![sup],
+        )
+        .unwrap();
+        let emp = conn.last_insert_rowid();
+        let sid = shift_save_sea(
+            db,
+            actor,
+            None,
+            &ShiftInput {
+                name: "Sea Pagi".to_string(),
+                start_time: "00:00:00".to_string(),
+                end_time: "23:59:59".to_string(),
+                break_start: None,
+                break_end: None,
+                grace_period_minutes: 15,
+                is_overnight: false,
+            },
+        )
+        .await
+        .expect("shift sea");
+        assert!(sid > 0);
+        let l_sync = serde_json::to_string(&shift_list(&conn).expect("ls")).unwrap();
+        let l_sea = serde_json::to_string(&shift_list_sea(db).await.expect("lss")).unwrap();
+        assert_eq!(l_sync, l_sea);
+        let sched = schedule_save_sea(
+            db,
+            actor,
+            None,
+            &ScheduleInput {
+                name: "Uji Sea".to_string(),
+                description: None,
+            },
+        )
+        .await
+        .expect("jadwal");
+        let days: Vec<(i64, Option<i64>, bool)> =
+            (0..=6).map(|d| (d, Some(sid as i64), true)).collect();
+        schedule_save_days_sea(db, actor, sched as i64, &days)
+            .await
+            .expect("hari");
+        let hari = today_str();
+        assignment_save_sea(
+            db,
+            actor,
+            None,
+            &AssignmentInput {
+                employee_id: emp as i32,
+                work_schedule_id: Some(sched),
+                shift_id: None,
+                date: None,
+                start_date: Some(hari.clone()),
+                end_date: None,
+            },
+        )
+        .await
+        .expect("assign");
+        clock_in_sea(db, actor, emp, None, None, None)
+            .await
+            .expect("ci");
+        let t_sync = serde_json::to_string(&today(&conn, emp).expect("ts")).unwrap();
+        let t_sea = serde_json::to_string(&today_sea(db, emp).await.expect("tse")).unwrap();
+        assert_eq!(t_sync, t_sea);
+        let ym = hari[..7].to_string();
+        let h_sync = serde_json::to_string(&history(&conn, emp, &ym).expect("hs")).unwrap();
+        let h_sea = serde_json::to_string(&history_sea(db, emp, &ym).await.expect("hse")).unwrap();
+        assert_eq!(h_sync, h_sea);
+        let r_sync = serde_json::to_string(&recap(&conn, &hari, "").expect("rs")).unwrap();
+        let r_sea = serde_json::to_string(&recap_sea(db, &hari, "").await.expect("rse")).unwrap();
+        assert_eq!(r_sync, r_sea);
+        clock_out_sea(db, actor, emp, None, None, None)
+            .await
+            .expect("co");
+        let cid = request_correction_sea(
+            db,
+            actor,
+            emp,
+            &CorrectionInput {
+                date: hari.clone(),
+                requested_clock_in: Some("00:05".to_string()),
+                requested_clock_out: None,
+                reason: "Uji paritas".to_string(),
+            },
+        )
+        .await
+        .expect("aju");
+        assert!(cid > 0);
+        let m_sync = serde_json::to_string(&my_corrections(&conn, emp).expect("ms")).unwrap();
+        let m_sea =
+            serde_json::to_string(&my_corrections_sea(db, emp).await.expect("mse")).unwrap();
+        assert_eq!(m_sync, m_sea);
+        let p_sync = serde_json::to_string(&pending_corrections(&conn).expect("ps")).unwrap();
+        let p_sea =
+            serde_json::to_string(&pending_corrections_sea(db).await.expect("pse")).unwrap();
+        assert_eq!(p_sync, p_sea);
+        decide_correction_sea(db, actor, Some(sup), false, cid as i64, "approved", Some("ok"))
+            .await
+            .expect("setuju");
+        let att: Option<String> = conn
+            .query_row(
+                "SELECT clock_in FROM attendances WHERE employee_id = ?1 AND date = ?2",
+                params![emp, hari],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(att.as_deref(), Some(format!("{hari} 00:05").as_str()));
     }
 }

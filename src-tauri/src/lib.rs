@@ -930,12 +930,31 @@ fn my_employee(conn: &rusqlite::Connection, user_id: i64) -> Result<i64, String>
     .ok_or("Akun belum tertaut karyawan.".to_string())
 }
 
+async fn my_employee_sea(sea: &sea_orm::DatabaseConnection, user_id: i64) -> Result<i64, String> {
+    let row = services::sea_raw::q_one(
+        sea,
+        "SELECT employee_id FROM users WHERE id = ?1".to_string(),
+        vec![services::sea_raw::Value::Int(user_id)],
+        1,
+        "lib.my_employee",
+    )
+    .await
+    .map_err(|e| format!("gagal memuat akun: {e}"))?;
+    let id = row
+        .as_ref()
+        .and_then(|r| services::sea_raw::value_i64(&r[0]))
+        .unwrap_or(0);
+    if id == 0 {
+        return Err("Akun belum tertaut karyawan.".to_string());
+    }
+    Ok(id)
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn shift_list(state: tauri::State<'_, AppState>) -> Result<Vec<services::attendance::Shift>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["attendance.view", "system.manage"]).await?;
-    services::attendance::shift_list(&conn)
+    services::attendance::shift_list_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -945,17 +964,15 @@ async fn shift_save(
     id: Option<i32>,
     input: services::attendance::ShiftInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
-    services::attendance::shift_save(&conn, uid, id.map(|v| v as i64), &input)
+    services::attendance::shift_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn shift_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
-    services::attendance::shift_delete(&conn, uid, id as i64)
+    services::attendance::shift_delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
@@ -963,9 +980,8 @@ async fn shift_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), 
 async fn schedule_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::attendance::Schedule>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["attendance.view", "system.manage"]).await?;
-    services::attendance::schedule_list(&conn)
+    services::attendance::schedule_list_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -975,9 +991,8 @@ async fn schedule_save(
     id: Option<i32>,
     input: services::attendance::ScheduleInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
-    services::attendance::schedule_save(&conn, uid, id.map(|v| v as i64), &input)
+    services::attendance::schedule_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
 }
 
 #[tauri::command]
@@ -987,21 +1002,19 @@ async fn schedule_save_days(
     schedule_id: i32,
     days: Vec<(i32, Option<i32>, bool)>,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
     let mapped: Vec<(i64, Option<i64>, bool)> = days
         .iter()
         .map(|(d, s, w)| (*d as i64, s.map(|v| v as i64), *w))
         .collect();
-    services::attendance::schedule_save_days(&conn, uid, schedule_id as i64, &mapped)
+    services::attendance::schedule_save_days_sea(&state.sea, uid, schedule_id as i64, &mapped).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn schedule_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
-    services::attendance::schedule_delete(&conn, uid, id as i64)
+    services::attendance::schedule_delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
@@ -1009,9 +1022,8 @@ async fn schedule_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(
 async fn assignment_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::attendance::Assignment>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["attendance.view", "system.manage"]).await?;
-    services::attendance::assignment_list(&conn)
+    services::attendance::assignment_list_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -1021,17 +1033,15 @@ async fn assignment_save(
     id: Option<i32>,
     input: services::attendance::AssignmentInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
-    services::attendance::assignment_save(&conn, uid, id.map(|v| v as i64), &input)
+    services::attendance::assignment_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn assignment_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
-    services::attendance::assignment_delete(&conn, uid, id as i64)
+    services::attendance::assignment_delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
@@ -1039,9 +1049,8 @@ async fn assignment_delete(state: tauri::State<'_, AppState>, id: i32) -> Result
 async fn holiday_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::attendance::Holiday>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["attendance.view", "system.manage"]).await?;
-    services::attendance::holiday_list(&conn)
+    services::attendance::holiday_list_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -1051,17 +1060,15 @@ async fn holiday_save(
     id: Option<i32>,
     input: services::attendance::HolidayInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
-    services::attendance::holiday_save(&conn, uid, id.map(|v| v as i64), &input)
+    services::attendance::holiday_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn holiday_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
-    services::attendance::holiday_delete(&conn, uid, id as i64)
+    services::attendance::holiday_delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
@@ -1069,9 +1076,8 @@ async fn holiday_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<()
 async fn attendance_today(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<services::attendance::Attendance>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::attendance::today(&conn, my_employee(&conn, uid)?)
+    services::attendance::today_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
 }
 
 #[tauri::command]
@@ -1081,16 +1087,16 @@ async fn attendance_clock_in(
     lat: Option<f64>,
     lng: Option<f64>,
 ) -> Result<services::attendance::ClockResult, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::attendance::clock_in(
-        &conn,
+    services::attendance::clock_in_sea(
+        &state.sea,
         uid,
-        my_employee(&conn, uid)?,
+        my_employee_sea(&state.sea, uid).await?,
         lat,
         lng,
         Some("desktop"),
     )
+    .await
 }
 
 #[tauri::command]
@@ -1100,16 +1106,16 @@ async fn attendance_clock_out(
     lat: Option<f64>,
     lng: Option<f64>,
 ) -> Result<services::attendance::ClockResult, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::attendance::clock_out(
-        &conn,
+    services::attendance::clock_out_sea(
+        &state.sea,
         uid,
-        my_employee(&conn, uid)?,
+        my_employee_sea(&state.sea, uid).await?,
         lat,
         lng,
         Some("desktop"),
     )
+    .await
 }
 
 #[tauri::command]
@@ -1118,9 +1124,8 @@ async fn attendance_history(
     state: tauri::State<'_, AppState>,
     month: String,
 ) -> Result<Vec<services::attendance::Attendance>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::attendance::history(&conn, my_employee(&conn, uid)?, &month)
+    services::attendance::history_sea(&state.sea, my_employee_sea(&state.sea, uid).await?, &month).await
 }
 
 #[tauri::command]
@@ -1130,9 +1135,8 @@ async fn attendance_recap(
     date: String,
     search: String,
 ) -> Result<Vec<services::attendance::RecapRow>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["attendance.view", "system.manage"]).await?;
-    services::attendance::recap(&conn, &date, &search)
+    services::attendance::recap_sea(&state.sea, &date, &search).await
 }
 
 #[tauri::command]
@@ -1141,11 +1145,10 @@ async fn attendance_manual(
     state: tauri::State<'_, AppState>,
     input: services::attendance::ManualInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["attendance.create", "attendance.correct", "system.manage"],
     ).await?;
-    services::attendance::manual_entry(&conn, uid, &input)
+    services::attendance::manual_entry_sea(&state.sea, uid, &input).await
 }
 
 #[tauri::command]
@@ -1153,9 +1156,8 @@ async fn attendance_manual(
 async fn attendance_my_corrections(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::attendance::Correction>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::attendance::my_corrections(&conn, my_employee(&conn, uid)?)
+    services::attendance::my_corrections_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
 }
 
 #[tauri::command]
@@ -1163,9 +1165,8 @@ async fn attendance_my_corrections(
 async fn attendance_pending_corrections(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::attendance::Correction>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["attendance.approve", "system.manage"]).await?;
-    services::attendance::pending_corrections(&conn)
+    services::attendance::pending_corrections_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -1174,9 +1175,8 @@ async fn attendance_request_correction(
     state: tauri::State<'_, AppState>,
     input: services::attendance::CorrectionInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::attendance::request_correction(&conn, uid, my_employee(&conn, uid)?, &input)
+    services::attendance::request_correction_sea(&state.sea, uid, my_employee_sea(&state.sea, uid).await?, &input).await
 }
 
 #[tauri::command]
@@ -1187,12 +1187,11 @@ async fn attendance_decide_correction(
     decision: String,
     notes: Option<String>,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, user) = require(&state, &["attendance.approve", "system.manage"]).await?;
-    let actor_emp = my_employee(&conn, uid).ok();
+    let actor_emp = my_employee_sea(&state.sea, uid).await.ok();
     let privileged = privileged(&user, "attendance.approve");
-    services::attendance::decide_correction(
-        &conn,
+    services::attendance::decide_correction_sea(
+        &state.sea,
         uid,
         actor_emp,
         privileged,
@@ -1200,6 +1199,7 @@ async fn attendance_decide_correction(
         &decision,
         notes.as_deref(),
     )
+    .await
 }
 
 #[tauri::command]
