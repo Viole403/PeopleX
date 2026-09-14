@@ -2717,7 +2717,6 @@ fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
             .map_err(|e| format!("gagal mengambil koneksi database: {e}"))?;
         db::migrate(&mut conn)?;
         seed::seed(&mut conn)?;
-        services::backup::ensure_scheduled(&conn, &services::backup::backup_dir(&data_dir));
     }
     let url = cfg.sea_url(&data_dir)?;
     // Konek di thread terpisah agar aman dipanggil dari dalam runtime async (mis. test).
@@ -2727,8 +2726,14 @@ fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
                 .enable_all()
                 .build()
                 .map_err(|e| format!("gagal membuat runtime async: {e}"))?;
-            rt.block_on(sea_orm::Database::connect(&url))
-                .map_err(|e| format!("gagal konek SeaORM: {e}"))
+            let sea = rt
+                .block_on(sea_orm::Database::connect(&url))
+                .map_err(|e| format!("gagal konek SeaORM: {e}"))?;
+            rt.block_on(services::backup::ensure_scheduled_sea(
+                &sea,
+                &services::backup::backup_dir(&data_dir),
+            ));
+            Ok::<_, String>(sea)
         })
         .join()
         .map_err(|_| "thread koneksi SeaORM panik.".to_string())?
@@ -2744,9 +2749,8 @@ fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
 #[tauri::command]
 #[specta::specta]
 async fn backup_now(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let conn = pooled(&state)?;
     require(&state, &["system.manage"]).await?;
-    services::backup::backup_now(&conn, &services::backup::backup_dir(&state.data_dir))
+    services::backup::backup_now_sea(&state.sea, &services::backup::backup_dir(&state.data_dir)).await
 }
 
 #[tauri::command]
@@ -2758,14 +2762,14 @@ async fn backup_list(state: tauri::State<'_, AppState>) -> Result<Vec<services::
 
 #[tauri::command]
 #[specta::specta]
-async fn backup_restore(state: tauri::State<'_, AppState>, name: String) -> Result<(), String> {
-    let mut conn = pooled(&state)?;
+async fn backup_restore(state: tauri::State<'_, AppState>, name: String) -> Result<String, String> {
     require(&state, &["system.manage"]).await?;
-    services::backup::backup_restore(
-        &mut conn,
+    services::backup::backup_restore_sea(
+        &state.data_dir.join("peoplex.db"),
         &services::backup::backup_dir(&state.data_dir),
         &name,
-    )
+    )?;
+    Ok("Cadangan dipulihkan. Mulai ulang aplikasi untuk memakai data pulihan.".to_string())
 }
 
 /// Builder specta: satu-satunya daftar command yang diekspos ke frontend.
