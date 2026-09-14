@@ -640,6 +640,504 @@ pub fn export(
     })
 }
 
+// ---------------- Varian SeaORM ----------------
+
+use super::sea_raw::{q_all, q_one, value_i64, value_to_string, Value};
+
+const FULL_SEA: &str = "TRIM(e.first_name || ' ' || COALESCE(e.last_name,''))";
+
+fn rnum(v: &Value) -> String {
+    num(match v {
+        Value::Float(f) => *f,
+        Value::Int(i) => *i as f64,
+        Value::Text(s) => s.parse().unwrap_or(0.0),
+        Value::Null => 0.0,
+    })
+}
+
+fn rf64(v: &Value) -> f64 {
+    match v {
+        Value::Float(f) => *f,
+        Value::Int(i) => *i as f64,
+        Value::Text(s) => s.parse().unwrap_or(0.0),
+        Value::Null => 0.0,
+    }
+}
+
+pub async fn employees_sea(
+    db: &sea_orm::DatabaseConnection,
+    search: Option<&str>,
+    department_id: Option<i64>,
+    status: Option<&str>,
+) -> Result<ReportTable, String> {
+    let mut sql = format!("SELECT e.employee_number, {FULL_SEA}, e.gender, d.name, p.name, e.employment_type, e.employment_status, e.join_date FROM employees e LEFT JOIN departments d ON d.id = e.department_id LEFT JOIN positions p ON p.id = e.position_id WHERE e.deleted_at IS NULL");
+    let s = search.unwrap_or("").trim().to_string();
+    let st = status.unwrap_or("").trim().to_string();
+    let mut vals: Vec<Value> = Vec::new();
+    if !s.is_empty() {
+        sql.push_str(" AND (e.employee_number LIKE '%' || ? || '%' OR e.first_name LIKE '%' || ? || '%' OR e.last_name LIKE '%' || ? || '%')");
+        vals.push(Value::Text(s.clone()));
+        vals.push(Value::Text(s.clone()));
+        vals.push(Value::Text(s));
+    }
+    if let Some(d) = department_id {
+        sql.push_str(" AND e.department_id = ?");
+        vals.push(Value::Int(d));
+    }
+    if !st.is_empty() {
+        sql.push_str(" AND e.employment_status = ?");
+        vals.push(Value::Text(st));
+    }
+    sql.push_str(" ORDER BY e.first_name LIMIT 2000");
+    let ncols = 8;
+    let rows = q_all(db, sql, vals, ncols, "report.employees")
+        .await
+        .map_err(|e| format!("gagal membaca laporan karyawan: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(vec![
+            value_to_string(&r[0]),
+            value_to_string(&r[1]),
+            value_to_string(&r[2]),
+            match &r[3] {
+                Value::Null => "-".to_string(),
+                _ => value_to_string(&r[3]),
+            },
+            match &r[4] {
+                Value::Null => "-".to_string(),
+                _ => value_to_string(&r[4]),
+            },
+            value_to_string(&r[5]),
+            value_to_string(&r[6]),
+            value_to_string(&r[7]),
+        ]);
+    }
+    Ok(ReportTable {
+        title: "Laporan Karyawan".to_string(),
+        headers: h(&[
+            "NIP",
+            "Nama",
+            "Gender",
+            "Departemen",
+            "Jabatan",
+            "Tipe",
+            "Status",
+            "Tgl Masuk",
+        ]),
+        rows: out,
+    })
+}
+
+pub async fn headcount_sea(db: &sea_orm::DatabaseConnection) -> Result<ReportTable, String> {
+    let rows = q_all(
+        db,
+        "SELECT COALESCE(d.name,'(Tanpa departemen)'), SUM(CASE WHEN e.employment_type = 'permanent' THEN 1 ELSE 0 END), SUM(CASE WHEN e.employment_type != 'permanent' THEN 1 ELSE 0 END), COUNT(*) FROM employees e LEFT JOIN departments d ON d.id = e.department_id WHERE e.deleted_at IS NULL AND e.employment_status IN ('active','probation') GROUP BY d.name ORDER BY COUNT(*) DESC".to_string(),
+        vec![],
+        4,
+        "report.headcount",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca headcount: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(vec![
+            value_to_string(&r[0]),
+            value_to_string(&r[1]),
+            value_to_string(&r[2]),
+            value_to_string(&r[3]),
+        ]);
+    }
+    Ok(ReportTable {
+        title: "Headcount per Departemen".to_string(),
+        headers: h(&["Departemen", "Tetap", "Non-Tetap", "Total"]),
+        rows: out,
+    })
+}
+
+pub async fn attendance_sea(
+    db: &sea_orm::DatabaseConnection,
+    month: &str,
+    department_id: Option<i64>,
+) -> Result<ReportTable, String> {
+    if !valid_month(month) {
+        return Err("Bulan tidak valid (format YYYY-MM).".to_string());
+    }
+    let like = format!("{month}%");
+    let mut sql = format!("SELECT e.employee_number, {FULL_SEA}, COALESCE(d.name,'-'), SUM(CASE WHEN a.status IN ('present','wfh','business_trip') THEN 1 ELSE 0 END), SUM(CASE WHEN a.status = 'late' THEN 1 ELSE 0 END), COALESCE(SUM(a.work_minutes),0) FROM employees e LEFT JOIN departments d ON d.id = e.department_id LEFT JOIN attendances a ON a.employee_id = e.id AND a.date LIKE ? WHERE e.deleted_at IS NULL");
+    let mut vals = vec![Value::Text(like)];
+    if let Some(d) = department_id {
+        sql.push_str(" AND e.department_id = ?");
+        vals.push(Value::Int(d));
+    }
+    sql.push_str(" GROUP BY e.id ORDER BY e.first_name LIMIT 2000");
+    let rows = q_all(db, sql, vals, 6, "report.attendance")
+        .await
+        .map_err(|e| format!("gagal membaca absensi: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(vec![
+            value_to_string(&r[0]),
+            value_to_string(&r[1]),
+            value_to_string(&r[2]),
+            value_to_string(&r[3]),
+            value_to_string(&r[4]),
+            value_to_string(&r[5]),
+        ]);
+    }
+    Ok(ReportTable {
+        title: format!("Laporan Absensi {month}"),
+        headers: h(&[
+            "NIP",
+            "Nama",
+            "Departemen",
+            "Hadir",
+            "Terlambat",
+            "Menit Kerja",
+        ]),
+        rows: out,
+    })
+}
+
+pub async fn leave_sea(
+    db: &sea_orm::DatabaseConnection,
+    year: i32,
+) -> Result<ReportTable, String> {
+    if !(2000..=2100).contains(&year) {
+        return Err("Tahun tidak valid.".to_string());
+    }
+    let rows = q_all(
+        db,
+        format!("SELECT e.employee_number, {FULL_SEA}, t.name, b.allocated_days, b.used_days FROM leave_balances b INNER JOIN employees e ON e.id = b.employee_id INNER JOIN leave_types t ON t.id = b.leave_type_id WHERE b.year = ?1 ORDER BY e.first_name, t.name LIMIT 2000"),
+        vec![Value::Int(year as i64)],
+        5,
+        "report.leave",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca cuti: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        let (alloc, used) = (rf64(&r[3]), rf64(&r[4]));
+        out.push(vec![
+            value_to_string(&r[0]),
+            value_to_string(&r[1]),
+            value_to_string(&r[2]),
+            num(alloc),
+            num(used),
+            num((alloc - used).max(0.0)),
+        ]);
+    }
+    Ok(ReportTable {
+        title: format!("Laporan Cuti {year}"),
+        headers: h(&["NIP", "Nama", "Jenis Cuti", "Alokasi", "Terpakai", "Sisa"]),
+        rows: out,
+    })
+}
+
+pub async fn payroll_sea(
+    db: &sea_orm::DatabaseConnection,
+    period_id: i64,
+) -> Result<ReportTable, String> {
+    let rows = q_all(
+        db,
+        format!("SELECT e.employee_number, {FULL_SEA}, p.basic_salary, p.total_income, p.gross_salary, p.total_deduction, p.net_salary FROM payrolls p INNER JOIN employees e ON e.id = p.employee_id WHERE p.payroll_period_id = ?1 ORDER BY e.first_name LIMIT 2000"),
+        vec![Value::Int(period_id)],
+        7,
+        "report.payroll",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca payroll: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(vec![
+            value_to_string(&r[0]),
+            value_to_string(&r[1]),
+            rnum(&r[2]),
+            rnum(&r[3]),
+            rnum(&r[4]),
+            rnum(&r[5]),
+            rnum(&r[6]),
+        ]);
+    }
+    Ok(ReportTable {
+        title: "Laporan Payroll".to_string(),
+        headers: h(&[
+            "NIP",
+            "Nama",
+            "Gaji Pokok",
+            "Total Pendapatan",
+            "Bruto",
+            "Potongan",
+            "Bersih",
+        ]),
+        rows: out,
+    })
+}
+
+/// Rekap PPh 21 setahun per karyawan (bahan form 1721-A1):
+/// bruto dari payroll periode final, PPh dari rincian estimasi.
+pub async fn pph21_annual_sea(
+    db: &sea_orm::DatabaseConnection,
+    year: i32,
+) -> Result<ReportTable, String> {
+    if !(2000..=2100).contains(&year) {
+        return Err("Tahun harus 2000 sampai 2100.".to_string());
+    }
+    let y = year.to_string();
+    let rows = q_all(
+        db,
+        format!("SELECT e.employee_number, {FULL_SEA}, COALESCE(e.npwp,'-'), COALESCE(e.ptkp_status,'TK/0'), SUM(p.total_income), COALESCE((SELECT SUM(d.amount) FROM payroll_details d INNER JOIN payrolls q ON q.id = d.payroll_id INNER JOIN payroll_periods qp ON qp.id = q.payroll_period_id WHERE q.employee_id = e.id AND d.component_name = 'PPh 21 (estimasi)' AND substr(qp.start_date,1,4) = ?1 AND qp.status IN ('approved','paid','locked')), 0) FROM payrolls p INNER JOIN employees e ON e.id = p.employee_id INNER JOIN payroll_periods pp ON pp.id = p.payroll_period_id WHERE substr(pp.start_date,1,4) = ?1 AND pp.status IN ('approved','paid','locked') GROUP BY e.id ORDER BY e.first_name LIMIT 2000"),
+        vec![Value::Text(y)],
+        6,
+        "report.pph21",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca PPh tahunan: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        let bruto = rf64(&r[4]);
+        let dipotong = rf64(&r[5]);
+        let ptkp_status = value_to_string(&r[3]);
+        let terutang =
+            crate::services::payroll::pph21_monthly(bruto / 12.0, &ptkp_status) * 12.0;
+        out.push(vec![
+            value_to_string(&r[0]),
+            value_to_string(&r[1]),
+            value_to_string(&r[2]),
+            ptkp_status,
+            num(bruto),
+            num(dipotong),
+            num(terutang),
+            num(terutang - dipotong),
+        ]);
+    }
+    Ok(ReportTable {
+        title: "Laporan PPh 21 Tahunan".to_string(),
+        headers: h(&[
+            "NIP",
+            "Nama",
+            "NPWP",
+            "PTKP",
+            "Bruto Setahun",
+            "PPh 21 Setahun",
+            "PPh Terutang Setahun",
+            "Selisih",
+        ]),
+        rows: out,
+    })
+}
+
+pub async fn recruitment_sea(db: &sea_orm::DatabaseConnection) -> Result<ReportTable, String> {
+    let rows = q_all(
+        db,
+        "SELECT v.title, COALESCE(d.name,'-'), v.quota, COUNT(c.id), SUM(CASE WHEN c.stage IN ('interview','hr_interview','test') THEN 1 ELSE 0 END), SUM(CASE WHEN c.stage = 'hired' THEN 1 ELSE 0 END), SUM(CASE WHEN c.stage = 'rejected' THEN 1 ELSE 0 END) FROM vacancies v LEFT JOIN departments d ON d.id = v.department_id LEFT JOIN candidates c ON c.vacancy_id = v.id AND c.deleted_at IS NULL WHERE v.deleted_at IS NULL GROUP BY v.id ORDER BY v.id DESC LIMIT 500".to_string(),
+        vec![],
+        7,
+        "report.recruitment",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca rekrutmen: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(vec![
+            value_to_string(&r[0]),
+            value_to_string(&r[1]),
+            value_to_string(&r[2]),
+            value_to_string(&r[3]),
+            value_to_string(&r[4]),
+            value_to_string(&r[5]),
+            value_to_string(&r[6]),
+        ]);
+    }
+    Ok(ReportTable {
+        title: "Laporan Rekrutmen".to_string(),
+        headers: h(&[
+            "Lowongan",
+            "Departemen",
+            "Kuota",
+            "Pelamar",
+            "Seleksi",
+            "Direkrut",
+            "Ditolak",
+        ]),
+        rows: out,
+    })
+}
+
+pub async fn performance_sea(
+    db: &sea_orm::DatabaseConnection,
+    period_id: i64,
+) -> Result<ReportTable, String> {
+    let rows = q_all(
+        db,
+        format!("SELECT e.employee_number, {FULL_SEA}, r.final_score, r.status FROM performance_reviews r INNER JOIN employees e ON e.id = r.employee_id WHERE r.performance_period_id = ?1 ORDER BY r.final_score DESC LIMIT 2000"),
+        vec![Value::Int(period_id)],
+        4,
+        "report.performance",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca kinerja: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(vec![
+            value_to_string(&r[0]),
+            value_to_string(&r[1]),
+            match &r[2] {
+                Value::Null => "-".to_string(),
+                _ => rnum(&r[2]),
+            },
+            value_to_string(&r[3]),
+        ]);
+    }
+    Ok(ReportTable {
+        title: "Laporan Kinerja".to_string(),
+        headers: h(&["NIP", "Nama", "Skor Akhir", "Status"]),
+        rows: out,
+    })
+}
+
+pub async fn contracts_sea(
+    db: &sea_orm::DatabaseConnection,
+    before: &str,
+) -> Result<ReportTable, String> {
+    if !valid_date(before) {
+        return Err("Tanggal tidak valid (format YYYY-MM-DD).".to_string());
+    }
+    let rows = q_all(
+        db,
+        format!("SELECT c.contract_number, {FULL_SEA}, c.type, c.start_date, COALESCE(c.end_date,'-'), c.status FROM employee_contracts c INNER JOIN employees e ON e.id = c.employee_id WHERE c.deleted_at IS NULL AND (c.end_date IS NULL OR c.end_date <= ?1) ORDER BY c.end_date LIMIT 2000"),
+        vec![Value::Text(before.to_string())],
+        6,
+        "report.contracts",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca kontrak: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(vec![
+            value_to_string(&r[0]),
+            value_to_string(&r[1]),
+            value_to_string(&r[2]),
+            value_to_string(&r[3]),
+            value_to_string(&r[4]),
+            value_to_string(&r[5]),
+        ]);
+    }
+    Ok(ReportTable {
+        title: format!("Kontrak Berakhir s.d. {before}"),
+        headers: h(&["No. Kontrak", "Nama", "Tipe", "Mulai", "Selesai", "Status"]),
+        rows: out,
+    })
+}
+
+pub async fn analytics_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<DeptStat>, String> {
+    let depts = q_all(
+        db,
+        "SELECT d.id, d.name FROM departments d WHERE d.deleted_at IS NULL ORDER BY d.name".to_string(),
+        vec![],
+        2,
+        "report.depts",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca departemen: {e}"))?;
+    let mut out = Vec::new();
+    for d in &depts {
+        let id = value_i64(&d[0]).unwrap_or(0);
+        let emp = q_one(
+            db,
+            "SELECT COUNT(*) FROM employees WHERE department_id = ?1 AND deleted_at IS NULL AND employment_status IN ('active','probation')".to_string(),
+            vec![Value::Int(id)],
+            1,
+            "report.emp",
+        )
+        .await
+        .map_err(|e| format!("gagal menghitung karyawan: {e}"))?;
+        let vac = q_one(
+            db,
+            "SELECT COUNT(*) FROM vacancies WHERE department_id = ?1 AND status = 'open' AND deleted_at IS NULL".to_string(),
+            vec![Value::Int(id)],
+            1,
+            "report.vac",
+        )
+        .await
+        .map_err(|e| format!("gagal menghitung lowongan: {e}"))?;
+        let avg_row = q_one(
+            db,
+            "SELECT AVG(r.final_score) FROM performance_reviews r INNER JOIN employees e ON e.id = r.employee_id WHERE e.department_id = ?1 AND r.final_score IS NOT NULL".to_string(),
+            vec![Value::Int(id)],
+            1,
+            "report.avg",
+        )
+        .await
+        .map_err(|e| format!("gagal menghitung rata-rata: {e}"))?;
+        out.push(DeptStat {
+            department: value_to_string(&d[1]),
+            employees: crate::to_dto_int(
+                emp.as_ref().and_then(|r| value_i64(&r[0])).unwrap_or(0),
+                "report.emp",
+            )?,
+            open_vacancies: crate::to_dto_int(
+                vac.as_ref().and_then(|r| value_i64(&r[0])).unwrap_or(0),
+                "report.vac",
+            )?,
+            active_trainings: 0,
+            avg_performance: avg_row.as_ref().and_then(|r| match &r[0] {
+                Value::Float(f) => Some(*f),
+                Value::Int(i) => Some(*i as f64),
+                _ => None,
+            }),
+        });
+    }
+    Ok(out)
+}
+
+pub async fn export_sea(
+    db: &sea_orm::DatabaseConnection,
+    kind: &str,
+    format: &str,
+    arg1: Option<&str>,
+    arg2: Option<i64>,
+) -> Result<ExportFile, String> {
+    let table = match kind {
+        "employees" => employees_sea(db, None, None, None).await?,
+        "headcount" => headcount_sea(db).await?,
+        "attendance" => attendance_sea(db, arg1.unwrap_or(""), None).await?,
+        "leave" => leave_sea(db, arg2.unwrap_or(0) as i32).await?,
+        "payroll" => payroll_sea(db, arg2.unwrap_or(0)).await?,
+        "recruitment" => recruitment_sea(db).await?,
+        "performance" => performance_sea(db, arg2.unwrap_or(0)).await?,
+        "contracts" => contracts_sea(db, arg1.unwrap_or("")).await?,
+        "pph21annual" => pph21_annual_sea(db, arg2.unwrap_or(0) as i32).await?,
+        _ => return Err("Jenis laporan tidak dikenal.".to_string()),
+    };
+    let today = chrono::Local::now()
+        .naive_local()
+        .format("%Y-%m-%d")
+        .to_string();
+    let (ext, mime, bytes) = match format {
+        "csv" => (
+            "csv",
+            "text/csv;charset=utf-8".to_string(),
+            to_csv(&table).into_bytes(),
+        ),
+        "xlsx" => (
+            "xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
+            to_xlsx(&table)?,
+        ),
+        "pdf" => (
+            "pdf",
+            "application/pdf".to_string(),
+            to_pdf(&table, &today)?,
+        ),
+        _ => return Err("Format ekspor tidak dikenal.".to_string()),
+    };
+    Ok(ExportFile {
+        filename: format!("laporan-{kind}-{today}.{ext}"),
+        mime,
+        bytes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -737,5 +1235,75 @@ mod tests {
         assert!(p.bytes.starts_with(b"%PDF"));
         assert!(export(&conn, "keliru", "csv", None, None).is_err());
         assert!(export(&conn, "headcount", "keliru", None, None).is_err());
+    }
+
+    #[tokio::test]
+    async fn laporan_sea_paritas_dengan_sync() {
+        use crate::services::payroll as pay;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let conn = state.db.get().expect("get");
+        let db = &state.sea;
+        let actor: i64 = conn
+            .query_row("SELECT id FROM users WHERE username = 'admin'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let t_sync = serde_json::to_string(&employees(&conn, None, None, None).expect("es")).unwrap();
+        let t_sea =
+            serde_json::to_string(&employees_sea(db, None, None, None).await.expect("ese")).unwrap();
+        assert_eq!(t_sync, t_sea);
+        let h_sync = serde_json::to_string(&headcount(&conn).expect("hs")).unwrap();
+        let h_sea = serde_json::to_string(&headcount_sea(db).await.expect("hse")).unwrap();
+        assert_eq!(h_sync, h_sea);
+        assert!(attendance_sea(db, "20XX-13", None).await.is_err());
+        let a_sync =
+            serde_json::to_string(&attendance(&conn, "2026-03", None).expect("as")).unwrap();
+        let a_sea =
+            serde_json::to_string(&attendance_sea(db, "2026-03", None).await.expect("ase")).unwrap();
+        assert_eq!(a_sync, a_sea);
+        conn.execute(
+            "INSERT INTO employees (employee_number, first_name, gender, marital_status, company_id, join_date, employment_status, employment_type, ptkp_status) VALUES ('EMP-SEAP', 'Pajak', 'male', 'single', 1, '2026-01-01', 'active', 'permanent', 'TK/0')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO employee_salaries (employee_id, basic_salary, effective_date, is_active) VALUES (last_insert_rowid(), 20000000, '2026-01-01', 1)",
+            [],
+        )
+        .unwrap();
+        let pid = pay::period_create_sea(
+            db,
+            actor,
+            actor,
+            &pay::PeriodInput {
+                name: "Jan 2026".to_string(),
+                start_date: "2026-01-01".to_string(),
+                end_date: "2026-01-31".to_string(),
+                payment_date: None,
+            },
+        )
+        .await
+        .expect("periode");
+        pay::generate_sea(db, actor, pid as i64).await.expect("generate");
+        pay::approve_period_sea(db, actor, pid as i64).await.expect("approve");
+        let p_sync = serde_json::to_string(&pph21_annual(&conn, 2026).expect("ps")).unwrap();
+        let p_sea =
+            serde_json::to_string(&pph21_annual_sea(db, 2026).await.expect("pse")).unwrap();
+        assert_eq!(p_sync, p_sea);
+        let f = export_sea(db, "pph21annual", "csv", None, Some(2026)).await.expect("csv");
+        let text = String::from_utf8(f.bytes).expect("utf8");
+        assert!(text.contains("Bruto Setahun"));
+        let x = export_sea(db, "pph21annual", "xlsx", None, Some(2026)).await.expect("xlsx");
+        assert_eq!(&x.bytes[0..2], b"PK");
+        let p = export_sea(db, "pph21annual", "pdf", None, Some(2026)).await.expect("pdf");
+        assert!(p.bytes.starts_with(b"%PDF"));
+        assert!(export_sea(db, "keliru", "csv", None, None).await.is_err());
+        let r_sync = serde_json::to_string(&recruitment(&conn).expect("rs")).unwrap();
+        let r_sea = serde_json::to_string(&recruitment_sea(db).await.expect("rse")).unwrap();
+        assert_eq!(r_sync, r_sea);
+        let n_sync = serde_json::to_string(&analytics(&conn).expect("ns")).unwrap();
+        let n_sea = serde_json::to_string(&analytics_sea(db).await.expect("nse")).unwrap();
+        assert_eq!(n_sync, n_sea);
     }
 }

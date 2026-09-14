@@ -2454,19 +2454,17 @@ async fn reimburse_decide(
 #[tauri::command]
 #[specta::specta]
 async fn dashboard_hr(state: tauri::State<'_, AppState>) -> Result<services::dashboard::HrDashboard, String> {
-    let conn = pooled(&state)?;
     require(&state,
         &["employee.view", "payroll.view", "system.manage"],
     ).await?;
-    services::dashboard::hr(&conn)
+    services::dashboard::hr_sea(&state.sea).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn dashboard_me(state: tauri::State<'_, AppState>) -> Result<services::dashboard::MySummary, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::dashboard::mine(&conn, uid)
+    services::dashboard::mine_sea(&state.sea, uid).await
 }
 
 // ---------------- Notifikasi ----------------
@@ -2591,14 +2589,14 @@ async fn report_employees(
     department_id: Option<i32>,
     status: Option<String>,
 ) -> Result<services::reports::ReportTable, String> {
-    let conn = pooled(&state)?;
     require(&state, &["report.view", "system.manage"]).await?;
-    services::reports::employees(
-        &conn,
+    services::reports::employees_sea(
+        &state.sea,
         search.as_deref(),
         department_id.map(|v| v as i64),
         status.as_deref(),
     )
+    .await
 }
 
 #[tauri::command]
@@ -2606,9 +2604,8 @@ async fn report_employees(
 async fn report_headcount(
     state: tauri::State<'_, AppState>,
 ) -> Result<services::reports::ReportTable, String> {
-    let conn = pooled(&state)?;
     require(&state, &["report.view", "system.manage"]).await?;
-    services::reports::headcount(&conn)
+    services::reports::headcount_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -2618,9 +2615,8 @@ async fn report_attendance(
     month: String,
     department_id: Option<i32>,
 ) -> Result<services::reports::ReportTable, String> {
-    let conn = pooled(&state)?;
     require(&state, &["report.view", "system.manage"]).await?;
-    services::reports::attendance(&conn, &month, department_id.map(|v| v as i64))
+    services::reports::attendance_sea(&state.sea, &month, department_id.map(|v| v as i64)).await
 }
 
 #[tauri::command]
@@ -2629,9 +2625,8 @@ async fn report_leave(
     state: tauri::State<'_, AppState>,
     year: i32,
 ) -> Result<services::reports::ReportTable, String> {
-    let conn = pooled(&state)?;
     require(&state, &["report.view", "system.manage"]).await?;
-    services::reports::leave(&conn, year)
+    services::reports::leave_sea(&state.sea, year).await
 }
 
 #[tauri::command]
@@ -2640,9 +2635,8 @@ async fn report_payroll(
     state: tauri::State<'_, AppState>,
     period_id: i32,
 ) -> Result<services::reports::ReportTable, String> {
-    let conn = pooled(&state)?;
     require(&state, &["report.view", "system.manage"]).await?;
-    services::reports::payroll(&conn, period_id as i64)
+    services::reports::payroll_sea(&state.sea, period_id as i64).await
 }
 
 #[tauri::command]
@@ -2651,9 +2645,8 @@ async fn report_pph21_annual(
     state: tauri::State<'_, AppState>,
     year: i32,
 ) -> Result<services::reports::ReportTable, String> {
-    let conn = pooled(&state)?;
     require(&state, &["report.view", "system.manage"]).await?;
-    services::reports::pph21_annual(&conn, year)
+    services::reports::pph21_annual_sea(&state.sea, year).await
 }
 
 #[tauri::command]
@@ -2661,9 +2654,8 @@ async fn report_pph21_annual(
 async fn report_recruitment(
     state: tauri::State<'_, AppState>,
 ) -> Result<services::reports::ReportTable, String> {
-    let conn = pooled(&state)?;
     require(&state, &["report.view", "system.manage"]).await?;
-    services::reports::recruitment(&conn)
+    services::reports::recruitment_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -2672,9 +2664,8 @@ async fn report_performance(
     state: tauri::State<'_, AppState>,
     period_id: i32,
 ) -> Result<services::reports::ReportTable, String> {
-    let conn = pooled(&state)?;
     require(&state, &["report.view", "system.manage"]).await?;
-    services::reports::performance(&conn, period_id as i64)
+    services::reports::performance_sea(&state.sea, period_id as i64).await
 }
 
 #[tauri::command]
@@ -2683,9 +2674,8 @@ async fn report_contracts(
     state: tauri::State<'_, AppState>,
     before: String,
 ) -> Result<services::reports::ReportTable, String> {
-    let conn = pooled(&state)?;
     require(&state, &["report.view", "system.manage"]).await?;
-    services::reports::contracts(&conn, &before)
+    services::reports::contracts_sea(&state.sea, &before).await
 }
 
 #[tauri::command]
@@ -2693,9 +2683,8 @@ async fn report_contracts(
 async fn report_analytics(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::reports::DeptStat>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["report.view", "system.manage"]).await?;
-    services::reports::analytics(&conn)
+    services::reports::analytics_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -2707,15 +2696,15 @@ async fn report_export(
     arg1: Option<String>,
     arg2: Option<i32>,
 ) -> Result<services::reports::ExportFile, String> {
-    let conn = pooled(&state)?;
     require(&state, &["report.export", "system.manage"]).await?;
-    services::reports::export(
-        &conn,
+    services::reports::export_sea(
+        &state.sea,
         &kind,
         &format,
         arg1.as_deref(),
         arg2.map(|v| v as i64),
     )
+    .await
 }
 
 fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
