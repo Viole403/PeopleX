@@ -794,6 +794,51 @@ pub fn expiring_contracts(conn: &Connection, days: i64) -> Result<Vec<ContractAl
     Ok(out)
 }
 
+pub async fn expiring_contracts_sea(
+    db: &sea_orm::DatabaseConnection,
+    days: i64,
+) -> Result<Vec<ContractAlert>, String> {
+    if days < 1 || days > 365 {
+        return Err("Rentang hari harus 1 sampai 365.".to_string());
+    }
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let rows = q_all(
+        db,
+        "SELECT c.id, c.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), e.employee_number, c.contract_number, c.type, c.end_date FROM employee_contracts c INNER JOIN employees e ON e.id = c.employee_id WHERE c.status = 'active' AND c.deleted_at IS NULL AND c.end_date IS NOT NULL AND c.end_date >= ?1 ORDER BY c.end_date ASC".to_string(),
+        vec![Value::Text(today.clone())],
+        7,
+        "employee.expiring",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca kontrak: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        let (id, emp, end) = (
+            value_i64(&r[0]).unwrap_or(0),
+            value_i64(&r[1]).unwrap_or(0),
+            value_to_string(&r[6]),
+        );
+        let left = (chrono::NaiveDate::parse_from_str(&end, "%Y-%m-%d")
+            .map_err(|_| "Tanggal kontrak rusak.".to_string())?
+            - chrono::NaiveDate::parse_from_str(&today, "%Y-%m-%d")
+                .map_err(|_| "Tanggal hari ini rusak.".to_string())?)
+        .num_days();
+        if left <= days {
+            out.push(ContractAlert {
+                id: to_dto_int(id, "contract.id")?,
+                employee_id: to_dto_int(emp, "contract.emp")?,
+                employee_name: value_to_string(&r[2]),
+                employee_number: value_to_string(&r[3]),
+                contract_number: value_to_string(&r[4]),
+                contract_type: value_to_string(&r[5]),
+                end_date: end,
+                days_left: left as i32,
+            });
+        }
+    }
+    Ok(out)
+}
+
 pub fn child_types() -> Vec<ChildMeta> {
     CHILD_TYPES
         .iter()

@@ -1,7 +1,6 @@
 //! Dasbor: ringkasan HR dan ringkasan mandiri karyawan.
 
 use chrono::Local;
-use rusqlite::{params, Connection};
 
 use crate::to_dto_int;
 
@@ -75,331 +74,64 @@ pub struct MySummary {
     pub leave_balances: Vec<LeaveBalanceLite>,
 }
 
-fn count(conn: &Connection, sql: &str) -> Result<i64, String> {
-    conn.query_row(sql, [], |r| r.get(0))
-        .map_err(|e| format!("gagal menghitung dasbor: {e}"))
-}
-
-fn count_p(conn: &Connection, sql: &str, p: &[&dyn rusqlite::ToSql]) -> Result<i64, String> {
-    conn.query_row(sql, p, |r| r.get(0))
-        .map_err(|e| format!("gagal menghitung dasbor: {e}"))
-}
-
-fn groups(conn: &Connection, sql: &str, label: &str) -> Result<Vec<NameCount>, String> {
-    let mut stmt = conn
-        .prepare(sql)
-        .map_err(|e| format!("gagal menyiapkan {label}: {e}"))?;
-    let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
-        .map_err(|e| format!("gagal membaca {label}: {e}"))?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (name, n) = row.map_err(|e| format!("gagal membaca baris: {e}"))?;
-        out.push(NameCount {
-            name,
-            count: to_dto_int(n, "dashboard.count")?,
-        });
-    }
-    Ok(out)
-}
-
-pub fn hr(conn: &Connection) -> Result<HrDashboard, String> {
-    let now = Local::now().naive_local();
-    let today = now.format("%Y-%m-%d").to_string();
-    let month = now.format("%Y-%m").to_string();
-    let month_like = format!("{month}%");
-    let contract_limit = (now + chrono::Duration::days(60))
-        .format("%Y-%m-%d")
-        .to_string();
-
-    let birthdays = {
-        let mut stmt = conn
-            .prepare("SELECT TRIM(first_name || ' ' || COALESCE(last_name,'')), employee_number, birth_date FROM employees WHERE deleted_at IS NULL AND employment_status IN ('active','probation') AND birth_date IS NOT NULL AND strftime('%m-%d', birth_date) = strftime('%m-%d','now','localtime') ORDER BY first_name LIMIT 20")
-            .map_err(|e| format!("gagal menyiapkan ulang tahun: {e}"))?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                ))
-            })
-            .map_err(|e| format!("gagal membaca ulang tahun: {e}"))?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (name, num, birth) = row.map_err(|e| format!("gagal membaca baris: {e}"))?;
-            out.push(Birthday {
-                name,
-                employee_number: num,
-                birth_date: birth,
-            });
-        }
-        out
-    };
-    let holidays = {
-        let mut stmt = conn
-            .prepare("SELECT name, date FROM holidays WHERE date >= date('now','localtime') ORDER BY date LIMIT 5")
-            .map_err(|e| format!("gagal menyiapkan libur: {e}"))?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-            .map_err(|e| format!("gagal membaca libur: {e}"))?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (name, date) = row.map_err(|e| format!("gagal membaca baris: {e}"))?;
-            out.push(HolidayLite { name, date });
-        }
-        out
-    };
-    let anns = {
-        let mut stmt = conn
-            .prepare("SELECT id, title, created_at FROM announcements WHERE deleted_at IS NULL AND status = 'published' ORDER BY id DESC LIMIT 5")
-            .map_err(|e| format!("gagal menyiapkan pengumuman: {e}"))?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(|e| format!("gagal membaca pengumuman: {e}"))?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (id, title, created) = row.map_err(|e| format!("gagal membaca baris: {e}"))?;
-            out.push(AnnounceLite {
-                id: to_dto_int(id, "dashboard.announcement")?,
-                title,
-                created_at: created,
-            });
-        }
-        out
-    };
-
-    Ok(HrDashboard {
-        total_employees: to_dto_int(count(conn, "SELECT COUNT(*) FROM employees WHERE deleted_at IS NULL AND employment_status IN ('active','probation')")?, "dashboard.total")?,
-        new_hires_this_month: to_dto_int(count_p(conn, "SELECT COUNT(*) FROM employees WHERE deleted_at IS NULL AND join_date LIKE ?1", &[&month_like])?, "dashboard.hires")?,
-        resigned_this_month: to_dto_int(count_p(conn, "SELECT COUNT(*) FROM employees WHERE resign_date LIKE ?1", &[&month_like])?, "dashboard.resigned")?,
-        active_contracts: to_dto_int(count(conn, "SELECT COUNT(*) FROM employee_contracts WHERE status = 'active' AND deleted_at IS NULL")?, "dashboard.contracts")?,
-        expiring_contracts: to_dto_int(
-            conn.query_row(
-                "SELECT COUNT(*) FROM employee_contracts WHERE status = 'active' AND deleted_at IS NULL AND end_date IS NOT NULL AND end_date <= ?1",
-                params![contract_limit],
-                |r| r.get::<_, i64>(0),
-            )
-            .map_err(|e| format!("gagal menghitung kontrak: {e}"))?,
-            "dashboard.expiring",
-        )?,
-        pending_leave: to_dto_int(count(conn, "SELECT COUNT(*) FROM leave_requests WHERE status = 'pending'")?, "dashboard.leave")?,
-        pending_overtime: to_dto_int(count(conn, "SELECT COUNT(*) FROM overtime_requests WHERE status = 'pending'")?, "dashboard.overtime")?,
-        pending_corrections: to_dto_int(count(conn, "SELECT COUNT(*) FROM attendance_corrections WHERE status = 'pending'")?, "dashboard.corrections")?,
-        pending_trips: to_dto_int(count(conn, "SELECT COUNT(*) FROM business_trips WHERE status = 'pending'")?, "dashboard.trips")?,
-        present_today: to_dto_int(
-            conn.query_row(
-                "SELECT COUNT(*) FROM attendances WHERE date = ?1 AND status IN ('present','late','wfh','business_trip')",
-                params![today],
-                |r| r.get::<_, i64>(0),
-            )
-            .map_err(|e| format!("gagal menghitung hadir: {e}"))?,
-            "dashboard.present",
-        )?,
-        late_today: to_dto_int(
-            conn.query_row(
-                "SELECT COUNT(*) FROM attendances WHERE date = ?1 AND status = 'late'",
-                params![today],
-                |r| r.get::<_, i64>(0),
-            )
-            .map_err(|e| format!("gagal menghitung telat: {e}"))?,
-            "dashboard.late",
-        )?,
-        birthdays_today: birthdays,
-        upcoming_holidays: holidays,
-        recent_announcements: anns,
-        headcount_by_department: groups(
-            conn,
-            "SELECT COALESCE(d.name,'(Tanpa departemen)'), COUNT(*) FROM employees e LEFT JOIN departments d ON d.id = e.department_id WHERE e.deleted_at IS NULL AND e.employment_status IN ('active','probation') GROUP BY d.name ORDER BY COUNT(*) DESC",
-            "headcount",
-        )?,
-        headcount_by_type: groups(
-            conn,
-            "SELECT employment_type, COUNT(*) FROM employees WHERE deleted_at IS NULL AND employment_status IN ('active','probation') GROUP BY employment_type",
-            "tipe",
-        )?,
-    })
-}
-
-pub fn mine(conn: &Connection, user_id: i64) -> Result<MySummary, String> {
-    let emp: Option<i64> = conn
-        .query_row(
-            "SELECT employee_id FROM users WHERE id = ?1",
-            params![user_id],
-            |r| r.get::<_, Option<i64>>(0),
-        )
-        .map_err(|e| format!("gagal memuat akun: {e}"))?;
-    let emp = emp.ok_or("Akun belum tertaut karyawan.".to_string())?;
-    let (name, num, dept, pos): (String, String, Option<String>, Option<String>) = conn
-        .query_row(
-            "SELECT TRIM(e.first_name || ' ' || COALESCE(e.last_name,'')), e.employee_number, d.name, p.name FROM employees e LEFT JOIN departments d ON d.id = e.department_id LEFT JOIN positions p ON p.id = e.position_id WHERE e.id = ?1",
-            params![emp],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .map_err(|e| format!("gagal memuat karyawan: {e}"))?;
-    let today = Local::now().naive_local().format("%Y-%m-%d").to_string();
-    let (status, clock_in): (Option<String>, Option<String>) = conn
-        .query_row(
-            "SELECT status, clock_in FROM attendances WHERE employee_id = ?1 AND date = ?2",
-            params![emp, today],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap_or((None, None));
-    let year: i32 = Local::now()
-        .naive_local()
-        .format("%Y")
-        .to_string()
-        .parse()
-        .unwrap_or(2000);
-    let mut stmt = conn
-        .prepare("SELECT t.name, b.allocated_days, b.used_days FROM leave_balances b INNER JOIN leave_types t ON t.id = b.leave_type_id WHERE b.employee_id = ?1 AND b.year = ?2")
-        .map_err(|e| format!("gagal menyiapkan saldo: {e}"))?;
-    let rows = stmt
-        .query_map(params![emp, year], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, f64>(1)?,
-                r.get::<_, f64>(2)?,
-            ))
-        })
-        .map_err(|e| format!("gagal membaca saldo: {e}"))?;
-    let mut balances = Vec::new();
-    for row in rows {
-        let (t, alloc, used) = row.map_err(|e| format!("gagal membaca baris: {e}"))?;
-        balances.push(LeaveBalanceLite {
-            leave_type: t,
-            allocated: alloc,
-            used,
-            remaining: (alloc - used).max(0.0),
-        });
-    }
-    let ann_unread: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM announcements a LEFT JOIN announcement_reads ar ON ar.announcement_id = a.id AND ar.employee_id = ?1 WHERE a.status = 'published' AND a.deleted_at IS NULL AND ar.id IS NULL",
-            params![emp],
-            |r| r.get(0),
-        )
-        .map_err(|e| format!("gagal menghitung pengumuman: {e}"))?;
-    Ok(MySummary {
-        employee_name: name,
-        employee_number: num,
-        department: dept,
-        position: pos,
-        today_status: status,
-        today_clock_in: clock_in,
-        pending_leave: to_dto_int(
-            conn.query_row(
-                "SELECT COUNT(*) FROM leave_requests WHERE employee_id = ?1 AND status = 'pending'",
-                params![emp],
-                |r| r.get::<_, i64>(0),
-            )
-            .map_err(|e| format!("gagal menghitung cuti: {e}"))?,
-            "dashboard.myleave",
-        )?,
-        pending_overtime: to_dto_int(
-            conn.query_row(
-                "SELECT COUNT(*) FROM overtime_requests WHERE employee_id = ?1 AND status = 'pending'",
-                params![emp],
-                |r| r.get::<_, i64>(0),
-            )
-            .map_err(|e| format!("gagal menghitung lembur: {e}"))?,
-            "dashboard.myot",
-        )?,
-        pending_corrections: to_dto_int(
-            conn.query_row(
-                "SELECT COUNT(*) FROM attendance_corrections WHERE employee_id = ?1 AND status = 'pending'",
-                params![emp],
-                |r| r.get::<_, i64>(0),
-            )
-            .map_err(|e| format!("gagal menghitung koreksi: {e}"))?,
-            "dashboard.mycorr",
-        )?,
-        my_assets: to_dto_int(
-            conn.query_row(
-                "SELECT COUNT(*) FROM asset_assignments WHERE employee_id = ?1 AND returned_date IS NULL",
-                params![emp],
-                |r| r.get::<_, i64>(0),
-            )
-            .map_err(|e| format!("gagal menghitung aset: {e}"))?,
-            "dashboard.myassets",
-        )?,
-        unread_announcements: to_dto_int(ann_unread, "dashboard.myann")?,
-        leave_balances: balances,
-    })
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db, seed};
+    use crate::services::sea_raw::{exec, q_one, value_i64};
 
-    fn live() -> (tempfile::TempDir, crate::db::DbPool) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let pool = db::init_pool(&dir.path().join("t.db")).expect("pool");
-        let mut c = pool.get().expect("get");
-        db::migrate(&mut c).expect("migrate");
-        seed::seed(&mut c).expect("seed");
-        (dir, pool)
+    async fn admin_id(db: &sea_orm::DatabaseConnection) -> i64 {
+        q_one(
+            db,
+            "SELECT id FROM users WHERE username = 'admin'".to_string(),
+            vec![],
+            1,
+            "test.admin",
+        )
+        .await
+        .expect("admin")
+        .and_then(|r| value_i64(&r[0]))
+        .expect("admin id")
     }
 
-    #[test]
-    fn dasbor_hr_memuat_angka_seed() {
-        let (_d, pool) = live();
-        let conn = pool.get().expect("get");
-        let d = hr(&conn).expect("hr");
+    #[tokio::test]
+    async fn dasbor_hr_memuat_angka_seed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let d = hr_sea(&state.sea).await.expect("hr");
         assert!(d.total_employees >= 1);
         assert!(!d.headcount_by_department.is_empty());
     }
 
-    #[test]
-    fn ringkasan_mandiri_butuh_tautan_karyawan() {
-        let (_d, pool) = live();
-        let conn = pool.get().expect("get");
-        let admin: i64 = conn
-            .query_row("SELECT id FROM users WHERE username = 'admin'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        // admin seed tertaut karyawan: ringkasan tersedia
-        assert!(mine(&conn, admin).is_ok());
-        conn.execute(
-            "INSERT INTO users (username, email, password) VALUES ('tanpa-karyawan', 'x@x.id', 'hash')",
-            [],
-        )
-        .unwrap();
-        let uid: i64 = conn
-            .query_row(
-                "SELECT id FROM users WHERE username = 'tanpa-karyawan'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(mine(&conn, uid).is_err());
-    }
-
     #[tokio::test]
-    async fn dasbor_sea_paritas_dengan_sync() {
+    async fn ringkasan_mandiri_butuh_tautan_karyawan() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = crate::init_state(dir.path().to_path_buf()).expect("state");
-        let conn = state.db.get().expect("get");
         let db = &state.sea;
-        let d_sync = serde_json::to_string(&hr(&conn).expect("hs")).unwrap();
-        let d_sea = serde_json::to_string(&hr_sea(db).await.expect("hse")).unwrap();
-        assert_eq!(d_sync, d_sea);
-        let admin: i64 = conn
-            .query_row("SELECT id FROM users WHERE username = 'admin'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        let m_sync = serde_json::to_string(&mine(&conn, admin).expect("ms")).unwrap();
-        let m_sea = serde_json::to_string(&mine_sea(db, admin).await.expect("mse")).unwrap();
-        assert_eq!(m_sync, m_sea);
+        let admin = admin_id(db).await;
+        let m = mine_sea(db, admin).await.expect("mine");
+        assert!(!m.employee_name.is_empty());
+        exec(
+            db,
+            "INSERT INTO users (username, email, password) VALUES ('tanpa-karyawan', 'x@x.id', 'hash')".to_string(),
+            vec![],
+            "test.mkuser",
+        )
+        .await
+        .expect("insert");
+        let uid = q_one(
+            db,
+            "SELECT id FROM users WHERE username = 'tanpa-karyawan'".to_string(),
+            vec![],
+            1,
+            "test.uid",
+        )
+        .await
+        .expect("uid")
+        .and_then(|r| value_i64(&r[0]))
+        .expect("uid id");
+        let e = mine_sea(db, uid).await.expect_err("tanpa tautan");
+        assert_eq!(e, "Akun belum tertaut karyawan.".to_string());
     }
 }
 

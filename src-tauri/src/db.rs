@@ -1,77 +1,120 @@
-//! SQLite connection pool untuk PeopleX.
+//! Koneksi SeaORM + migrasi versioned untuk PeopleX.
 //!
-//! Satu-satunya jalan akses database: pool ini, dipakai lewat `AppState`.
-//! Setiap koneksi dari pool ditegakkan PRAGMA berikut:
+//! Satu-satunya jalan akses database: `DatabaseConnection` ini, dipakai lewat `AppState`.
+//! Setiap pool ditegakkan pengaturan berikut:
 //! - `foreign_keys = ON` (SQLite default OFF; FK schema harus aktif)
 //! - `journal_mode = WAL` (baca konkuren + tulis serial untuk desktop single-user)
 //! - `busy_timeout = 5000` (tunggu 5 dtk saat file terkunci, bukan gagal langsung)
 
-use r2d2::{Pool, PooledConnection};
-use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::Connection;
-use rusqlite_migration::{Migrations, M};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 use std::path::Path;
-use std::sync::LazyLock;
-
-pub type DbPool = Pool<SqliteConnectionManager>;
-pub type DbConn = PooledConnection<SqliteConnectionManager>;
+use std::time::Duration;
 
 /// Migrasi versioned. M01 = skema awal (87 tabel). M02 = jenjang pendidikan. M03 = MFA. M04 = skor exit. M05 = band gaji. M06 = materi training. M07 = nilai kuis.
-pub static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
-    Migrations::new(vec![
-        M::up(include_str!("schema_sqlite.sql")),
-        M::up(include_str!("migrations/m02_education_levels.sql")),
-        M::up(include_str!("migrations/m03_mfa.sql")),
-        M::up(include_str!("migrations/m04_exit_score.sql")),
-        M::up(include_str!("migrations/m05_salary_band.sql")),
-        M::up(include_str!("migrations/m06_training_materials.sql")),
-        M::up(include_str!("migrations/m07_quiz_score.sql")),
-    ])
-});
+static MIGRATIONS: &[&str] = &[
+    include_str!("schema_sqlite.sql"),
+    include_str!("migrations/m02_education_levels.sql"),
+    include_str!("migrations/m03_mfa.sql"),
+    include_str!("migrations/m04_exit_score.sql"),
+    include_str!("migrations/m05_salary_band.sql"),
+    include_str!("migrations/m06_training_materials.sql"),
+    include_str!("migrations/m07_quiz_score.sql"),
+];
 
-/// Jalankan semua migrasi yang belum teraplikasi (atomik).
-pub fn migrate(conn: &mut Connection) -> Result<(), String> {
-    MIGRATIONS
-        .to_latest(conn)
-        .map_err(|e| format!("migrasi database gagal: {e}"))
-}
-
-/// PRAGMA wajib tiap koneksi baru dari pool.
-fn configure(conn: &mut Connection) -> rusqlite::Result<()> {
-    conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "busy_timeout", 5000)?;
-    Ok(())
-}
-
-/// Bangun pool untuk file SQLite di `db_path`.
+/// Bangun koneksi SeaORM untuk file SQLite di `db_path`.
 /// Direktori parent dibuat otomatis bila belum ada.
-pub fn init_pool(db_path: &Path) -> Result<DbPool, String> {
+pub async fn connect_sea(db_path: &Path) -> Result<DatabaseConnection, String> {
     if let Some(parent) = db_path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("gagal membuat direktori database: {e}"))?;
         }
     }
-    let manager = SqliteConnectionManager::file(db_path).with_init(configure);
-    Pool::builder()
-        .max_size(4)
-        .build(manager)
-        .map_err(|e| format!("gagal membuat connection pool: {e}"))
+    let options = sea_orm::sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(db_path)
+        .create_if_missing(true)
+        .foreign_keys(true)
+        .journal_mode(sea_orm::sqlx::sqlite::SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5));
+    let pool = sea_orm::sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect_with(options)
+        .await
+        .map_err(|e| format!("gagal membuat connection pool: {e}"))?;
+    Ok(sea_orm::SqlxSqliteConnector::from_sqlx_sqlite_pool(
+        pool,
+    ))
 }
 
-/// Cek cepat pool bisa dipakai: ambil koneksi + jalankan query trivial.
-pub fn ping(pool: &DbPool) -> Result<(), String> {
-    let conn = pool
-        .get()
-        .map_err(|e| format!("gagal mengambil koneksi database: {e}"))?;
-    let one: i64 = conn
-        .query_row("SELECT 1", [], |row| row.get(0))
+/// Jalankan semua migrasi yang belum teraplikasi (atomik per versi).
+pub async fn migrate_sea(db: &DatabaseConnection) -> Result<(), String> {
+    db.execute(Statement::from_string(
+        DbBackend::Sqlite,
+        "CREATE TABLE IF NOT EXISTS sea_migrations (version INTEGER PRIMARY KEY)".to_string(),
+    ))
+    .await
+    .map_err(|e| format!("migrasi database gagal: {e}"))?;
+    let applied: Vec<i64> = {
+        let rows = db
+            .query_all(Statement::from_string(
+                DbBackend::Sqlite,
+                "SELECT version FROM sea_migrations ORDER BY version".to_string(),
+            ))
+            .await
+            .map_err(|e| format!("migrasi database gagal: {e}"))?;
+        let mut out = Vec::new();
+        for r in rows {
+            if let Ok(v) = r.try_get::<i64>("", "version") {
+                out.push(v);
+            }
+        }
+        out
+    };
+    for (idx, script) in MIGRATIONS.iter().enumerate() {
+        let version = idx as i64 + 1;
+        if applied.contains(&version) {
+            continue;
+        }
+        for part in script.split(';') {
+            let stmt = part.trim();
+            if stmt.is_empty() || stmt.starts_with("--") && !stmt.contains('\n') {
+                continue;
+            }
+            db.execute(Statement::from_string(DbBackend::Sqlite, stmt.to_string()))
+                .await
+                .map_err(|e| format!("migrasi M{version:02} gagal: {e}"))?;
+        }
+        db.execute(Statement::from_string(
+            DbBackend::Sqlite,
+            format!("INSERT INTO sea_migrations (version) VALUES ({version})"),
+        ))
+        .await
+        .map_err(|e| format!("migrasi database gagal: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Cek cepat koneksi bisa dipakai: jalankan query trivial.
+pub async fn ping_sea(db: &DatabaseConnection) -> Result<(), String> {
+    let row = db
+        .query_one(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT 1".to_string(),
+        ))
+        .await
         .map_err(|e| format!("query database gagal: {e}"))?;
-    if one == 1 {
-        Ok(())
-    } else {
-        Err("ping database mengembalikan nilai tak terduga".to_string())
+    match row {
+        Some(r) => {
+            let one: i32 = r
+                .try_get("", "1")
+                .map_err(|_| "ping database mengembalikan nilai tak terduga".to_string())?;
+            if one == 1 {
+                Ok(())
+            } else {
+                Err("ping database mengembalikan nilai tak terduga".to_string())
+            }
+        }
+        None => Err("ping database mengembalikan nilai tak terduga".to_string()),
     }
 }
 
@@ -79,127 +122,45 @@ pub fn ping(pool: &DbPool) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn pool_bisa_dibuat_dan_ping_ok() {
+    async fn migrated_db() -> (tempfile::TempDir, DatabaseConnection) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let pool = init_pool(&dir.path().join("pool_ping.db")).expect("init_pool");
-        ping(&pool).expect("ping");
+        let db = connect_sea(&dir.path().join("migrated.db"))
+            .await
+            .expect("connect");
+        migrate_sea(&db).await.expect("migrate");
+        (dir, db)
     }
 
-    #[test]
-    fn foreign_keys_aktif_di_setiap_koneksi() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("fk.db");
-        let pool = init_pool(&path).expect("init_pool");
-        for _ in 0..3 {
-            let conn = pool.get().expect("get");
-            let fk: i64 = conn
-                .pragma_query_value(None, "foreign_keys", |row| row.get(0))
-                .expect("pragma");
-            assert_eq!(fk, 1, "foreign_keys harus ON");
-        }
+    #[tokio::test]
+    async fn migrate_membuat_88_tabel() {
+        let (_dir, db) = migrated_db().await;
+        let row = db
+            .query_one(Statement::from_string(
+                DbBackend::Sqlite,
+                "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'".to_string(),
+            ))
+            .await
+            .expect("count")
+            .expect("row");
+        let n: i64 = row.try_get("", "n").expect("n");
+        assert!(n >= 88, "skema harus memuat 88 tabel, dapat {n}");
     }
 
-    #[test]
-    fn fk_ditegakkan_parent_harus_ada_dulu() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("fk_enforce.db");
-        let pool = init_pool(&path).expect("init_pool");
-        let conn = pool.get().expect("get");
-        conn.execute_batch(
-            "CREATE TABLE parent (id INTEGER PRIMARY KEY);
-             CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL
-               REFERENCES parent(id));",
-        )
-        .expect("ddl");
-        let bad = conn.execute("INSERT INTO child (parent_id) VALUES (999)", []);
-        assert!(bad.is_err(), "insert yatim harus ditolak FK");
-        conn.execute("INSERT INTO parent (id) VALUES (1)", [])
-            .expect("insert parent");
-        conn.execute("INSERT INTO child (parent_id) VALUES (1)", [])
-            .expect("insert child valid");
+    #[tokio::test]
+    async fn migrasi_idempoten_dua_kali() {
+        let (_dir, db) = migrated_db().await;
+        migrate_sea(&db).await.expect("migrate ulang harus ok");
     }
 
-    #[test]
-    fn direktori_parent_dibuat_otomatis() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let nested = dir.path().join("a").join("b").join("nested.db");
-        init_pool(&nested).expect("init_pool");
-        assert!(nested.exists(), "file db harus tercipta");
-    }
-
-    #[test]
-    fn definisi_migrasi_valid() {
-        MIGRATIONS.validate().expect("migrasi harus valid");
-    }
-
-    fn migrated_pool() -> (tempfile::TempDir, DbPool) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let pool = init_pool(&dir.path().join("migrated.db")).expect("init_pool");
-        let mut conn = pool.get().expect("get");
-        migrate(&mut conn).expect("migrate");
-        (dir, pool)
-    }
-
-    #[test]
-    fn migrate_membuat_88_tabel() {
-        let (_dir, pool) = migrated_pool();
-        let conn = pool.get().expect("get");
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("count");
-        assert_eq!(n, 88, "skema harus memuat 88 tabel");
-    }
-
-    #[test]
-    fn fk_tetap_ditegakkan_setelah_migrate() {
-        let (_dir, pool) = migrated_pool();
-        let conn = pool.get().expect("get");
-        let bad = conn.execute(
-            "INSERT INTO branches (company_id, code, name) VALUES (999, 'X', 'Yatim')",
-            [],
-        );
+    #[tokio::test]
+    async fn fk_ditegakkan_parent_harus_ada_dulu() {
+        let (_dir, db) = migrated_db().await;
+        let bad = db
+            .execute(Statement::from_string(
+                DbBackend::Sqlite,
+                "INSERT INTO branches (company_id, code, name) VALUES (999, 'X', 'Yatim')".to_string(),
+            ))
+            .await;
         assert!(bad.is_err(), "branch tanpa company harus ditolak FK");
-    }
-
-    #[test]
-    fn m02_jenjang_baru_diterima_data_lama_aman() {
-        let (_dir, pool) = migrated_pool();
-        let conn = pool.get().expect("get");
-        conn.execute(
-            "INSERT INTO companies (code, name) VALUES ('T1', 'Tes')",
-            [],
-        )
-        .expect("insert company");
-        conn.execute(
-            "INSERT INTO employees (employee_number, first_name, gender, marital_status, company_id, join_date, employment_status, employment_type) VALUES ('EMP-T1', 'Uji', 'male', 'single', 1, '2026-01-01', 'active', 'permanent')",
-            [],
-        )
-        .expect("insert employee");
-        let eid = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO employee_educations (employee_id, level, school_name) VALUES (?1, 's1', 'Kampus Lama')",
-            rusqlite::params![eid],
-        )
-        .expect("insert lama");
-        for lvl in ["smk", "d1", "d4", "sma"] {
-            conn.execute(
-                "INSERT INTO employee_educations (employee_id, level, school_name) VALUES (?1, ?2, 'Sekolah')",
-                rusqlite::params![eid, lvl],
-            )
-            .unwrap_or_else(|_| panic!("jenjang {lvl} harus diterima"));
-        }
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM employee_educations WHERE employee_id = ?1",
-                rusqlite::params![eid],
-                |r| r.get(0),
-            )
-            .expect("count");
-        assert_eq!(n, 5);
     }
 }

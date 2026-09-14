@@ -3,7 +3,7 @@
 //! Idempoten: aman dijalankan berulang, tidak membuat duplikat.
 
 use chrono::Local;
-use rusqlite::{params, Connection};
+use sea_orm::sqlx::{AssertSqlSafe, Row};
 
 /// Ringkasan hasil seeding untuk logging.
 #[derive(Debug, Default)]
@@ -13,133 +13,286 @@ pub struct SeedSummary {
     pub users: i64,
 }
 
+type Tx<'a> = sea_orm::sqlx::Transaction<'a, sea_orm::sqlx::Sqlite>;
+
+/// Nilai sel generik untuk seed dinamis.
+#[derive(Clone, Debug)]
+enum SVal {
+    Null,
+    Int(i64),
+    Float(f64),
+    Text(String),
+}
+
+fn tx_cell(row: &sea_orm::sqlx::sqlite::SqliteRow, i: usize) -> SVal {
+    if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(i) {
+        return SVal::Int(v);
+    }
+    if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(i) {
+        return SVal::Float(v);
+    }
+    if let Ok(Some(v)) = row.try_get::<Option<String>, _>(i) {
+        return SVal::Text(v);
+    }
+    SVal::Null
+}
+
+fn sval_i64(v: &SVal) -> Option<i64> {
+    match v {
+        SVal::Int(i) => Some(*i),
+        SVal::Text(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+async fn tx_q_all(
+    tx: &mut Tx<'_>,
+    sql: String,
+    vals: Vec<SVal>,
+    ncols: usize,
+    label: &str,
+) -> Result<Vec<Vec<SVal>>, String> {
+    let mut q = sea_orm::sqlx::query(AssertSqlSafe(sql));
+    for v in vals {
+        q = match v {
+            SVal::Null => q.bind(None::<String>),
+            SVal::Int(i) => q.bind(i),
+            SVal::Float(f) => q.bind(f),
+            SVal::Text(s) => q.bind(s),
+        };
+    }
+    let rows = q
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| format!("gagal {label}: {e}"))?;
+    let mut out = Vec::new();
+    for r in rows {
+        let mut v = Vec::with_capacity(ncols);
+        for i in 0..ncols {
+            v.push(tx_cell(&r, i));
+        }
+        out.push(v);
+    }
+    Ok(out)
+}
+
+async fn tx_q_one(
+    tx: &mut Tx<'_>,
+    sql: String,
+    vals: Vec<SVal>,
+    ncols: usize,
+    label: &str,
+) -> Result<Option<Vec<SVal>>, String> {
+    let mut rows = tx_q_all(tx, sql, vals, ncols, label).await?;
+    Ok(rows.pop())
+}
+
+async fn tx_exec(
+    tx: &mut Tx<'_>,
+    sql: String,
+    vals: Vec<SVal>,
+    label: &str,
+) -> Result<u64, String> {
+    let mut q = sea_orm::sqlx::query(AssertSqlSafe(sql));
+    for v in vals {
+        q = match v {
+            SVal::Null => q.bind(None::<String>),
+            SVal::Int(i) => q.bind(i),
+            SVal::Float(f) => q.bind(f),
+            SVal::Text(s) => q.bind(s),
+        };
+    }
+    q.execute(&mut **tx)
+        .await
+        .map_err(|e| format!("gagal {label}: {e}"))
+        .map(|r| r.rows_affected())
+}
+
+async fn tx_rowid(tx: &mut Tx<'_>) -> i64 {
+    tx_q_one(
+        tx,
+        "SELECT last_insert_rowid()".to_string(),
+        vec![],
+        1,
+        "seed.rowid",
+    )
+    .await
+    .ok()
+    .flatten()
+    .as_ref()
+    .and_then(|r| sval_i64(&r[0]))
+    .unwrap_or(0)
+}
+
 /// Jalankan seluruh seed dalam satu transaksi.
-pub fn seed(conn: &mut Connection) -> Result<SeedSummary, String> {
-    let tx = conn
-        .transaction()
+pub async fn seed(db: &sea_orm::DatabaseConnection) -> Result<SeedSummary, String> {
+    let pool = db.get_sqlite_connection_pool();
+    let mut tx = pool
+        .begin()
+        .await
         .map_err(|e| format!("gagal memulai transaksi seed: {e}"))?;
-    let company_id = seed_company(&tx)?;
-    let (dept_hr, dept_it, dept_fin) = seed_departments(&tx, company_id)?;
-    let (lvl_staff, _lvl_spv, lvl_mgr) = seed_job_levels(&tx)?;
-    seed_job_grades(&tx)?;
-    let pos_hr_manager = seed_positions(&tx, dept_hr, dept_it, dept_fin, lvl_staff, lvl_mgr)?;
-    let hq_location = seed_work_location(&tx)?;
-    seed_cost_center(&tx, dept_hr)?;
-    let role_ids = seed_roles(&tx)?;
-    let perm_ids = seed_permissions(&tx)?;
-    seed_role_permissions(&tx, &role_ids, &perm_ids)?;
-    let admin_employee = seed_admin_employee(
-        &tx,
-        company_id,
-        dept_hr,
-        pos_hr_manager,
-        lvl_mgr,
-        hq_location,
-    )?;
-    seed_admin_user(&tx, &role_ids, admin_employee)?;
-    seed_leave_types(&tx)?;
-    seed_permission_types(&tx)?;
-    seed_salary_components(&tx)?;
-    let schedule_regular = seed_shifts_and_schedule(&tx)?;
-    seed_shift_assignment(&tx, admin_employee, schedule_regular)?;
-    seed_holidays(&tx)?;
-    seed_approval_workflows(&tx, &role_ids)?;
-    seed_categories(&tx)?;
-    seed_settings(&tx)?;
+    let inner = async {
+        let company_id = seed_company(&mut tx).await?;
+        let (dept_hr, dept_it, dept_fin) = seed_departments(&mut tx, company_id).await?;
+        let (lvl_staff, _lvl_spv, lvl_mgr) = seed_job_levels(&mut tx).await?;
+        seed_job_grades(&mut tx).await?;
+        let pos_hr_manager =
+            seed_positions(&mut tx, dept_hr, dept_it, dept_fin, lvl_staff, lvl_mgr).await?;
+        let hq_location = seed_work_location(&mut tx).await?;
+        seed_cost_center(&mut tx, dept_hr).await?;
+        let role_ids = seed_roles(&mut tx).await?;
+        let perm_ids = seed_permissions(&mut tx).await?;
+        seed_role_permissions(&mut tx, &role_ids, &perm_ids).await?;
+        let admin_employee = seed_admin_employee(
+            &mut tx,
+            company_id,
+            dept_hr,
+            pos_hr_manager,
+            lvl_mgr,
+            hq_location,
+        )
+        .await?;
+        seed_admin_user(&mut tx, &role_ids, admin_employee).await?;
+        seed_leave_types(&mut tx).await?;
+        seed_permission_types(&mut tx).await?;
+        seed_salary_components(&mut tx).await?;
+        let schedule_regular = seed_shifts_and_schedule(&mut tx).await?;
+        seed_shift_assignment(&mut tx, admin_employee, schedule_regular).await?;
+        seed_holidays(&mut tx).await?;
+        seed_approval_workflows(&mut tx, &role_ids).await?;
+        seed_categories(&mut tx).await?;
+        seed_settings(&mut tx).await?;
+        Ok::<(), String>(())
+    }
+    .await;
+    if let Err(e) = inner {
+        tx.rollback().await.ok();
+        return Err(e);
+    }
     tx.commit()
+        .await
         .map_err(|e| format!("gagal commit transaksi seed: {e}"))?;
 
     Ok(SeedSummary {
-        roles: count(conn, "roles")?,
-        permissions: count(conn, "permissions")?,
-        users: count(conn, "users")?,
+        roles: count(db, "roles").await?,
+        permissions: count(db, "permissions").await?,
+        users: count(db, "users").await?,
     })
 }
 
-fn count(conn: &Connection, table: &str) -> Result<i64, String> {
-    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
-        .map_err(|e| format!("gagal menghitung {table}: {e}"))
+async fn count(db: &sea_orm::DatabaseConnection, table: &str) -> Result<i64, String> {
+    let rows = super::sea_raw::q_all(
+        db,
+        format!("SELECT COUNT(*) FROM {table}"),
+        vec![],
+        1,
+        "seed.count",
+    )
+    .await
+    .map_err(|e| format!("gagal menghitung {table}: {e}"))?;
+    Ok(rows
+        .first()
+        .and_then(|r| super::sea_raw::value_i64(&r[0]))
+        .unwrap_or(0))
 }
 
 /// Insert bila belum ada (berdasar constraint UNIQUE), kembalikan id.
-fn insert_ignore(
-    conn: &Connection,
+async fn insert_ignore(
+    tx: &mut Tx<'_>,
     table: &str,
     columns: &str,
     placeholders: &str,
-    p: &[&dyn rusqlite::ToSql],
+    p: Vec<SVal>,
 ) -> Result<i64, String> {
-    conn.execute(
-        &format!("INSERT OR IGNORE INTO {table} ({columns}) VALUES ({placeholders})"),
+    tx_exec(
+        tx,
+        format!("INSERT OR IGNORE INTO {table} ({columns}) VALUES ({placeholders})"),
         p,
+        "seed.insert",
     )
+    .await
     .map_err(|e| format!("gagal insert {table}: {e}"))?;
-    Ok(conn.last_insert_rowid())
+    Ok(tx_rowid(tx).await)
 }
 
-fn find_id(
-    conn: &Connection,
+async fn find_id(
+    tx: &mut Tx<'_>,
     table: &str,
     where_clause: &str,
-    p: &[&dyn rusqlite::ToSql],
+    p: Vec<SVal>,
 ) -> Result<Option<i64>, String> {
-    conn.query_row(
-        &format!("SELECT id FROM {table} WHERE {where_clause}"),
+    let row = tx_q_one(
+        tx,
+        format!("SELECT id FROM {table} WHERE {where_clause}"),
         p,
-        |r| r.get(0),
+        1,
+        "seed.find",
     )
-    .map(|v| Some(v))
-    .or_else(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => Ok(None),
-        other => Err(format!("gagal mencari {table}: {other}")),
-    })
+    .await
+    .map_err(|e| format!("gagal mencari {table}: {e}"))?;
+    Ok(row.as_ref().and_then(|r| sval_i64(&r[0])))
 }
 
-fn seed_company(conn: &Connection) -> Result<i64, String> {
+fn t(s: &str) -> SVal {
+    SVal::Text(s.to_string())
+}
+
+fn i(v: i64) -> SVal {
+    SVal::Int(v)
+}
+
+async fn seed_company(tx: &mut Tx<'_>) -> Result<i64, String> {
     insert_ignore(
-        conn,
+        tx,
         "companies",
         "code, name, legal_name, address, city, province, postal_code, phone, email, npwp, established_date",
         "?,?,?,?,?,?,?,?,?,?,?",
-        &[
-            &"HQ",
-            &"PT Contoh Sukses Indonesia",
-            &"PT Contoh Sukses Indonesia",
-            &"Jl. Pemuda No. 1, Surabaya",
-            &"Surabaya",
-            &"Jawa Timur",
-            &"60271",
-            &"+62-31-5551234",
-            &"info@contohsukses.co.id",
-            &"01.234.567.8-901.000",
-            &"2010-01-01",
+        vec![
+            t("HQ"),
+            t("PT Contoh Sukses Indonesia"),
+            t("PT Contoh Sukses Indonesia"),
+            t("Jl. Pemuda No. 1, Surabaya"),
+            t("Surabaya"),
+            t("Jawa Timur"),
+            t("60271"),
+            t("+62-31-5551234"),
+            t("info@contohsukses.co.id"),
+            t("01.234.567.8-901.000"),
+            t("2010-01-01"),
         ],
-    )?;
-    find_id(conn, "companies", "code = ?1", &[&"HQ"])?
+    )
+    .await?;
+    find_id(tx, "companies", "code = ?1", vec![t("HQ")])
+        .await?
         .ok_or_else(|| "company HQ tidak ditemukan setelah seed".to_string())
 }
 
-fn seed_departments(conn: &Connection, company_id: i64) -> Result<(i64, i64, i64), String> {
+async fn seed_departments(
+    tx: &mut Tx<'_>,
+    company_id: i64,
+) -> Result<(i64, i64, i64), String> {
     let branch_id = insert_ignore(
-        conn,
+        tx,
         "branches",
         "company_id, code, name, address, city, phone, is_head_office",
         "?,?,?,?,?,?,1",
-        &[
-            &company_id,
-            &"HO",
-            &"Kantor Pusat Surabaya",
-            &"Jl. Pemuda No. 1, Surabaya",
-            &"Surabaya",
-            &"+62-31-5551234",
+        vec![
+            i(company_id),
+            t("HO"),
+            t("Kantor Pusat Surabaya"),
+            t("Jl. Pemuda No. 1, Surabaya"),
+            t("Surabaya"),
+            t("+62-31-5551234"),
         ],
-    )?;
+    )
+    .await?;
     let branch_id = find_id(
-        conn,
+        tx,
         "branches",
         "company_id = ?1 AND code = 'HO'",
-        &[&company_id],
-    )?
+        vec![i(company_id)],
+    )
+    .await?
     .or(Some(branch_id))
     .unwrap_or(branch_id);
     let mut ids = Vec::new();
@@ -149,25 +302,27 @@ fn seed_departments(conn: &Connection, company_id: i64) -> Result<(i64, i64, i64
         ("FIN", "Finance & Accounting"),
     ] {
         insert_ignore(
-            conn,
+            tx,
             "departments",
             "company_id, branch_id, code, name",
             "?,?,?,?",
-            &[&company_id, &branch_id, &code, &name],
-        )?;
+            vec![i(company_id), i(branch_id), t(code), t(name)],
+        )
+        .await?;
         let id = find_id(
-            conn,
+            tx,
             "departments",
             "company_id = ?1 AND code = ?2",
-            &[&company_id, &code],
-        )?
+            vec![i(company_id), t(code)],
+        )
+        .await?
         .ok_or_else(|| format!("department {code} tidak ditemukan setelah seed"))?;
         ids.push(id);
     }
     Ok((ids[0], ids[1], ids[2]))
 }
 
-fn seed_job_levels(conn: &Connection) -> Result<(i64, i64, i64), String> {
+async fn seed_job_levels(tx: &mut Tx<'_>) -> Result<(i64, i64, i64), String> {
     let mut ids = Vec::new();
     for (code, name, order) in [
         ("STAFF", "Staff", 1),
@@ -176,37 +331,40 @@ fn seed_job_levels(conn: &Connection) -> Result<(i64, i64, i64), String> {
         ("DIR", "Director", 4),
     ] {
         insert_ignore(
-            conn,
+            tx,
             "job_levels",
             "code, name, level_order",
             "?,?,?",
-            &[&code, &name, &order],
-        )?;
+            vec![t(code), t(name), i(order)],
+        )
+        .await?;
         ids.push(
-            find_id(conn, "job_levels", "code = ?1", &[&code])?
+            find_id(tx, "job_levels", "code = ?1", vec![t(code)])
+                .await?
                 .ok_or_else(|| format!("job level {code} tidak ditemukan setelah seed"))?,
         );
     }
     Ok((ids[0], ids[1], ids[2]))
 }
 
-fn seed_job_grades(conn: &Connection) -> Result<(), String> {
+async fn seed_job_grades(tx: &mut Tx<'_>) -> Result<(), String> {
     for order in 1..=5 {
         let code = format!("G{order}");
         let name = format!("Grade {order}");
         insert_ignore(
-            conn,
+            tx,
             "job_grades",
             "code, name, grade_order",
             "?,?,?",
-            &[&code, &name, &order],
-        )?;
+            vec![t(&code), t(&name), i(order)],
+        )
+        .await?;
     }
     Ok(())
 }
 
-fn seed_positions(
-    conn: &Connection,
+async fn seed_positions(
+    tx: &mut Tx<'_>,
     dept_hr: i64,
     dept_it: i64,
     dept_fin: i64,
@@ -222,13 +380,15 @@ fn seed_positions(
     let mut hr_manager = 0;
     for (code, name, dept, lvl) in rows {
         insert_ignore(
-            conn,
+            tx,
             "positions",
             "code, name, department_id, job_level_id",
             "?,?,?,?",
-            &[&code, &name, &dept, &lvl],
-        )?;
-        let id = find_id(conn, "positions", "code = ?1", &[&code])?
+            vec![t(code), t(name), i(dept), i(lvl)],
+        )
+        .await?;
+        let id = find_id(tx, "positions", "code = ?1", vec![t(code)])
+            .await?
             .ok_or_else(|| format!("position {code} tidak ditemukan setelah seed"))?;
         if code == "HRM" {
             hr_manager = id;
@@ -237,41 +397,46 @@ fn seed_positions(
     Ok(hr_manager)
 }
 
-fn seed_work_location(conn: &Connection) -> Result<i64, String> {
+async fn seed_work_location(tx: &mut Tx<'_>) -> Result<i64, String> {
     insert_ignore(
-        conn,
+        tx,
         "work_locations",
         "name, address, latitude, longitude, radius_meter",
         "?,?,?,?,?",
-        &[
-            &"Kantor Pusat Surabaya",
-            &"Jl. Pemuda No. 1, Surabaya",
-            &-6.224_f64,
-            &106.809_f64,
-            &200_i64,
+        vec![
+            t("Kantor Pusat Surabaya"),
+            t("Jl. Pemuda No. 1, Surabaya"),
+            SVal::Float(-6.224),
+            SVal::Float(106.809),
+            i(200),
         ],
-    )?;
+    )
+    .await?;
     find_id(
-        conn,
+        tx,
         "work_locations",
         "name = ?1",
-        &[&"Kantor Pusat Surabaya"],
-    )?
+        vec![t("Kantor Pusat Surabaya")],
+    )
+    .await?
     .ok_or_else(|| "work location tidak ditemukan setelah seed".to_string())
 }
 
-fn seed_cost_center(conn: &Connection, dept_hr: i64) -> Result<(), String> {
+async fn seed_cost_center(tx: &mut Tx<'_>, dept_hr: i64) -> Result<(), String> {
     insert_ignore(
-        conn,
+        tx,
         "cost_centers",
         "code, name, department_id",
         "?,?,?",
-        &[&"CC-HRD", &"Cost Center HRD", &dept_hr],
-    )?;
+        vec![t("CC-HRD"), t("Cost Center HRD"), i(dept_hr)],
+    )
+    .await?;
     Ok(())
 }
 
-fn seed_roles(conn: &Connection) -> Result<std::collections::HashMap<String, i64>, String> {
+async fn seed_roles(
+    tx: &mut Tx<'_>,
+) -> Result<std::collections::HashMap<String, i64>, String> {
     let roles = [
         (
             "super-administrator",
@@ -320,13 +485,15 @@ fn seed_roles(conn: &Connection) -> Result<std::collections::HashMap<String, i64
     let mut map = std::collections::HashMap::new();
     for (slug, name, desc, is_system) in roles {
         insert_ignore(
-            conn,
+            tx,
             "roles",
             "slug, name, description, is_system",
             "?,?,?,?",
-            &[&slug, &name, &desc, &is_system],
-        )?;
-        let id = find_id(conn, "roles", "slug = ?1", &[&slug])?
+            vec![t(slug), t(name), t(desc), i(is_system)],
+        )
+        .await?;
+        let id = find_id(tx, "roles", "slug = ?1", vec![t(slug)])
+            .await?
             .ok_or_else(|| format!("role {slug} tidak ditemukan setelah seed"))?;
         map.insert(slug.to_string(), id);
     }
@@ -346,7 +513,9 @@ fn title_case(s: &str) -> String {
         .join(" ")
 }
 
-fn seed_permissions(conn: &Connection) -> Result<std::collections::HashMap<String, i64>, String> {
+async fn seed_permissions(
+    tx: &mut Tx<'_>,
+) -> Result<std::collections::HashMap<String, i64>, String> {
     let modules: Vec<(&str, Vec<&str>)> = vec![
         (
             "employee",
@@ -400,13 +569,15 @@ fn seed_permissions(conn: &Connection) -> Result<std::collections::HashMap<Strin
             let slug = format!("{module}.{action}");
             let display = format!("{} {}", title_case(action), title_case(module));
             insert_ignore(
-                conn,
+                tx,
                 "permissions",
                 "slug, name, module",
                 "?,?,?",
-                &[&slug.as_str(), &display.as_str(), &module],
-            )?;
-            let id = find_id(conn, "permissions", "slug = ?1", &[&slug])?
+                vec![t(&slug), t(&display), t(module)],
+            )
+            .await?;
+            let id = find_id(tx, "permissions", "slug = ?1", vec![t(&slug)])
+                .await?
                 .ok_or_else(|| format!("permission {slug} tidak ditemukan setelah seed"))?;
             map.insert(slug, id);
         }
@@ -414,17 +585,20 @@ fn seed_permissions(conn: &Connection) -> Result<std::collections::HashMap<Strin
     Ok(map)
 }
 
-fn grant(conn: &Connection, role_id: i64, perm_id: i64) -> Result<(), String> {
-    conn.execute(
-        "INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?1, ?2)",
-        params![role_id, perm_id],
+async fn grant(tx: &mut Tx<'_>, role_id: i64, perm_id: i64) -> Result<(), String> {
+    tx_exec(
+        tx,
+        "INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?1, ?2)".to_string(),
+        vec![i(role_id), i(perm_id)],
+        "seed.grant",
     )
+    .await
     .map_err(|e| format!("gagal grant permission: {e}"))?;
     Ok(())
 }
 
-fn seed_role_permissions(
-    conn: &Connection,
+async fn seed_role_permissions(
+    tx: &mut Tx<'_>,
     roles: &std::collections::HashMap<String, i64>,
     perms: &std::collections::HashMap<String, i64>,
 ) -> Result<(), String> {
@@ -549,15 +723,15 @@ fn seed_role_permissions(
             .ok_or_else(|| format!("role {role_slug} belum di-seed"))?;
         for slug in slugs {
             if let Some(perm_id) = perms.get(&slug) {
-                grant(conn, *role_id, *perm_id)?;
+                grant(tx, *role_id, *perm_id).await?;
             }
         }
     }
     Ok(())
 }
 
-fn seed_admin_employee(
-    conn: &Connection,
+async fn seed_admin_employee(
+    tx: &mut Tx<'_>,
     company_id: i64,
     dept_hr: i64,
     pos_hr_manager: i64,
@@ -566,73 +740,88 @@ fn seed_admin_employee(
 ) -> Result<i64, String> {
     let today = Local::now().format("%Y-%m-%d").to_string();
     let branch_id = find_id(
-        conn,
+        tx,
         "branches",
         "company_id = ?1 AND code = 'HO'",
-        &[&company_id],
-    )?
+        vec![i(company_id)],
+    )
+    .await?
     .ok_or_else(|| "branch HO tidak ditemukan".to_string())?;
     insert_ignore(
-        conn,
+        tx,
         "employees",
         "employee_number, nik, first_name, last_name, gender, birth_place, birth_date, marital_status, phone, personal_email, company_id, branch_id, department_id, position_id, job_level_id, work_location_id, join_date, employment_status, employment_type",
         "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?",
-        &[
-            &"EMP-0001",
-            &"3171000000000001",
-            &"Super",
-            &"Administrator",
-            &"male",
-            &"Surabaya",
-            &"1990-01-01",
-            &"single",
-            &"081200000001",
-            &"admin.personal@example.com",
-            &company_id,
-            &branch_id,
-            &dept_hr,
-            &pos_hr_manager,
-            &lvl_mgr,
-            &hq_location,
-            &today.as_str(),
-            &"active",
-            &"permanent",
+        vec![
+            t("EMP-0001"),
+            t("3171000000000001"),
+            t("Super"),
+            t("Administrator"),
+            t("male"),
+            t("Surabaya"),
+            t("1990-01-01"),
+            t("single"),
+            t("081200000001"),
+            t("admin.personal@example.com"),
+            i(company_id),
+            i(branch_id),
+            i(dept_hr),
+            i(pos_hr_manager),
+            i(lvl_mgr),
+            i(hq_location),
+            t(&today),
+            t("active"),
+            t("permanent"),
         ],
-    )?;
-    find_id(conn, "employees", "employee_number = ?1", &[&"EMP-0001"])?
+    )
+    .await?;
+    find_id(tx, "employees", "employee_number = ?1", vec![t("EMP-0001")])
+        .await?
         .ok_or_else(|| "employee EMP-0001 tidak ditemukan setelah seed".to_string())
 }
 
-fn seed_admin_user(
-    conn: &Connection,
+async fn seed_admin_user(
+    tx: &mut Tx<'_>,
     roles: &std::collections::HashMap<String, i64>,
     admin_employee: i64,
 ) -> Result<(), String> {
     let hash = bcrypt::hash("Admin@123", bcrypt::DEFAULT_COST)
         .map_err(|e| format!("gagal hash password admin: {e}"))?;
     // Hash acak tiap run: hanya insert bila username belum ada (jangan overwrite).
-    let exists = find_id(conn, "users", "username = ?1", &[&"admin"])?;
+    let exists = find_id(tx, "users", "username = ?1", vec![t("admin")]).await?;
     if exists.is_none() {
-        conn.execute(
-            "INSERT INTO users (employee_id, username, email, password, status, must_change_password) VALUES (?1, ?2, ?3, ?4, 'active', 1)",
-            params![admin_employee, "admin", "admin@hris.local", hash],
+        tx_exec(
+            tx,
+            "INSERT INTO users (employee_id, username, email, password, status, must_change_password) VALUES (?1, ?2, ?3, ?4, 'active', 1)".to_string(),
+            vec![
+                i(admin_employee),
+                t("admin"),
+                t("admin@hris.local"),
+                t(&hash),
+            ],
+            "seed.admin",
         )
+        .await
         .map_err(|e| format!("gagal insert admin: {e}"))?;
     }
-    let admin_id = find_id(conn, "users", "username = ?1", &[&"admin"])?
+    let admin_id = find_id(tx, "users", "username = ?1", vec![t("admin")])
+        .await?
         .ok_or_else(|| "user admin tidak ditemukan setelah seed".to_string())?;
     let super_id = roles
         .get("super-administrator")
         .ok_or_else(|| "role super-administrator belum di-seed".to_string())?;
-    conn.execute(
-        "INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?1, ?2)",
-        params![admin_id, super_id],
+    tx_exec(
+        tx,
+        "INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?1, ?2)".to_string(),
+        vec![i(admin_id), i(*super_id)],
+        "seed.adminrole",
     )
+    .await
     .map_err(|e| format!("gagal assign role admin: {e}"))?;
     Ok(())
 }
 
-fn seed_leave_types(conn: &Connection) -> Result<(), String> {
+async fn seed_leave_types(tx: &mut Tx<'_>) -> Result<(), String> {
     let rows: Vec<(&str, &str, i64, i64, i64, i64, i64)> = vec![
         ("AL", "Annual Leave", 12, 1, 1, 6, 0),
         ("SL", "Sick Leave", 12, 1, 0, 0, 1),
@@ -645,17 +834,26 @@ fn seed_leave_types(conn: &Connection) -> Result<(), String> {
     ];
     for (code, name, days, paid, carry, carry_max, attachment) in rows {
         insert_ignore(
-            conn,
+            tx,
             "leave_types",
             "code, name, default_days_per_year, is_paid, carry_forward, carry_forward_max_days, requires_attachment",
             "?,?,?,?,?,?,?",
-            &[&code, &name, &days, &paid, &carry, &carry_max, &attachment],
-        )?;
+            vec![
+                t(code),
+                t(name),
+                i(days),
+                i(paid),
+                i(carry),
+                i(carry_max),
+                i(attachment),
+            ],
+        )
+        .await?;
     }
     Ok(())
 }
 
-fn seed_permission_types(conn: &Connection) -> Result<(), String> {
+async fn seed_permission_types(tx: &mut Tx<'_>) -> Result<(), String> {
     for (code, name) in [
         ("LATE", "Terlambat"),
         ("EARLY", "Pulang Cepat"),
@@ -665,18 +863,16 @@ fn seed_permission_types(conn: &Connection) -> Result<(), String> {
         ("BUSINESS", "Urusan Dinas"),
         ("LEAVING", "Keluar Kantor"),
     ] {
-        insert_ignore(
-            conn,
-            "permission_types",
-            "code, name",
-            "?,?",
-            &[&code, &name],
-        )?;
+        insert_ignore(tx, "permission_types", "code, name", "?,?", vec![
+            t(code),
+            t(name),
+        ])
+        .await?;
     }
     Ok(())
 }
 
-fn seed_salary_components(conn: &Connection) -> Result<(), String> {
+async fn seed_salary_components(tx: &mut Tx<'_>) -> Result<(), String> {
     let rows: Vec<(&str, &str, &str, &str, i64)> = vec![
         ("BASIC", "Gaji Pokok", "income", "fixed", 1),
         ("POS_ALLOW", "Tunjangan Jabatan", "income", "fixed", 1),
@@ -709,17 +905,18 @@ fn seed_salary_components(conn: &Connection) -> Result<(), String> {
     ];
     for (code, name, ctype, calc, taxable) in rows {
         insert_ignore(
-            conn,
+            tx,
             "salary_components",
             "code, name, type, calculation_type, is_taxable",
             "?,?,?,?,?",
-            &[&code, &name, &ctype, &calc, &taxable],
-        )?;
+            vec![t(code), t(name), t(ctype), t(calc), i(taxable)],
+        )
+        .await?;
     }
     Ok(())
 }
 
-fn seed_shifts_and_schedule(conn: &Connection) -> Result<i64, String> {
+async fn seed_shifts_and_schedule(tx: &mut Tx<'_>) -> Result<i64, String> {
     for (name, start, end, bstart, bend, overnight) in [
         (
             "Regular",
@@ -731,65 +928,88 @@ fn seed_shifts_and_schedule(conn: &Connection) -> Result<i64, String> {
         ),
         ("Night", "22:00:00", "06:00:00", None, None, 1),
     ] {
+        let opt_t = |v: Option<&str>| match v {
+            Some(s) => t(s),
+            None => SVal::Null,
+        };
         insert_ignore(
-            conn,
+            tx,
             "shifts",
             "name, start_time, end_time, break_start, break_end, grace_period_minutes, is_overnight",
             "?,?,?,?,?,15,?",
-            &[&name, &start, &end, &bstart, &bend, &overnight],
-        )?;
+            vec![
+                t(name),
+                t(start),
+                t(end),
+                opt_t(bstart),
+                opt_t(bend),
+                i(overnight),
+            ],
+        )
+        .await?;
     }
-    let regular_id = find_id(conn, "shifts", "name = 'Regular'", &[])?
+    let regular_id = find_id(tx, "shifts", "name = 'Regular'", vec![])
+        .await?
         .ok_or_else(|| "shift Regular tidak ditemukan".to_string())?;
     insert_ignore(
-        conn,
+        tx,
         "work_schedules",
         "name, description",
         "?,?",
-        &[&"Senin - Jumat", &"Jadwal kerja reguler Senin sampai Jumat"],
-    )?;
-    let schedule_id = find_id(conn, "work_schedules", "name = ?1", &[&"Senin - Jumat"])?
+        vec![t("Senin - Jumat"), t("Jadwal kerja reguler Senin sampai Jumat")],
+    )
+    .await?;
+    let schedule_id = find_id(tx, "work_schedules", "name = ?1", vec![t("Senin - Jumat")])
+        .await?
         .ok_or_else(|| "jadwal Senin - Jumat tidak ditemukan".to_string())?;
     for day in 0..=6 {
         let working: i64 = if (1..=5).contains(&day) { 1 } else { 0 };
-        let shift: Option<i64> = if working == 1 { Some(regular_id) } else { None };
-        conn.execute(
-            "INSERT OR IGNORE INTO work_schedule_days (work_schedule_id, day_of_week, shift_id, is_working_day) VALUES (?1, ?2, ?3, ?4)",
-            params![schedule_id, day, shift, working],
+        let shift: SVal = if working == 1 {
+            i(regular_id)
+        } else {
+            SVal::Null
+        };
+        tx_exec(
+            tx,
+            "INSERT OR IGNORE INTO work_schedule_days (work_schedule_id, day_of_week, shift_id, is_working_day) VALUES (?1, ?2, ?3, ?4)".to_string(),
+            vec![i(schedule_id), i(day), shift, i(working)],
+            "seed.schedday",
         )
+        .await
         .map_err(|e| format!("gagal seed work_schedule_days: {e}"))?;
     }
     Ok(schedule_id)
 }
 
-fn seed_shift_assignment(
-    conn: &Connection,
+async fn seed_shift_assignment(
+    tx: &mut Tx<'_>,
     employee_id: i64,
     schedule_id: i64,
 ) -> Result<(), String> {
     let first_of_month = Local::now().format("%Y-%m-01").to_string();
-    let exists: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM shift_assignments WHERE employee_id = ?1 AND work_schedule_id = ?2",
-            params![employee_id, schedule_id],
-            |r| r.get(0),
-        )
-        .map(Some)
-        .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(format!("gagal cek shift assignment: {other}")),
-        })?;
+    let exists = tx_q_one(
+        tx,
+        "SELECT id FROM shift_assignments WHERE employee_id = ?1 AND work_schedule_id = ?2".to_string(),
+        vec![i(employee_id), i(schedule_id)],
+        1,
+        "seed.assigncheck",
+    )
+    .await
+    .map_err(|e| format!("gagal cek shift assignment: {e}"))?;
     if exists.is_none() {
-        conn.execute(
-            "INSERT INTO shift_assignments (employee_id, work_schedule_id, start_date) VALUES (?1, ?2, ?3)",
-            params![employee_id, schedule_id, first_of_month],
+        tx_exec(
+            tx,
+            "INSERT INTO shift_assignments (employee_id, work_schedule_id, start_date) VALUES (?1, ?2, ?3)".to_string(),
+            vec![i(employee_id), i(schedule_id), t(&first_of_month)],
+            "seed.assign",
         )
+        .await
         .map_err(|e| format!("gagal seed shift assignment: {e}"))?;
     }
     Ok(())
 }
 
-fn seed_holidays(conn: &Connection) -> Result<(), String> {
+async fn seed_holidays(tx: &mut Tx<'_>) -> Result<(), String> {
     let year = Local::now().format("%Y").to_string();
     for (name, suffix) in [
         ("Tahun Baru Masehi", "-01-01"),
@@ -799,18 +1019,19 @@ fn seed_holidays(conn: &Connection) -> Result<(), String> {
     ] {
         let date = format!("{year}{suffix}");
         insert_ignore(
-            conn,
+            tx,
             "holidays",
             "name, date, type",
             "?,?,?",
-            &[&name, &date.as_str(), &"national"],
-        )?;
+            vec![t(name), t(&date), t("national")],
+        )
+        .await?;
     }
     Ok(())
 }
 
-fn seed_approval_workflows(
-    conn: &Connection,
+async fn seed_approval_workflows(
+    tx: &mut Tx<'_>,
     roles: &std::collections::HashMap<String, i64>,
 ) -> Result<(), String> {
     let workflows: Vec<(&str, &str, Vec<&str>)> = vec![
@@ -842,13 +1063,15 @@ fn seed_approval_workflows(
     ];
     for (module, name, steps) in workflows {
         insert_ignore(
-            conn,
+            tx,
             "approval_workflows",
             "module, name, is_active",
             "?,?,1",
-            &[&module, &name],
-        )?;
-        let wf_id = find_id(conn, "approval_workflows", "module = ?1", &[&module])?
+            vec![t(module), t(name)],
+        )
+        .await?;
+        let wf_id = find_id(tx, "approval_workflows", "module = ?1", vec![t(module)])
+            .await?
             .ok_or_else(|| format!("workflow {module} tidak ditemukan"))?;
         for (idx, step) in steps.iter().enumerate() {
             let order = (idx + 1) as i64;
@@ -856,16 +1079,22 @@ fn seed_approval_workflows(
                 let role_id = roles
                     .get(role_slug)
                     .ok_or_else(|| format!("role {role_slug} belum di-seed"))?;
-                conn.execute(
-                    "INSERT OR IGNORE INTO approval_steps (approval_workflow_id, step_order, approver_type, role_id) VALUES (?1, ?2, 'role', ?3)",
-                    params![wf_id, order, role_id],
+                tx_exec(
+                    tx,
+                    "INSERT OR IGNORE INTO approval_steps (approval_workflow_id, step_order, approver_type, role_id) VALUES (?1, ?2, 'role', ?3)".to_string(),
+                    vec![i(wf_id), i(order), i(*role_id)],
+                    "seed.step",
                 )
+                .await
                 .map_err(|e| format!("gagal seed approval step: {e}"))?;
             } else {
-                conn.execute(
-                    "INSERT OR IGNORE INTO approval_steps (approval_workflow_id, step_order, approver_type) VALUES (?1, ?2, ?3)",
-                    params![wf_id, order, step],
+                tx_exec(
+                    tx,
+                    "INSERT OR IGNORE INTO approval_steps (approval_workflow_id, step_order, approver_type) VALUES (?1, ?2, ?3)".to_string(),
+                    vec![i(wf_id), i(order), t(step)],
+                    "seed.step",
                 )
+                .await
                 .map_err(|e| format!("gagal seed approval step: {e}"))?;
             }
         }
@@ -873,20 +1102,18 @@ fn seed_approval_workflows(
     Ok(())
 }
 
-fn seed_categories(conn: &Connection) -> Result<(), String> {
+async fn seed_categories(tx: &mut Tx<'_>) -> Result<(), String> {
     for (code, name) in [
         ("LAPTOP", "Laptop"),
         ("MOBILE", "Handphone"),
         ("FURNITURE", "Furniture"),
         ("VEHICLE", "Kendaraan"),
     ] {
-        insert_ignore(
-            conn,
-            "asset_categories",
-            "code, name",
-            "?,?",
-            &[&code, &name],
-        )?;
+        insert_ignore(tx, "asset_categories", "code, name", "?,?", vec![
+            t(code),
+            t(name),
+        ])
+        .await?;
     }
     let rows: Vec<(&str, &str, Option<f64>)> = vec![
         ("TRANSPORT", "Transportasi", Some(1_000_000.0)),
@@ -896,17 +1123,25 @@ fn seed_categories(conn: &Connection) -> Result<(), String> {
     ];
     for (code, name, max) in rows {
         insert_ignore(
-            conn,
+            tx,
             "reimbursement_categories",
             "code, name, max_amount",
             "?,?,?",
-            &[&code, &name, &max],
-        )?;
+            vec![
+                t(code),
+                t(name),
+                match max {
+                    Some(m) => SVal::Float(m),
+                    None => SVal::Null,
+                },
+            ],
+        )
+        .await?;
     }
     Ok(())
 }
 
-fn seed_settings(conn: &Connection) -> Result<(), String> {
+async fn seed_settings(tx: &mut Tx<'_>) -> Result<(), String> {
     let settings: Vec<(&str, &str)> = vec![
         ("company_name", "PT Contoh Sukses Indonesia"),
         ("company_email", "info@contohsukses.co.id"),
@@ -929,12 +1164,13 @@ fn seed_settings(conn: &Connection) -> Result<(), String> {
     ];
     for (key, value) in settings {
         insert_ignore(
-            conn,
+            tx,
             "system_settings",
             "setting_key, setting_value, setting_group",
             "?,?,?",
-            &[&key, &value, &"general"],
-        )?;
+            vec![t(key), t(value), t("general")],
+        )
+        .await?;
     }
     Ok(())
 }
@@ -942,22 +1178,23 @@ fn seed_settings(conn: &Connection) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{init_pool, migrate};
+    use crate::db::{connect_sea, migrate_sea};
 
-    fn seeded_pool() -> (tempfile::TempDir, crate::db::DbPool) {
+    async fn seeded_db() -> (tempfile::TempDir, sea_orm::DatabaseConnection) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let pool = init_pool(&dir.path().join("seed.db")).expect("init_pool");
-        {
-            let mut conn = pool.get().expect("get");
-            migrate(&mut conn).expect("migrate");
-            seed(&mut conn).expect("seed pertama");
-        }
-        (dir, pool)
+        let db = connect_sea(&dir.path().join("seed.db"))
+            .await
+            .expect("connect");
+        migrate_sea(&db).await.expect("migrate");
+        seed(&db).await.expect("seed pertama");
+        (dir, db)
     }
 
-    fn counts(conn: &Connection) -> std::collections::HashMap<String, i64> {
+    async fn counts(
+        db: &sea_orm::DatabaseConnection,
+    ) -> std::collections::HashMap<String, i64> {
         let mut m = std::collections::HashMap::new();
-        for t in [
+        for tbl in [
             "roles",
             "permissions",
             "users",
@@ -968,56 +1205,75 @@ mod tests {
             "approval_steps",
             "system_settings",
         ] {
-            let n: i64 = conn
-                .query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0))
-                .unwrap();
-            m.insert(t.to_string(), n);
+            let rows = crate::services::sea_raw::q_all(
+                db,
+                format!("SELECT COUNT(*) FROM {tbl}"),
+                vec![],
+                1,
+                "seed.testcount",
+            )
+            .await
+            .unwrap();
+            m.insert(
+                tbl.to_string(),
+                rows.first()
+                    .and_then(|r| crate::services::sea_raw::value_i64(&r[0]))
+                    .unwrap_or(0),
+            );
         }
         m
     }
 
-    #[test]
-    fn seed_idempoten_dijalankan_dua_kali() {
-        let (_dir, pool) = seeded_pool();
-        let mut conn = pool.get().expect("get");
-        let before = counts(&conn);
-        seed(&mut conn).expect("seed kedua");
-        let after = counts(&conn);
+    #[tokio::test]
+    async fn seed_idempoten_dijalankan_dua_kali() {
+        let (_dir, db) = seeded_db().await;
+        let before = counts(&db).await;
+        seed(&db).await.expect("seed kedua");
+        let after = counts(&db).await;
         assert_eq!(before, after, "seed kedua tidak boleh menambah baris");
     }
 
-    #[test]
-    fn seed_mengisi_master_data_kunci() {
-        let (_dir, pool) = seeded_pool();
-        let conn = pool.get().expect("get");
-        let c = counts(&conn);
+    #[tokio::test]
+    async fn seed_mengisi_master_data_kunci() {
+        let (_dir, db) = seeded_db().await;
+        let c = counts(&db).await;
         assert_eq!(c["roles"], 8);
         assert_eq!(c["permissions"], 87);
         assert_eq!(c["leave_types"], 8);
         assert_eq!(c["salary_components"], 16);
         assert_eq!(c["approval_workflows"], 5);
         assert_eq!(c["system_settings"], 18);
-        let super_perms: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM role_permissions rp JOIN roles r ON r.id = rp.role_id WHERE r.slug = 'super-administrator'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
+        let rows = crate::services::sea_raw::q_all(
+            &db,
+            "SELECT COUNT(*) FROM role_permissions rp JOIN roles r ON r.id = rp.role_id WHERE r.slug = 'super-administrator'".to_string(),
+            vec![],
+            1,
+            "seed.testsuper",
+        )
+        .await
+        .unwrap();
+        let super_perms = rows
+            .first()
+            .and_then(|r| crate::services::sea_raw::value_i64(&r[0]))
+            .unwrap_or(0);
         assert_eq!(super_perms, 87);
     }
 
-    #[test]
-    fn admin_bisa_login_dengan_kredensial_awal() {
-        let (_dir, pool) = seeded_pool();
-        let conn = pool.get().expect("get");
-        let (hash, must_change): (String, i64) = conn
-            .query_row(
-                "SELECT password, must_change_password FROM users WHERE username = 'admin'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
+    #[tokio::test]
+    async fn admin_bisa_login_dengan_kredensial_awal() {
+        let (_dir, db) = seeded_db().await;
+        let rows = crate::services::sea_raw::q_all(
+            &db,
+            "SELECT password, must_change_password FROM users WHERE username = 'admin'".to_string(),
+            vec![],
+            2,
+            "seed.testadmin",
+        )
+        .await
+        .unwrap();
+        let row = rows.first().expect("admin ada");
+        let hash = crate::services::sea_raw::value_to_string(&row[0]);
+        let must_change = crate::services::sea_raw::value_i64(&row[1]).unwrap_or(0);
         assert!(bcrypt::verify("Admin@123", &hash).unwrap());
         assert_eq!(must_change, 1);
     }

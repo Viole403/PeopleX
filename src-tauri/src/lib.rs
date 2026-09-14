@@ -10,7 +10,6 @@ use tauri::Manager;
 
 /// State global: koneksi database, direktori data, dan sesi login (user id).
 pub struct AppState {
-    pub db: db::DbPool,
     pub sea: sea_orm::DatabaseConnection,
     pub data_dir: PathBuf,
     pub session: Mutex<Option<i64>>,
@@ -76,14 +75,6 @@ async fn db_status(state: tauri::State<'_, AppState>) -> Result<DbStatus, String
         users: to_dto_int(users, "users")?,
         data_dir: state.data_dir.display().to_string(),
     })
-}
-
-/// Ambil koneksi dari pool dengan pesan galat seragam.
-fn pooled(state: &tauri::State<'_, AppState>) -> Result<db::DbConn, String> {
-    state
-        .db
-        .get()
-        .map_err(|e| format!("gagal mengambil koneksi database: {e}"))
 }
 
 /// Pengguna aktif dari sesi (izin dimuat ulang tiap panggilan).
@@ -770,9 +761,8 @@ async fn contract_expiring(
     state: tauri::State<'_, AppState>,
     days: i32,
 ) -> Result<Vec<services::employees::ContractAlert>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["contract.view", "system.manage"]).await?;
-    services::employees::expiring_contracts(&conn, days as i64)
+    services::employees::expiring_contracts_sea(&state.sea, days as i64).await
 }
 
 #[tauri::command]
@@ -918,16 +908,6 @@ async fn employee_set_salary(
     .await
 }
 
-/// employee_id dari user login (aksi mandiri). Galat bila akun tak tertaut karyawan.
-fn my_employee(conn: &rusqlite::Connection, user_id: i64) -> Result<i64, String> {
-    conn.query_row(
-        "SELECT employee_id FROM users WHERE id = ?1",
-        rusqlite::params![user_id],
-        |r| r.get::<_, Option<i64>>(0),
-    )
-    .map_err(|e| format!("gagal memuat akun: {e}"))?
-    .ok_or("Akun belum tertaut karyawan.".to_string())
-}
 
 async fn my_employee_sea(sea: &sea_orm::DatabaseConnection, user_id: i64) -> Result<i64, String> {
     let row = services::sea_raw::q_one(
@@ -2709,37 +2689,31 @@ async fn report_export(
 
 fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("gagal membuat direktori data: {e}"))?;
-    let cfg = config::load(&data_dir)?;
-    let pool = db::init_pool(&data_dir.join("peoplex.db"))?;
-    {
-        let mut conn = pool
-            .get()
-            .map_err(|e| format!("gagal mengambil koneksi database: {e}"))?;
-        db::migrate(&mut conn)?;
-        seed::seed(&mut conn)?;
-    }
-    let url = cfg.sea_url(&data_dir)?;
-    // Konek di thread terpisah agar aman dipanggil dari dalam runtime async (mis. test).
+    config::load(&data_dir)?;
+    let db_path = data_dir.join("peoplex.db");
+    // Konek + migrasi + seed di thread terpisah agar aman dipanggil dari dalam runtime async (mis. test).
     let sea = std::thread::scope(|s| {
         s.spawn(|| {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .map_err(|e| format!("gagal membuat runtime async: {e}"))?;
-            let sea = rt
-                .block_on(sea_orm::Database::connect(&url))
-                .map_err(|e| format!("gagal konek SeaORM: {e}"))?;
-            rt.block_on(services::backup::ensure_scheduled_sea(
-                &sea,
-                &services::backup::backup_dir(&data_dir),
-            ));
-            Ok::<_, String>(sea)
+            rt.block_on(async {
+                let sea = db::connect_sea(&db_path).await?;
+                db::migrate_sea(&sea).await?;
+                seed::seed(&sea).await?;
+                services::backup::ensure_scheduled_sea(
+                    &sea,
+                    &services::backup::backup_dir(&data_dir),
+                )
+                .await;
+                Ok::<_, String>(sea)
+            })
         })
         .join()
         .map_err(|_| "thread koneksi SeaORM panik.".to_string())?
     })?;
     Ok(AppState {
-        db: pool,
         sea,
         data_dir,
         session: Mutex::new(None),
