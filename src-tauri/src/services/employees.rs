@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::audit;
+use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
 use crate::to_dto_int;
 
 // ---------------- DTO ----------------
@@ -889,7 +890,7 @@ fn validate_employee(
         }
         .map_err(|e| format!("gagal memeriksa NIK: {e}"))?;
         if found.is_some() {
-            return Err("NIK sudah dipakai.".to_string());
+            return Err("NIK sudah ada.".to_string());
         }
     }
     in_check(&input.gender, &["male", "female"], "Jenis kelamin")?;
@@ -1525,7 +1526,7 @@ pub fn create(
     )
     .map_err(|e| {
         if e.to_string().contains("UNIQUE") {
-            "Data duplikat (NIK atau nomor sudah dipakai).".to_string()
+            "Data duplikat (NIK sudah ada).".to_string()
         } else {
             format!("gagal menambah karyawan: {e}")
         }
@@ -1593,7 +1594,7 @@ pub fn update(
     )
     .map_err(|e| {
         if e.to_string().contains("UNIQUE") {
-            "Data duplikat (NIK sudah dipakai).".to_string()
+            "Data duplikat (NIK sudah ada).".to_string()
         } else {
             format!("gagal memperbarui karyawan: {e}")
         }
@@ -1631,6 +1632,611 @@ pub fn delete(conn: &Connection, actor_id: i64, id: i64) -> Result<(), String> {
         None,
         Some(&format!("Karyawan {} dihapus", before.employee_number)),
     )?;
+    Ok(())
+}
+
+// ---------------- Varian SeaORM (profil) ----------------
+
+fn opt_text(v: &Value) -> Option<String> {
+    match v {
+        Value::Null => None,
+        _ => Some(value_to_string(v)),
+    }
+}
+
+fn opt_dto(v: &Value, f: &str) -> Result<Option<i32>, String> {
+    match v {
+        Value::Null => Ok(None),
+        _ => Ok(Some(to_dto_int(
+            value_i64(v).ok_or_else(|| format!("{f} tidak valid."))?,
+            f,
+        )?)),
+    }
+}
+
+async fn exists_active_sea(
+    db: &sea_orm::DatabaseConnection,
+    table: &str,
+    id: i64,
+    field: &str,
+) -> Result<(), String> {
+    let row = q_one(
+        db,
+        format!("SELECT id FROM {table} WHERE id = ?1 AND deleted_at IS NULL"),
+        vec![Value::from(id)],
+        1,
+        "memeriksa relasi",
+    )
+    .await?;
+    if row.is_none() {
+        return Err(format!("{field} tidak ditemukan."));
+    }
+    Ok(())
+}
+
+async fn next_number_sea(db: &sea_orm::DatabaseConnection) -> Result<String, String> {
+    let row = q_one(
+        db,
+        "SELECT employee_number FROM employees ORDER BY id DESC LIMIT 1".to_string(),
+        vec![],
+        1,
+        "membuat nomor karyawan",
+    )
+    .await?;
+    let n: i64 = row
+        .map(|v| value_to_string(&v[0]))
+        .filter(|s| !s.is_empty())
+        .as_deref()
+        .and_then(|s| s.strip_prefix("EMP-"))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    Ok(format!("EMP-{:04}", n + 1))
+}
+
+async fn validate_employee_sea(
+    db: &sea_orm::DatabaseConnection,
+    input: &EmployeeInput,
+    exclude_id: Option<i64>,
+) -> Result<(), String> {
+    if input.first_name.trim().is_empty() {
+        return Err("Nama depan wajib diisi.".to_string());
+    }
+    if input.first_name.len() > 100 {
+        return Err("Nama depan maksimal 100 karakter.".to_string());
+    }
+    if let Some(nik) = input
+        .nik
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if nik.len() > 20 {
+            return Err("NIK maksimal 20 karakter.".to_string());
+        }
+        let mut sql =
+            "SELECT id FROM employees WHERE nik = ?1 AND deleted_at IS NULL".to_string();
+        let mut vals = vec![Value::from(nik.to_string())];
+        if let Some(ex) = exclude_id {
+            sql.push_str(" AND id != ?2");
+            vals.push(Value::from(ex));
+        }
+        let found = q_one(db, sql, vals, 1, "memeriksa NIK").await?;
+        if found.is_some() {
+            return Err("NIK sudah ada.".to_string());
+        }
+    }
+    in_check(&input.gender, &["male", "female"], "Jenis kelamin")?;
+    in_check(
+        &input.marital_status,
+        &["single", "married", "divorced", "widowed"],
+        "Status pernikahan",
+    )?;
+    in_check(
+        &input.employment_status,
+        &["active", "probation", "resigned", "terminated"],
+        "Status kepegawaian",
+    )?;
+    in_check(
+        &input.employment_type,
+        &["permanent", "contract", "intern", "daily", "freelance"],
+        "Jenis kepegawaian",
+    )?;
+    req_date(Some(&input.join_date), "Tanggal masuk")?;
+    opt_date(input.birth_date.as_ref(), "Tanggal lahir")?;
+    opt_date(input.appointment_date.as_ref(), "Tanggal pengangkatan")?;
+    if let Some(email) = input
+        .personal_email
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if !email.contains('@') {
+            return Err("Email pribadi tidak valid.".to_string());
+        }
+    }
+    req_str(input.last_name.as_ref(), "Nama belakang", 100)?;
+    req_str(input.birth_place.as_ref(), "Tempat lahir", 100)?;
+    req_str(input.religion.as_ref(), "Agama", 30)?;
+    req_str(input.phone.as_ref(), "Telepon", 30)?;
+    req_str(input.bank_name.as_ref(), "Nama bank", 100)?;
+    req_str(input.bank_account_number.as_ref(), "Nomor rekening", 50)?;
+    req_str(
+        input.bank_account_holder.as_ref(),
+        "Nama pemilik rekening",
+        150,
+    )?;
+    req_str(input.npwp.as_ref(), "NPWP", 30)?;
+    req_str(input.ptkp_status.as_ref(), "Status PTKP", 10)?;
+    req_str(input.bpjs_health_number.as_ref(), "No. BPJS Kesehatan", 30)?;
+    req_str(
+        input.bpjs_employment_number.as_ref(),
+        "No. BPJS Ketenagakerjaan",
+        30,
+    )?;
+    exists_active_sea(db, "companies", input.company_id as i64, "Perusahaan").await?;
+    for (opt_id, table, label) in [
+        (input.branch_id, "branches", "Cabang"),
+        (input.department_id, "departments", "Departemen"),
+        (input.division_id, "divisions", "Divisi"),
+        (input.section_id, "sections", "Seksi"),
+        (input.position_id, "positions", "Jabatan"),
+        (input.job_level_id, "job_levels", "Job level"),
+        (input.job_grade_id, "job_grades", "Job grade"),
+        (input.work_location_id, "work_locations", "Lokasi kerja"),
+        (input.cost_center_id, "cost_centers", "Cost center"),
+    ] {
+        if let Some(id) = opt_id {
+            exists_active_sea(db, table, id as i64, label).await?;
+        }
+    }
+    for (opt_id, label) in [
+        (input.supervisor_id, "Supervisor"),
+        (input.manager_id, "Manajer"),
+    ] {
+        if let Some(id) = opt_id {
+            let check = format!("memeriksa {label}");
+            let found = q_one(
+                db,
+                "SELECT id FROM employees WHERE id = ?1 AND deleted_at IS NULL".to_string(),
+                vec![Value::from(id as i64)],
+                1,
+                &check,
+            )
+            .await?;
+            if found.is_none() {
+                return Err(format!("{label} tidak ditemukan."));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn list_sea(
+    db: &sea_orm::DatabaseConnection,
+    search: &str,
+    filters: &EmployeeFilter,
+    page: i32,
+    per_page: i32,
+) -> Result<EmployeePage, String> {
+    let page = page.max(1);
+    let per_page = per_page.clamp(1, 100) as i64;
+    let offset = (page as i64 - 1) * per_page;
+    let mut conds = vec!["e.deleted_at IS NULL".to_string()];
+    let mut int_eqs: Vec<(&str, i64)> = Vec::new();
+    if let Some(v) = filters.department_id {
+        int_eqs.push(("e.department_id", v as i64));
+    }
+    if let Some(v) = filters.position_id {
+        int_eqs.push(("e.position_id", v as i64));
+    }
+    if let Some(v) = filters.branch_id {
+        int_eqs.push(("e.branch_id", v as i64));
+    }
+    for (col, v) in int_eqs {
+        conds.push(format!("{col} = {v}"));
+    }
+    for (col, allowed, val) in [
+        (
+            "e.employment_status",
+            &["active", "probation", "resigned", "terminated"] as &[&str],
+            filters.employment_status.as_deref(),
+        ),
+        ("e.gender", &["male", "female"], filters.gender.as_deref()),
+        (
+            "e.employment_type",
+            &["permanent", "contract", "intern", "daily", "freelance"],
+            filters.employment_type.as_deref(),
+        ),
+    ] {
+        if let Some(v) = val {
+            if allowed.contains(&v) {
+                conds.push(format!("{col} = '{v}'"));
+            }
+        }
+    }
+    let search = search.trim();
+    let has_search = !search.is_empty();
+    if has_search {
+        conds.push("(e.first_name LIKE ?1 OR e.last_name LIKE ?1 OR e.employee_number LIKE ?1 OR e.nik LIKE ?1)".to_string());
+    }
+    let wh = conds.join(" AND ");
+    let like = format!("%{search}%");
+    let count_row = if has_search {
+        q_one(
+            db,
+            format!("SELECT COUNT(*) FROM employees e WHERE {wh}"),
+            vec![Value::from(like.clone())],
+            1,
+            "menghitung karyawan",
+        )
+        .await?
+    } else {
+        q_one(
+            db,
+            format!("SELECT COUNT(*) FROM employees e WHERE {wh}"),
+            vec![],
+            1,
+            "menghitung karyawan",
+        )
+        .await?
+    };
+    let total: i64 = count_row
+        .as_ref()
+        .and_then(|v| value_i64(&v[0]))
+        .unwrap_or(0);
+    let tail = if has_search {
+        "LIMIT ?2 OFFSET ?3"
+    } else {
+        "LIMIT ?1 OFFSET ?2"
+    };
+    let sql = format!(
+        "SELECT e.id, e.employee_number, e.first_name, e.last_name, e.photo, e.join_date,
+                e.employment_status, e.employment_type, d.name, p.name
+         FROM employees e
+         LEFT JOIN departments d ON d.id = e.department_id
+         LEFT JOIN positions p ON p.id = e.position_id
+         WHERE {wh} ORDER BY e.first_name ASC {tail}"
+    );
+    let mut vals = Vec::new();
+    if has_search {
+        vals.push(Value::from(like));
+    }
+    vals.push(Value::from(per_page));
+    vals.push(Value::from(offset));
+    let rows = q_all(db, sql, vals, 10, "membaca daftar").await?;
+    let mut out = Vec::new();
+    for v in rows {
+        out.push(EmployeeRow {
+            id: to_dto_int(value_i64(&v[0]).unwrap_or(0), "employee.id")?,
+            employee_number: value_to_string(&v[1]),
+            first_name: value_to_string(&v[2]),
+            last_name: opt_text(&v[3]),
+            photo: opt_text(&v[4]),
+            join_date: value_to_string(&v[5]),
+            employment_status: value_to_string(&v[6]),
+            employment_type: value_to_string(&v[7]),
+            department_name: opt_text(&v[8]),
+            position_name: opt_text(&v[9]),
+        });
+    }
+    Ok(EmployeePage {
+        rows: out,
+        total: to_dto_int(total, "employee.total")?,
+    })
+}
+
+pub async fn detail_sea(
+    db: &sea_orm::DatabaseConnection,
+    id: i64,
+) -> Result<Option<EmployeeDetail>, String> {
+    let row = q_one(
+        db,
+        "SELECT e.id, e.employee_number, e.nik, e.first_name, e.last_name, e.photo,
+                e.birth_place, e.birth_date, e.gender, e.religion, e.marital_status, e.phone,
+                e.personal_email, e.company_id, e.branch_id, e.department_id, e.division_id, e.section_id,
+                e.position_id, e.job_level_id, e.job_grade_id, e.work_location_id, e.cost_center_id,
+                e.supervisor_id, e.manager_id, e.join_date, e.appointment_date, e.resign_date, e.employment_status,
+                e.employment_type, e.bank_name, e.bank_account_number, e.bank_account_holder, e.npwp,
+                e.ptkp_status, e.bpjs_health_number, e.bpjs_employment_number,
+                c.name, b.name, d.name, dv.name, s.name, p.name, jl.name, jg.name, wl.name, cc.name,
+                sup.first_name || ' ' || COALESCE(sup.last_name, ''), mgr.first_name || ' ' || COALESCE(mgr.last_name, '')
+         FROM employees e
+         LEFT JOIN companies c ON c.id = e.company_id
+         LEFT JOIN branches b ON b.id = e.branch_id
+         LEFT JOIN departments d ON d.id = e.department_id
+         LEFT JOIN divisions dv ON dv.id = e.division_id
+         LEFT JOIN sections s ON s.id = e.section_id
+         LEFT JOIN positions p ON p.id = e.position_id
+         LEFT JOIN job_levels jl ON jl.id = e.job_level_id
+         LEFT JOIN job_grades jg ON jg.id = e.job_grade_id
+         LEFT JOIN work_locations wl ON wl.id = e.work_location_id
+         LEFT JOIN cost_centers cc ON cc.id = e.cost_center_id
+         LEFT JOIN employees sup ON sup.id = e.supervisor_id
+         LEFT JOIN employees mgr ON mgr.id = e.manager_id
+         WHERE e.id = ?1 AND e.deleted_at IS NULL"
+            .to_string(),
+        vec![Value::from(id)],
+        49,
+        "memuat karyawan",
+    )
+    .await?;
+    row.map(|v| {
+        Ok(EmployeeDetail {
+            id: to_dto_int(value_i64(&v[0]).unwrap_or(0), "employee.id")?,
+            employee_number: value_to_string(&v[1]),
+            nik: opt_text(&v[2]),
+            first_name: value_to_string(&v[3]),
+            last_name: opt_text(&v[4]),
+            photo: opt_text(&v[5]),
+            birth_place: opt_text(&v[6]),
+            birth_date: opt_text(&v[7]),
+            gender: value_to_string(&v[8]),
+            religion: opt_text(&v[9]),
+            marital_status: value_to_string(&v[10]),
+            phone: opt_text(&v[11]),
+            personal_email: opt_text(&v[12]),
+            company_id: to_dto_int(value_i64(&v[13]).unwrap_or(0), "employee.company")?,
+            branch_id: opt_dto(&v[14], "employee.branch")?,
+            department_id: opt_dto(&v[15], "employee.department")?,
+            division_id: opt_dto(&v[16], "employee.division")?,
+            section_id: opt_dto(&v[17], "employee.section")?,
+            position_id: opt_dto(&v[18], "employee.position")?,
+            job_level_id: opt_dto(&v[19], "employee.level")?,
+            job_grade_id: opt_dto(&v[20], "employee.grade")?,
+            work_location_id: opt_dto(&v[21], "employee.location")?,
+            cost_center_id: opt_dto(&v[22], "employee.cost")?,
+            supervisor_id: opt_dto(&v[23], "employee.supervisor")?,
+            manager_id: opt_dto(&v[24], "employee.manager")?,
+            join_date: value_to_string(&v[25]),
+            appointment_date: opt_text(&v[26]),
+            resign_date: opt_text(&v[27]),
+            employment_status: value_to_string(&v[28]),
+            employment_type: value_to_string(&v[29]),
+            bank_name: opt_text(&v[30]),
+            bank_account_number: opt_text(&v[31]),
+            bank_account_holder: opt_text(&v[32]),
+            npwp: opt_text(&v[33]),
+            ptkp_status: opt_text(&v[34]),
+            bpjs_health_number: opt_text(&v[35]),
+            bpjs_employment_number: opt_text(&v[36]),
+            company_name: opt_text(&v[37]),
+            branch_name: opt_text(&v[38]),
+            department_name: opt_text(&v[39]),
+            division_name: opt_text(&v[40]),
+            section_name: opt_text(&v[41]),
+            position_name: opt_text(&v[42]),
+            job_level_name: opt_text(&v[43]),
+            job_grade_name: opt_text(&v[44]),
+            work_location_name: opt_text(&v[45]),
+            cost_center_name: opt_text(&v[46]),
+            supervisor_name: opt_text(&v[47]),
+            manager_name: opt_text(&v[48]),
+        })
+    })
+    .transpose()
+}
+
+async fn named_opts_sea(
+    db: &sea_orm::DatabaseConnection,
+    sql: &str,
+    label: &str,
+) -> Result<Vec<NamedOpt>, String> {
+    let check = format!("memuat {label}");
+    let rows = q_all(db, sql.to_string(), vec![], 2, &check).await?;
+    let mut out = Vec::new();
+    for v in rows {
+        out.push(NamedOpt {
+            id: to_dto_int(
+                value_i64(&v[0])
+                    .ok_or_else(|| format!("gagal membaca {label}."))?,
+                "dropdown.id",
+            )?,
+            name: value_to_string(&v[1]),
+        });
+    }
+    Ok(out)
+}
+
+pub async fn dropdowns_sea(db: &sea_orm::DatabaseConnection) -> Result<Dropdowns, String> {
+    Ok(Dropdowns {
+        companies: named_opts_sea(db, "SELECT id, name FROM companies WHERE deleted_at IS NULL ORDER BY name", "perusahaan").await?,
+        branches: named_opts_sea(db, "SELECT id, name FROM branches WHERE deleted_at IS NULL ORDER BY name", "cabang").await?,
+        departments: named_opts_sea(db, "SELECT id, name FROM departments WHERE deleted_at IS NULL ORDER BY name", "departemen").await?,
+        divisions: named_opts_sea(db, "SELECT id, name FROM divisions WHERE deleted_at IS NULL ORDER BY name", "divisi").await?,
+        sections: named_opts_sea(db, "SELECT id, name FROM sections WHERE deleted_at IS NULL ORDER BY name", "seksi").await?,
+        positions: named_opts_sea(db, "SELECT id, name FROM positions WHERE deleted_at IS NULL ORDER BY name", "jabatan").await?,
+        job_levels: named_opts_sea(db, "SELECT id, name FROM job_levels WHERE deleted_at IS NULL ORDER BY level_order", "level").await?,
+        job_grades: named_opts_sea(db, "SELECT id, name FROM job_grades WHERE deleted_at IS NULL ORDER BY grade_order", "grade").await?,
+        work_locations: named_opts_sea(db, "SELECT id, name FROM work_locations WHERE deleted_at IS NULL ORDER BY name", "lokasi").await?,
+        cost_centers: named_opts_sea(db, "SELECT id, name FROM cost_centers WHERE deleted_at IS NULL ORDER BY name", "cost center").await?,
+        employees: named_opts_sea(db, "SELECT id, first_name || ' ' || COALESCE(last_name, '') FROM employees WHERE deleted_at IS NULL ORDER BY first_name", "karyawan").await?,
+    })
+}
+
+fn profile_vals_sea(input: &EmployeeInput) -> Vec<Value> {
+    PROFILE_COLS
+        .iter()
+        .map(|c| match *c {
+            "company_id" | "branch_id" | "department_id" | "division_id" | "section_id"
+            | "position_id" | "job_level_id" | "job_grade_id" | "work_location_id"
+            | "cost_center_id" | "supervisor_id" | "manager_id" => match input_id(input, c) {
+                Some(v) => Value::from(v),
+                None => Value::Null,
+            },
+            _ => match input_value(input, c) {
+                Some(v) => Value::from(v),
+                None => Value::Null,
+            },
+        })
+        .collect()
+}
+
+pub async fn create_sea(
+    db: &sea_orm::DatabaseConnection,
+    files: &Path,
+    actor_id: i64,
+    input: &EmployeeInput,
+    photo: Option<&FileUpload>,
+) -> Result<i32, String> {
+    validate_employee_sea(db, input, None).await?;
+    let number = next_number_sea(db).await?;
+    let photo_rel = match photo {
+        Some(f) => Some(store_file(files, "photos", f, PHOTO_MIMES)?),
+        None => None,
+    };
+    let cols = format!("employee_number, photo, {}", PROFILE_COLS.join(", "));
+    let holders: Vec<String> = (1..=PROFILE_COLS.len() + 2)
+        .map(|i| format!("?{i}"))
+        .collect();
+    let mut vals = vec![
+        Value::from(number.clone()),
+        match &photo_rel {
+            Some(p) => Value::from(p.clone()),
+            None => Value::Null,
+        },
+    ];
+    vals.extend(profile_vals_sea(input));
+    exec(
+        db,
+        format!("INSERT INTO employees ({cols}) VALUES ({})", holders.join(", ")),
+        vals,
+        "menambah karyawan",
+    )
+    .await
+    .map_err(|e| {
+        if e.contains("UNIQUE") {
+            "Data duplikat (NIK sudah ada).".to_string()
+        } else {
+            e
+        }
+    })?;
+    let row = q_one(
+        db,
+        "SELECT last_insert_rowid()".to_string(),
+        vec![],
+        1,
+        "memuat id",
+    )
+    .await?;
+    let id = row
+        .as_ref()
+        .and_then(|v| value_i64(&v[0]))
+        .ok_or("gagal memuat id baru.".to_string())?;
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "CREATE",
+        "employee",
+        Some(&id.to_string()),
+        None,
+        None,
+        Some(&format!("Karyawan baru {number}")),
+    )
+    .await?;
+    to_dto_int(id, "employee.id")
+}
+
+pub async fn update_sea(
+    db: &sea_orm::DatabaseConnection,
+    files: &Path,
+    actor_id: i64,
+    id: i64,
+    input: &EmployeeInput,
+    resign_date: Option<&str>,
+    photo: Option<&FileUpload>,
+) -> Result<(), String> {
+    let before = detail_sea(db, id)
+        .await?
+        .ok_or("Karyawan tidak ditemukan.".to_string())?;
+    validate_employee_sea(db, input, Some(id)).await?;
+    let photo_rel: Option<Option<String>> = match photo {
+        Some(f) => Some(Some(store_file(files, "photos", f, PHOTO_MIMES)?)),
+        None => None,
+    };
+    if let Some(Some(new_rel)) = photo_rel.as_ref() {
+        if let Some(old) = before.photo.as_deref() {
+            if old != new_rel {
+                remove_file(files, old);
+            }
+        }
+    }
+    let mut sets: Vec<String> = PROFILE_COLS.iter().map(|c| format!("{c} = ?")).collect();
+    if resign_date.map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        sets.push("resign_date = ?".to_string());
+    }
+    if photo_rel.is_some() {
+        sets.push("photo = ?".to_string());
+    }
+    let mut vals = profile_vals_sea(input);
+    if let Some(rd) = resign_date {
+        if !rd.trim().is_empty() {
+            vals.push(Value::from(rd.trim().to_string()));
+        }
+    }
+    if let Some(opt) = photo_rel {
+        vals.push(match opt {
+            Some(p) => Value::from(p),
+            None => Value::Null,
+        });
+    }
+    vals.push(Value::from(id));
+    exec(
+        db,
+        format!("UPDATE employees SET {} WHERE id = ?", sets.join(", ")),
+        vals,
+        "memperbarui karyawan",
+    )
+    .await
+    .map_err(|e| {
+        if e.contains("UNIQUE") {
+            "Data duplikat (NIK sudah ada).".to_string()
+        } else {
+            e
+        }
+    })?;
+    let after = serde_json::to_string(&detail_sea(db, id).await?.expect("ada")).unwrap_or_default();
+    let before_json = serde_json::to_string(&before).unwrap_or_default();
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "UPDATE",
+        "employee",
+        Some(&id.to_string()),
+        Some(&before_json),
+        Some(&after),
+        Some(&format!("Karyawan {} diperbarui", before.employee_number)),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn delete_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: i64,
+) -> Result<(), String> {
+    let before = detail_sea(db, id)
+        .await?
+        .ok_or("Karyawan tidak ditemukan.".to_string())?;
+    exec(
+        db,
+        "UPDATE employees SET deleted_at = datetime('now','localtime') WHERE id = ?1".to_string(),
+        vec![Value::from(id)],
+        "menghapus karyawan",
+    )
+    .await?;
+    let before_json = serde_json::to_string(&before).unwrap_or_default();
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "DELETE",
+        "employee",
+        Some(&id.to_string()),
+        Some(&before_json),
+        None,
+        Some(&format!("Karyawan {} dihapus", before.employee_number)),
+    )
+    .await?;
     Ok(())
 }
 
@@ -2686,5 +3292,56 @@ mod tests {
         ] {
             assert!(slugs.contains(&s.to_string()), "kurang {s}");
         }
+    }
+
+    #[tokio::test]
+    async fn profil_sea_paritas_dengan_sync() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files = tempfile::tempdir().expect("files");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("init_state");
+        let conn = state.db.get().expect("get");
+        let input = base_input(&conn);
+        let actor_id = actor(&conn);
+        let id =
+            create_sea(&state.sea, files.path(), actor_id, &input, None).await.expect("create_sea") as i64;
+        let a = detail(&conn, id).expect("detail").expect("ada");
+        let b = detail_sea(&state.sea, id)
+            .await
+            .expect("detail_sea")
+            .expect("ada");
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap()
+        );
+        let f = EmployeeFilter::default();
+        let la = list(&conn, "bud", &f, 1, 20).expect("list");
+        let lb = list_sea(&state.sea, "bud", &f, 1, 20)
+            .await
+            .expect("list_sea");
+        assert_eq!(
+            serde_json::to_string(&la).unwrap(),
+            serde_json::to_string(&lb).unwrap()
+        );
+        drop(conn);
+        let d = dropdowns_sea(&state.sea).await.expect("dropdowns");
+        assert!(!d.companies.is_empty());
+        assert!(!d.employees.is_empty());
+        let mut upd = input.clone();
+        upd.last_name = Some("Santoso".to_string());
+        update_sea(&state.sea, files.path(), actor_id, id, &upd, None, None)
+            .await
+            .expect("update_sea");
+        let b2 = detail_sea(&state.sea, id)
+            .await
+            .expect("detail2")
+            .expect("ada");
+        assert_eq!(b2.last_name.as_deref(), Some("Santoso"));
+        delete_sea(&state.sea, actor_id, id)
+            .await
+            .expect("delete_sea");
+        assert!(detail_sea(&state.sea, id)
+            .await
+            .expect("detail3")
+            .is_none());
     }
 }

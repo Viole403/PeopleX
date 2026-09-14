@@ -645,9 +645,8 @@ async fn employee_list(
     page: i32,
     per_page: i32,
 ) -> Result<services::employees::EmployeePage, String> {
-    let conn = pooled(&state)?;
     require(&state, &["employee.view", "system.manage"]).await?;
-    services::employees::list(&conn, &search, &filters, page, per_page)
+    services::employees::list_sea(&state.sea, &search, &filters, page, per_page).await
 }
 
 #[tauri::command]
@@ -656,9 +655,8 @@ async fn employee_detail(
     state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::employees::EmployeeDetail>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["employee.view", "system.manage"]).await?;
-    services::employees::detail(&conn, id as i64)
+    services::employees::detail_sea(&state.sea, id as i64).await
 }
 
 #[tauri::command]
@@ -666,9 +664,8 @@ async fn employee_detail(
 async fn employee_dropdowns(
     state: tauri::State<'_, AppState>,
 ) -> Result<services::employees::Dropdowns, String> {
-    let conn = pooled(&state)?;
     require(&state, &["employee.view", "system.manage"]).await?;
-    services::employees::dropdowns(&conn)
+    services::employees::dropdowns_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -678,10 +675,9 @@ async fn employee_create(
     input: services::employees::EmployeeInput,
     photo: Option<services::employees::FileUpload>,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["employee.create", "system.manage"]).await?;
     let dir = files_dir(&state);
-    services::employees::create(&conn, &dir, uid, &input, photo.as_ref())
+    services::employees::create_sea(&state.sea, &dir, uid, &input, photo.as_ref()).await
 }
 
 #[tauri::command]
@@ -693,11 +689,10 @@ async fn employee_update(
     resign_date: Option<String>,
     photo: Option<services::employees::FileUpload>,
 ) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["employee.update", "system.manage"]).await?;
     let dir = files_dir(&state);
-    services::employees::update(
-        &conn,
+    services::employees::update_sea(
+        &state.sea,
         &dir,
         uid,
         id as i64,
@@ -705,14 +700,14 @@ async fn employee_update(
         resign_date.as_deref(),
         photo.as_ref(),
     )
+    .await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn employee_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["employee.delete", "system.manage"]).await?;
-    services::employees::delete(&conn, uid, id as i64)
+    services::employees::delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
