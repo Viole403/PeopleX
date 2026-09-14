@@ -25,3 +25,4 @@ pub mod settings;
 pub mod training;
 pub mod travel;
 pub mod workflows;
+pub mod sea_raw;
