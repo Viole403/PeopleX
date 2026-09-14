@@ -4,7 +4,6 @@ pub mod entities;
 pub mod seed;
 pub mod services;
 
-use rusqlite::OptionalExtension;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::Manager;
@@ -1411,9 +1410,8 @@ async fn permission_decide(
 async fn payroll_periods(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::payroll::Period>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["payroll.view", "system.manage"]).await?;
-    services::payroll::period_list(&conn)
+    services::payroll::period_list_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -1422,9 +1420,8 @@ async fn payroll_period_create(
     state: tauri::State<'_, AppState>,
     input: services::payroll::PeriodInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["payroll.create", "system.manage"]).await?;
-    services::payroll::period_create(&conn, uid, uid, &input)
+    services::payroll::period_create_sea(&state.sea, uid, uid, &input).await
 }
 
 #[tauri::command]
@@ -1433,9 +1430,8 @@ async fn payroll_rows(
     state: tauri::State<'_, AppState>,
     period_id: i32,
 ) -> Result<Vec<services::payroll::PayrollRow>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["payroll.view", "system.manage"]).await?;
-    services::payroll::payrolls_for_period(&conn, period_id as i64)
+    services::payroll::payrolls_for_period_sea(&state.sea, period_id as i64).await
 }
 
 #[tauri::command]
@@ -1444,41 +1440,36 @@ async fn payroll_detail(
     state: tauri::State<'_, AppState>,
     id: i32,
 ) -> Result<Option<services::payroll::PayrollDetail>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["payroll.view", "system.manage"]).await?;
-    services::payroll::payroll_detail(&conn, id as i64)
+    services::payroll::payroll_detail_sea(&state.sea, id as i64).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn payroll_generate(state: tauri::State<'_, AppState>, period_id: i32) -> Result<(), String> {
-    let mut conn = pooled(&state)?;
     let (uid, _) = require(&state, &["payroll.generate", "system.manage"]).await?;
-    services::payroll::generate(&mut conn, uid, period_id as i64)
+    services::payroll::generate_sea(&state.sea, uid, period_id as i64).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn payroll_approve(state: tauri::State<'_, AppState>, period_id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["payroll.approve", "system.manage"]).await?;
-    services::payroll::approve_period(&conn, uid, period_id as i64)
+    services::payroll::approve_period_sea(&state.sea, uid, period_id as i64).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn payroll_pay(state: tauri::State<'_, AppState>, period_id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["payroll.approve", "system.manage"]).await?;
-    services::payroll::mark_paid(&conn, uid, period_id as i64)
+    services::payroll::mark_paid_sea(&state.sea, uid, period_id as i64).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn payroll_lock(state: tauri::State<'_, AppState>, period_id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["payroll.approve", "system.manage"]).await?;
-    services::payroll::lock_period(&conn, uid, period_id as i64)
+    services::payroll::lock_period_sea(&state.sea, uid, period_id as i64).await
 }
 
 #[tauri::command]
@@ -1486,9 +1477,8 @@ async fn payroll_lock(state: tauri::State<'_, AppState>, period_id: i32) -> Resu
 async fn payroll_my_slips(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::payroll::PayslipInfo>, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = current_actor(&state).await?;
-    services::payroll::my_payslips(&conn, my_employee(&conn, uid)?)
+    services::payroll::my_payslips_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
 }
 
 #[tauri::command]
@@ -1497,10 +1487,9 @@ async fn payroll_payslip_render(
     state: tauri::State<'_, AppState>,
     payroll_id: i32,
 ) -> Result<String, String> {
-    let conn = pooled(&state)?;
     require(&state, &["payroll.view", "system.manage"]).await?;
     let dir = files_dir(&state);
-    services::payslip::render(&conn, &dir, payroll_id as i64)
+    services::payslip::render_sea(&state.sea, &dir, payroll_id as i64).await
 }
 
 #[tauri::command]
@@ -1509,23 +1498,26 @@ async fn payroll_payslip_file(
     state: tauri::State<'_, AppState>,
     payroll_id: i32,
 ) -> Result<services::payslip::PayslipFile, String> {
-    let conn = pooled(&state)?;
     let (uid, user) = current_actor(&state).await?;
-    let owner: Option<i64> = conn
-        .query_row(
-            "SELECT p.employee_id FROM payrolls p WHERE p.id = ?1",
-            rusqlite::params![payroll_id as i64],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("gagal memuat payroll: {e}"))?;
-    let mine = my_employee(&conn, uid).ok();
+    let owner_row = services::sea_raw::q_one(
+        &state.sea,
+        "SELECT p.employee_id FROM payrolls p WHERE p.id = ?1".to_string(),
+        vec![services::sea_raw::Value::Int(payroll_id as i64)],
+        1,
+        "lib.payslipowner",
+    )
+    .await
+    .map_err(|e| format!("gagal memuat payroll: {e}"))?;
+    let owner = owner_row
+        .as_ref()
+        .and_then(|r| services::sea_raw::value_i64(&r[0]));
+    let mine = my_employee_sea(&state.sea, uid).await.ok();
     let allowed = privileged(&user, "payroll.view") || (mine.is_some() && owner == mine);
     if !allowed {
         return Err("Akses ditolak.".to_string());
     }
     let dir = files_dir(&state);
-    services::payslip::read_file(&conn, &dir, payroll_id as i64)
+    services::payslip::read_file_sea(&state.sea, &dir, payroll_id as i64).await
 }
 
 #[tauri::command]
@@ -1533,9 +1525,8 @@ async fn payroll_payslip_file(
 async fn payroll_components(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::payroll::Component>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["payroll.view", "system.manage"]).await?;
-    services::payroll::component_list(&conn)
+    services::payroll::component_list_sea(&state.sea).await
 }
 
 #[tauri::command]
@@ -1545,19 +1536,17 @@ async fn payroll_component_save(
     id: Option<i32>,
     input: services::payroll::ComponentInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["payroll.create", "payroll.update", "system.manage"],
     ).await?;
-    services::payroll::component_save(&conn, uid, id.map(|v| v as i64), &input)
+    services::payroll::component_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn payroll_component_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["payroll.delete", "system.manage"]).await?;
-    services::payroll::component_delete(&conn, uid, id as i64)
+    services::payroll::component_delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]
@@ -1566,9 +1555,8 @@ async fn payroll_deductions(
     state: tauri::State<'_, AppState>,
     pending_only: bool,
 ) -> Result<Vec<services::payroll::Deduction>, String> {
-    let conn = pooled(&state)?;
     require(&state, &["payroll.view", "system.manage"]).await?;
-    services::payroll::deduction_list(&conn, pending_only)
+    services::payroll::deduction_list_sea(&state.sea, pending_only).await
 }
 
 #[tauri::command]
@@ -1578,19 +1566,17 @@ async fn payroll_deduction_save(
     id: Option<i32>,
     input: services::payroll::DeductionInput,
 ) -> Result<i32, String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state,
         &["payroll.create", "payroll.update", "system.manage"],
     ).await?;
-    services::payroll::deduction_save(&conn, uid, id.map(|v| v as i64), &input)
+    services::payroll::deduction_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn payroll_deduction_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
-    let conn = pooled(&state)?;
     let (uid, _) = require(&state, &["payroll.delete", "system.manage"]).await?;
-    services::payroll::deduction_delete(&conn, uid, id as i64)
+    services::payroll::deduction_delete_sea(&state.sea, uid, id as i64).await
 }
 
 #[tauri::command]

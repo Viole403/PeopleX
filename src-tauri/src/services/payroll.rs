@@ -1287,6 +1287,1386 @@ pub fn deduction_delete(conn: &Connection, actor_id: i64, id: i64) -> Result<(),
     Ok(())
 }
 
+// ---------------- Varian SeaORM ----------------
+
+use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
+use sea_orm::sqlx::AssertSqlSafe;
+
+fn pf64(v: &Value) -> f64 {
+    match v {
+        Value::Float(f) => *f,
+        Value::Int(i) => *i as f64,
+        Value::Text(s) => s.parse().unwrap_or(0.0),
+        Value::Null => 0.0,
+    }
+}
+
+fn popt_text(v: &Value) -> Option<String> {
+    match v {
+        Value::Null => None,
+        _ => Some(value_to_string(v)),
+    }
+}
+
+async fn prow_id(db: &sea_orm::DatabaseConnection, label: &str) -> Result<i64, String> {
+    let row = q_one(
+        db,
+        "SELECT last_insert_rowid()".to_string(),
+        vec![],
+        1,
+        label,
+    )
+    .await
+    .map_err(|e| format!("gagal membaca id baru: {e}"))?;
+    Ok(row.as_ref().and_then(|r| value_i64(&r[0])).unwrap_or(0))
+}
+
+// Transaksi generate memakai sqlx langsung agar atomic penuh.
+type Tx<'a> = sea_orm::sqlx::Transaction<'a, sea_orm::sqlx::Sqlite>;
+
+fn tx_cell(row: &sea_orm::sqlx::sqlite::SqliteRow, i: usize) -> Value {
+    use sea_orm::sqlx::Row;
+    if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(i) {
+        return Value::Int(v);
+    }
+    if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(i) {
+        return Value::Float(v);
+    }
+    if let Ok(Some(v)) = row.try_get::<Option<String>, _>(i) {
+        return Value::Text(v);
+    }
+    Value::Null
+}
+
+async fn tx_q_all(
+    tx: &mut Tx<'_>,
+    sql: String,
+    vals: Vec<Value>,
+    ncols: usize,
+    label: &str,
+) -> Result<Vec<Vec<Value>>, String> {
+    let mut q = sea_orm::sqlx::query(AssertSqlSafe(sql));
+    for v in vals {
+        q = match v {
+            Value::Null => q.bind(None::<String>),
+            Value::Int(i) => q.bind(i),
+            Value::Float(f) => q.bind(f),
+            Value::Text(s) => q.bind(s),
+        };
+    }
+    let rows = q
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| format!("gagal {label}: {e}"))?;
+    let mut out = Vec::new();
+    for r in rows {
+        let mut v = Vec::with_capacity(ncols);
+        for i in 0..ncols {
+            v.push(tx_cell(&r, i));
+        }
+        out.push(v);
+    }
+    Ok(out)
+}
+
+async fn tx_q_one(
+    tx: &mut Tx<'_>,
+    sql: String,
+    vals: Vec<Value>,
+    ncols: usize,
+    label: &str,
+) -> Result<Option<Vec<Value>>, String> {
+    let mut rows = tx_q_all(tx, sql, vals, ncols, label).await?;
+    Ok(rows.pop())
+}
+
+async fn tx_exec(
+    tx: &mut Tx<'_>,
+    sql: String,
+    vals: Vec<Value>,
+    label: &str,
+) -> Result<u64, String> {
+    let mut q = sea_orm::sqlx::query(AssertSqlSafe(sql));
+    for v in vals {
+        q = match v {
+            Value::Null => q.bind(None::<String>),
+            Value::Int(i) => q.bind(i),
+            Value::Float(f) => q.bind(f),
+            Value::Text(s) => q.bind(s),
+        };
+    }
+    q.execute(&mut **tx)
+        .await
+        .map_err(|e| format!("gagal {label}: {e}"))
+        .map(|r| r.rows_affected())
+}
+
+async fn tx_rowid(tx: &mut Tx<'_>) -> i64 {
+    tx_q_one(tx, "SELECT last_insert_rowid()".to_string(), vec![], 1, "payroll.rowid")
+        .await
+        .ok()
+        .flatten()
+        .as_ref()
+        .and_then(|r| value_i64(&r[0]))
+        .unwrap_or(0)
+}
+
+async fn overtime_amount_tx(
+    tx: &mut Tx<'_>,
+    employee_id: i64,
+    start: &str,
+    end: &str,
+    basic: f64,
+) -> Result<f64, String> {
+    let rows = tx_q_all(
+        tx,
+        "SELECT duration_minutes, rate_multiplier FROM overtime_requests WHERE employee_id = ?1 AND status = 'approved' AND date BETWEEN ?2 AND ?3".to_string(),
+        vec![
+            Value::Int(employee_id),
+            Value::Text(start.to_string()),
+            Value::Text(end.to_string()),
+        ],
+        2,
+        "payroll.overtime",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca lembur: {e}"))?;
+    let hourly = basic / 173.0;
+    let mut total = 0.0;
+    for r in &rows {
+        let (mins, mult) = (value_i64(&r[0]).unwrap_or(0), pf64(&r[1]));
+        total += hourly * mult * (mins as f64 / 60.0);
+    }
+    Ok(total.round())
+}
+
+async fn absence_deduction_tx(
+    tx: &mut Tx<'_>,
+    employee_id: i64,
+    start: &str,
+    end: &str,
+    basic: f64,
+) -> Result<f64, String> {
+    let row = tx_q_one(
+        tx,
+        "SELECT COUNT(*) FROM attendances WHERE employee_id = ?1 AND status = 'absent' AND date BETWEEN ?2 AND ?3".to_string(),
+        vec![
+            Value::Int(employee_id),
+            Value::Text(start.to_string()),
+            Value::Text(end.to_string()),
+        ],
+        1,
+        "payroll.absent",
+    )
+    .await
+    .map_err(|e| format!("gagal menghitung absen: {e}"))?;
+    let n = row.as_ref().and_then(|r| value_i64(&r[0])).unwrap_or(0);
+    if n == 0 {
+        return Ok(0.0);
+    }
+    Ok(((basic / 22.0) * n as f64).round())
+}
+
+async fn setting_tx(tx: &mut Tx<'_>, key: &str) -> Option<String> {
+    tx_q_one(
+        tx,
+        "SELECT setting_value FROM system_settings WHERE setting_key = ?1".to_string(),
+        vec![Value::Text(key.to_string())],
+        1,
+        "payroll.setting",
+    )
+    .await
+    .ok()
+    .flatten()
+    .as_ref()
+    .and_then(|r| popt_text(&r[0]))
+}
+
+async fn thr_for_period_tx(
+    tx: &mut Tx<'_>,
+    basic: f64,
+    join_date: &str,
+    pstart: &str,
+    pend: &str,
+) -> Result<f64, String> {
+    let h = setting_tx(tx, "thr_holiday_date")
+        .await
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let Some(h) = h else {
+        return Ok(0.0);
+    };
+    if h.as_str() < pstart || h.as_str() > pend {
+        return Ok(0.0);
+    }
+    let (Ok(j), Ok(hd)) = (
+        NaiveDate::parse_from_str(join_date.trim(), "%Y-%m-%d"),
+        NaiveDate::parse_from_str(&h, "%Y-%m-%d"),
+    ) else {
+        return Ok(0.0);
+    };
+    if hd < j {
+        return Ok(0.0);
+    }
+    let months =
+        ((hd.year() * 12 + hd.month() as i32) - (j.year() * 12 + j.month() as i32)).clamp(0, 12);
+    if months <= 0 {
+        return Ok(0.0);
+    }
+    Ok((basic * months as f64 / 12.0).round())
+}
+
+async fn capped_base_tx(tx: &mut Tx<'_>, basic: f64, key: &str) -> Result<f64, String> {
+    let cap = setting_tx(tx, key)
+        .await
+        .and_then(|v| v.parse::<f64>().ok());
+    Ok(match cap {
+        Some(m) if m > 0.0 => basic.min(m),
+        _ => basic,
+    })
+}
+
+async fn save_lines_tx(
+    tx: &mut Tx<'_>,
+    payroll_id: i64,
+    period_id: i64,
+    lines: &[MoneyLine],
+    line_type: &str,
+) -> Result<(), String> {
+    for line in lines {
+        tx_exec(
+            tx,
+            "INSERT INTO payroll_details (payroll_id, salary_component_id, component_name, type, amount) VALUES (?1, ?2, ?3, ?4, ?5)".to_string(),
+            vec![
+                Value::Int(payroll_id),
+                match line.component_id {
+                    Some(c) => Value::Int(c),
+                    None => Value::Null,
+                },
+                Value::Text(line.name.clone()),
+                Value::Text(line_type.to_string()),
+                Value::Float(line.amount),
+            ],
+            "payroll.saveline",
+        )
+        .await
+        .map_err(|e| format!("gagal menyimpan rincian: {e}"))?;
+        if let Some(lid) = line.loan_id {
+            tx_exec(
+                tx,
+                "UPDATE payroll_deductions SET status = 'processed', payroll_period_id = ?1 WHERE id = ?2".to_string(),
+                vec![Value::Int(period_id), Value::Int(lid)],
+                "payroll.loanproc",
+            )
+            .await
+            .map_err(|e| format!("gagal memproses kasbon: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+async fn generate_one_tx(
+    tx: &mut Tx<'_>,
+    employee_id: i64,
+    period_id: i64,
+    pstart: &str,
+    pend: &str,
+    health_pct: f64,
+    emp_pct: f64,
+    jp_pct: f64,
+) -> Result<(), String> {
+    let salary = tx_q_one(
+        tx,
+        "SELECT id, basic_salary FROM employee_salaries WHERE employee_id = ?1 AND is_active = 1 AND effective_date <= ?2 ORDER BY effective_date DESC LIMIT 1".to_string(),
+        vec![
+            Value::Int(employee_id),
+            Value::Text(pend.to_string()),
+        ],
+        2,
+        "payroll.salary",
+    )
+    .await
+    .map_err(|e| format!("gagal memuat gaji: {e}"))?;
+    let Some(salary) = salary else {
+        return Ok(());
+    };
+    let (salary_id, basic) = (value_i64(&salary[0]).unwrap_or(0), pf64(&salary[1]));
+    let ptkp_row = tx_q_one(
+        tx,
+        "SELECT ptkp_status FROM employees WHERE id = ?1".to_string(),
+        vec![Value::Int(employee_id)],
+        1,
+        "payroll.ptkp",
+    )
+    .await
+    .map_err(|e| format!("gagal memuat PTKP: {e}"))?;
+    let ptkp = ptkp_row.as_ref().and_then(|r| popt_text(&r[0]));
+    let join_row = tx_q_one(
+        tx,
+        "SELECT join_date FROM employees WHERE id = ?1".to_string(),
+        vec![Value::Int(employee_id)],
+        1,
+        "payroll.join",
+    )
+    .await
+    .map_err(|e| format!("gagal memuat tanggal masuk: {e}"))?;
+    let join_date = join_row
+        .as_ref()
+        .and_then(|r| popt_text(&r[0]))
+        .unwrap_or_default();
+    let mut incomes = vec![MoneyLine {
+        name: "Gaji Pokok".to_string(),
+        component_id: None,
+        amount: basic,
+        loan_id: None,
+    }];
+    let mut taxable_extra = 0.0;
+    let comps = tx_q_all(
+        tx,
+        "SELECT esc.salary_component_id, sc.name, sc.is_taxable, esc.amount FROM employee_salary_components esc INNER JOIN salary_components sc ON sc.id = esc.salary_component_id WHERE esc.employee_salary_id = ?1 AND sc.type = 'income' AND sc.is_active = 1".to_string(),
+        vec![Value::Int(salary_id)],
+        4,
+        "payroll.comps",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca komponen: {e}"))?;
+    for r in &comps {
+        let (cid, name, taxable, amount) = (
+            value_i64(&r[0]).unwrap_or(0),
+            value_to_string(&r[1]),
+            value_i64(&r[2]).unwrap_or(0),
+            pf64(&r[3]),
+        );
+        incomes.push(MoneyLine {
+            name,
+            component_id: Some(cid),
+            amount,
+            loan_id: None,
+        });
+        if taxable != 0 {
+            taxable_extra += amount;
+        }
+    }
+    let mut deductions: Vec<MoneyLine> = Vec::new();
+    let ot = overtime_amount_tx(tx, employee_id, pstart, pend, basic).await?;
+    if ot > 0.0 {
+        incomes.push(MoneyLine {
+            name: "Lembur".to_string(),
+            component_id: None,
+            amount: ot,
+            loan_id: None,
+        });
+    }
+    let thr = thr_for_period_tx(tx, basic, &join_date, pstart, pend).await?;
+    if thr > 0.0 {
+        incomes.push(MoneyLine {
+            name: "THR".to_string(),
+            component_id: None,
+            amount: thr,
+            loan_id: None,
+        });
+        taxable_extra += thr;
+    }
+    let absence = absence_deduction_tx(tx, employee_id, pstart, pend, basic).await?;
+    if absence > 0.0 {
+        deductions.push(MoneyLine {
+            name: "Potongan Absensi".to_string(),
+            component_id: None,
+            amount: absence,
+            loan_id: None,
+        });
+    }
+    let bpjs_h = (capped_base_tx(tx, basic, "bpjs_health_max_wage").await? * health_pct).round();
+    let bpjs_e = (capped_base_tx(tx, basic, "bpjs_jht_max_wage").await? * emp_pct).round();
+    let bpjs_jp = (capped_base_tx(tx, basic, "bpjs_jp_max_wage").await? * jp_pct).round();
+    if bpjs_h > 0.0 {
+        deductions.push(MoneyLine {
+            name: "BPJS Kesehatan".to_string(),
+            component_id: None,
+            amount: bpjs_h,
+            loan_id: None,
+        });
+    }
+    if bpjs_e > 0.0 {
+        deductions.push(MoneyLine {
+            name: "BPJS Jaminan Hari Tua".to_string(),
+            component_id: None,
+            amount: bpjs_e,
+            loan_id: None,
+        });
+    }
+    if bpjs_jp > 0.0 {
+        deductions.push(MoneyLine {
+            name: "BPJS Jaminan Pensiun".to_string(),
+            component_id: None,
+            amount: bpjs_jp,
+            loan_id: None,
+        });
+    }
+    let pph = pph21_monthly(basic + taxable_extra + ot, ptkp.as_deref().unwrap_or("TK/0"));
+    if pph > 0.0 {
+        deductions.push(MoneyLine {
+            name: "PPh 21 (estimasi)".to_string(),
+            component_id: None,
+            amount: pph,
+            loan_id: None,
+        });
+    }
+    let loan_rows = tx_q_all(
+        tx,
+        "SELECT id, description, amount, installment_no, total_installments FROM payroll_deductions WHERE employee_id = ?1 AND status = 'pending' AND (payroll_period_id IS NULL OR payroll_period_id = ?2)".to_string(),
+        vec![Value::Int(employee_id), Value::Int(period_id)],
+        5,
+        "payroll.loans",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca kasbon: {e}"))?;
+    for r in &loan_rows {
+        let (lid, desc, amount, ino, total) = (
+            value_i64(&r[0]).unwrap_or(0),
+            value_to_string(&r[1]),
+            pf64(&r[2]),
+            value_i64(&r[3]),
+            value_i64(&r[4]),
+        );
+        let final_now = match (ino, total) {
+            (Some(n), Some(t)) if n < t => {
+                tx_exec(
+                    tx,
+                    "UPDATE payroll_deductions SET installment_no = ?1 WHERE id = ?2".to_string(),
+                    vec![Value::Int(n + 1), Value::Int(lid)],
+                    "payroll.loanadv",
+                )
+                .await
+                .map_err(|e| format!("gagal maju cicilan: {e}"))?;
+                false
+            }
+            _ => true,
+        };
+        deductions.push(MoneyLine {
+            name: desc,
+            component_id: None,
+            amount,
+            loan_id: if final_now { Some(lid) } else { None },
+        });
+    }
+    let total_income: f64 = incomes.iter().map(|l| l.amount).sum();
+    let total_deduction: f64 = deductions.iter().map(|l| l.amount).sum();
+    let existing = tx_q_one(
+        tx,
+        "SELECT id FROM payrolls WHERE payroll_period_id = ?1 AND employee_id = ?2".to_string(),
+        vec![Value::Int(period_id), Value::Int(employee_id)],
+        1,
+        "payroll.existing",
+    )
+    .await
+    .map_err(|e| format!("gagal memeriksa payroll: {e}"))?;
+    let payroll_id = match existing {
+        Some(e) => {
+            let pid = value_i64(&e[0]).unwrap_or(0);
+            tx_exec(
+                tx,
+                "UPDATE payrolls SET basic_salary = ?1, total_income = ?2, gross_salary = ?3, total_deduction = ?4, net_salary = ?5, total_overtime_amount = ?6, status = 'review' WHERE id = ?7".to_string(),
+                vec![
+                    Value::Float(basic),
+                    Value::Float(total_income),
+                    Value::Float(total_income),
+                    Value::Float(total_deduction),
+                    Value::Float(total_income - total_deduction),
+                    Value::Float(ot),
+                    Value::Int(pid),
+                ],
+                "payroll.upd",
+            )
+            .await
+            .map_err(|e| format!("gagal memperbarui payroll: {e}"))?;
+            tx_exec(
+                tx,
+                "DELETE FROM payroll_details WHERE payroll_id = ?1".to_string(),
+                vec![Value::Int(pid)],
+                "payroll.resetlines",
+            )
+            .await
+            .map_err(|e| format!("gagal mereset rincian: {e}"))?;
+            pid
+        }
+        None => {
+            tx_exec(
+                tx,
+                "INSERT INTO payrolls (payroll_period_id, employee_id, basic_salary, total_income, gross_salary, total_deduction, net_salary, total_overtime_amount, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'review')".to_string(),
+                vec![
+                    Value::Int(period_id),
+                    Value::Int(employee_id),
+                    Value::Float(basic),
+                    Value::Float(total_income),
+                    Value::Float(total_income),
+                    Value::Float(total_deduction),
+                    Value::Float(total_income - total_deduction),
+                    Value::Float(ot),
+                ],
+                "payroll.add",
+            )
+            .await
+            .map_err(|e| format!("gagal membuat payroll: {e}"))?;
+            tx_rowid(tx).await
+        }
+    };
+    save_lines_tx(tx, payroll_id, period_id, &incomes, "income").await?;
+    save_lines_tx(tx, payroll_id, period_id, &deductions, "deduction").await?;
+    Ok(())
+}
+
+/// Generate: hitung seluruh karyawan aktif dalam satu transaksi, lalu review.
+pub async fn generate_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    period_id: i64,
+) -> Result<(), String> {
+    if period_status_sea(db, period_id).await? != "draft" {
+        return Err("Generate hanya untuk periode draft.".to_string());
+    }
+    let prow = q_one(
+        db,
+        "SELECT name, start_date, end_date FROM payroll_periods WHERE id = ?1".to_string(),
+        vec![Value::Int(period_id)],
+        3,
+        "payroll.period",
+    )
+    .await
+    .map_err(|e| format!("gagal memuat periode: {e}"))?;
+    let Some(prow) = prow else {
+        return Err("gagal memuat periode: periode tidak ditemukan".to_string());
+    };
+    let (pname, pstart, pend) = (
+        value_to_string(&prow[0]),
+        value_to_string(&prow[1]),
+        value_to_string(&prow[2]),
+    );
+    let health_pct = setting_pct_sea(db, "bpjs_health_employee_percent", 1.0).await / 100.0;
+    let emp_pct = setting_pct_sea(db, "bpjs_employment_employee_percent", 2.0).await / 100.0;
+    let jp_pct = setting_pct_sea(db, "bpjs_jp_employee_percent", 1.0).await / 100.0;
+    let pool = db.get_sqlite_connection_pool();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("gagal memulai transaksi: {e}"))?;
+    let ids = tx_q_all(
+        &mut tx,
+        "SELECT id FROM employees WHERE deleted_at IS NULL AND employment_status IN ('active','probation')".to_string(),
+        vec![],
+        1,
+        "payroll.emps",
+    )
+    .await;
+    let ids = match ids {
+        Ok(v) => v,
+        Err(e) => {
+            tx.rollback().await.ok();
+            return Err(format!("gagal membaca karyawan: {e}"));
+        }
+    };
+    let mut failed: Option<String> = None;
+    for r in &ids {
+        let eid = value_i64(&r[0]).unwrap_or(0);
+        if let Err(e) =
+            generate_one_tx(&mut tx, eid, period_id, &pstart, &pend, health_pct, emp_pct, jp_pct)
+                .await
+        {
+            failed = Some(e);
+            break;
+        }
+    }
+    if let Some(e) = failed {
+        tx.rollback().await.ok();
+        return Err(e);
+    }
+    if let Err(e) = tx_exec(
+        &mut tx,
+        "UPDATE payroll_periods SET status = 'review' WHERE id = ?1".to_string(),
+        vec![Value::Int(period_id)],
+        "payroll.toreview",
+    )
+    .await
+    {
+        tx.rollback().await.ok();
+        return Err(format!("gagal menandai review: {e}"));
+    }
+    tx.commit()
+        .await
+        .map_err(|e| format!("gagal commit generate: {e}"))?;
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "GENERATE",
+        "payroll.period",
+        Some(&period_id.to_string()),
+        None,
+        None,
+        Some(&format!("Generate periode {pname}")),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn setting_pct_sea(db: &sea_orm::DatabaseConnection, key: &str, fallback: f64) -> f64 {
+    q_one(
+        db,
+        "SELECT setting_value FROM system_settings WHERE setting_key = ?1".to_string(),
+        vec![Value::Text(key.to_string())],
+        1,
+        "payroll.setting",
+    )
+    .await
+    .ok()
+    .flatten()
+    .as_ref()
+    .and_then(|r| popt_text(&r[0]))
+    .and_then(|v| v.parse::<f64>().ok())
+    .unwrap_or(fallback)
+}
+
+pub async fn component_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Component>, String> {
+    let rows = q_all(
+        db,
+        "SELECT id, code, name, type, calculation_type, is_taxable, is_active FROM salary_components ORDER BY type ASC, name ASC".to_string(),
+        vec![],
+        7,
+        "payroll.components",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca komponen: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(Component {
+            id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "component.id")?,
+            code: value_to_string(&r[1]),
+            name: value_to_string(&r[2]),
+            component_type: value_to_string(&r[3]),
+            calculation_type: value_to_string(&r[4]),
+            is_taxable: value_i64(&r[5]).unwrap_or(0) != 0,
+            is_active: value_i64(&r[6]).unwrap_or(0) != 0,
+        });
+    }
+    Ok(out)
+}
+
+pub async fn component_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: Option<i64>,
+    input: &ComponentInput,
+) -> Result<i32, String> {
+    if input.code.trim().is_empty() || input.name.trim().is_empty() {
+        return Err("Kode dan nama komponen wajib diisi.".to_string());
+    }
+    if input.code.len() > 30 {
+        return Err("Kode maksimal 30 karakter.".to_string());
+    }
+    if !["income", "deduction"].contains(&input.component_type.as_str()) {
+        return Err("Jenis komponen tidak valid.".to_string());
+    }
+    if !["fixed", "percentage", "formula"].contains(&input.calculation_type.as_str()) {
+        return Err("Tipe perhitungan tidak valid.".to_string());
+    }
+    let tax = if input.is_taxable { 1 } else { 0 };
+    let active = if input.is_active { 1 } else { 0 };
+    if let Some(rid) = id {
+        let n = exec(
+            db,
+            "UPDATE salary_components SET code = ?1, name = ?2, type = ?3, calculation_type = ?4, is_taxable = ?5, is_active = ?6 WHERE id = ?7".to_string(),
+            vec![
+                Value::Text(input.code.trim().to_string()),
+                Value::Text(input.name.trim().to_string()),
+                Value::Text(input.component_type.clone()),
+                Value::Text(input.calculation_type.clone()),
+                Value::Int(tax),
+                Value::Int(active),
+                Value::Int(rid),
+            ],
+            "payroll.compupd",
+        )
+        .await
+        .map_err(|e| format!("gagal menyimpan komponen: {e}"))?;
+        if n == 0 {
+            return Err("Komponen tidak ditemukan.".to_string());
+        }
+        audit::log_sea(
+            db,
+            Some(actor_id),
+            "UPDATE",
+            "payroll.component",
+            Some(&rid.to_string()),
+            None,
+            None,
+            None,
+        )
+        .await?;
+        to_dto_int(rid, "component.id")
+    } else {
+        let res = exec(
+            db,
+            "INSERT INTO salary_components (code, name, type, calculation_type, is_taxable, is_active) VALUES (?1, ?2, ?3, ?4, ?5, ?6)".to_string(),
+            vec![
+                Value::Text(input.code.trim().to_string()),
+                Value::Text(input.name.trim().to_string()),
+                Value::Text(input.component_type.clone()),
+                Value::Text(input.calculation_type.clone()),
+                Value::Int(tax),
+                Value::Int(active),
+            ],
+            "payroll.compadd",
+        )
+        .await;
+        let Err(e) = res else {
+            let rid = prow_id(db, "payroll.compadd").await?;
+            audit::log_sea(
+                db,
+                Some(actor_id),
+                "CREATE",
+                "payroll.component",
+                Some(&rid.to_string()),
+                None,
+                None,
+                None,
+            )
+            .await?;
+            return to_dto_int(rid, "component.id");
+        };
+        if e.contains("UNIQUE") {
+            return Err("Kode komponen sudah dipakai.".to_string());
+        }
+        return Err(format!("gagal menambah komponen: {e}"));
+    }
+}
+
+pub async fn component_delete_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: i64,
+) -> Result<(), String> {
+    let rel = q_one(
+        db,
+        "SELECT COUNT(*) FROM employee_salary_components WHERE salary_component_id = ?1".to_string(),
+        vec![Value::Int(id)],
+        1,
+        "payroll.comprel",
+    )
+    .await
+    .map_err(|e| format!("gagal memeriksa relasi: {e}"))?;
+    if rel.as_ref().and_then(|r| value_i64(&r[0])).unwrap_or(0) > 0 {
+        return Err("Komponen masih dipakai data gaji.".to_string());
+    }
+    let d = exec(
+        db,
+        "DELETE FROM salary_components WHERE id = ?1".to_string(),
+        vec![Value::Int(id)],
+        "payroll.compdel",
+    )
+    .await
+    .map_err(|e| format!("gagal menghapus komponen: {e}"))?;
+    if d == 0 {
+        return Err("Komponen tidak ditemukan.".to_string());
+    }
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "DELETE",
+        "payroll.component",
+        Some(&id.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn period_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Period>, String> {
+    let rows = q_all(
+        db,
+        "SELECT pp.id, pp.name, pp.start_date, pp.end_date, pp.payment_date, pp.status,
+                       (SELECT COUNT(*) FROM payrolls p WHERE p.payroll_period_id = pp.id),
+                       COALESCE((SELECT SUM(p.net_salary) FROM payrolls p WHERE p.payroll_period_id = pp.id), 0)
+                FROM payroll_periods pp ORDER BY pp.start_date DESC"
+            .to_string(),
+        vec![],
+        8,
+        "payroll.periods",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca periode: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        let (id, count) = (
+            value_i64(&r[0]).unwrap_or(0),
+            value_i64(&r[6]).unwrap_or(0),
+        );
+        out.push(Period {
+            id: to_dto_int(id, "period.id")?,
+            name: value_to_string(&r[1]),
+            start_date: value_to_string(&r[2]),
+            end_date: value_to_string(&r[3]),
+            payment_date: popt_text(&r[4]),
+            status: value_to_string(&r[5]),
+            employee_count: to_dto_int(count, "period.count")?,
+            total_net: pf64(&r[7]),
+        });
+    }
+    Ok(out)
+}
+
+pub async fn period_create_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    created_by: i64,
+    input: &PeriodInput,
+) -> Result<i32, String> {
+    if input.name.trim().is_empty() {
+        return Err("Nama periode wajib diisi.".to_string());
+    }
+    if input.name.len() > 100 {
+        return Err("Nama periode maksimal 100 karakter.".to_string());
+    }
+    NaiveDate::parse_from_str(input.start_date.trim(), "%Y-%m-%d")
+        .map_err(|_| "Tanggal mulai tidak valid.".to_string())?;
+    NaiveDate::parse_from_str(input.end_date.trim(), "%Y-%m-%d")
+        .map_err(|_| "Tanggal selesai tidak valid.".to_string())?;
+    if input.end_date.trim() < input.start_date.trim() {
+        return Err("Tanggal selesai sebelum tanggal mulai.".to_string());
+    }
+    if let Some(pay) = input
+        .payment_date
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        NaiveDate::parse_from_str(pay, "%Y-%m-%d")
+            .map_err(|_| "Tanggal bayar tidak valid.".to_string())?;
+    }
+    let overlap = q_one(
+        db,
+        "SELECT id FROM payroll_periods WHERE NOT (end_date < ?1 OR start_date > ?2)".to_string(),
+        vec![
+            Value::Text(input.start_date.trim().to_string()),
+            Value::Text(input.end_date.trim().to_string()),
+        ],
+        1,
+        "payroll.overlap",
+    )
+    .await
+    .map_err(|e| format!("gagal memeriksa tumpang tindih: {e}"))?;
+    if overlap.is_some() {
+        return Err("Periode bertabrakan dengan periode yang ada.".to_string());
+    }
+    exec(
+        db,
+        "INSERT INTO payroll_periods (name, start_date, end_date, payment_date, status, created_by) VALUES (?1, ?2, ?3, ?4, 'draft', ?5)".to_string(),
+        vec![
+            Value::Text(input.name.trim().to_string()),
+            Value::Text(input.start_date.trim().to_string()),
+            Value::Text(input.end_date.trim().to_string()),
+            match input.payment_date.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(s) => Value::Text(s.to_string()),
+                None => Value::Null,
+            },
+            Value::Int(created_by),
+        ],
+        "payroll.periodadd",
+    )
+    .await
+    .map_err(|e| format!("gagal membuat periode: {e}"))?;
+    let rid = prow_id(db, "payroll.periodadd").await?;
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "CREATE",
+        "payroll.period",
+        Some(&rid.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    to_dto_int(rid, "period.id")
+}
+
+async fn period_status_sea(db: &sea_orm::DatabaseConnection, id: i64) -> Result<String, String> {
+    let row = q_one(
+        db,
+        "SELECT status FROM payroll_periods WHERE id = ?1".to_string(),
+        vec![Value::Int(id)],
+        1,
+        "payroll.pstatus",
+    )
+    .await
+    .map_err(|e| format!("gagal memuat periode: {e}"))?;
+    row.as_ref()
+        .map(|r| value_to_string(&r[0]))
+        .filter(|s| !s.is_empty())
+        .ok_or("Periode tidak ditemukan.".to_string())
+}
+
+async fn set_period_status_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    action: &str,
+    period_id: i64,
+    expected: &str,
+    next: &str,
+    err_msg: &str,
+) -> Result<(), String> {
+    let before = period_status_sea(db, period_id).await?;
+    if before != expected {
+        return Err(err_msg.to_string());
+    }
+    exec(
+        db,
+        "UPDATE payroll_periods SET status = ?1 WHERE id = ?2".to_string(),
+        vec![Value::Text(next.to_string()), Value::Int(period_id)],
+        "payroll.setperiod",
+    )
+    .await
+    .map_err(|e| format!("gagal mengubah status periode: {e}"))?;
+    exec(
+        db,
+        "UPDATE payrolls SET status = ?1 WHERE payroll_period_id = ?2".to_string(),
+        vec![Value::Text(next.to_string()), Value::Int(period_id)],
+        "payroll.setrows",
+    )
+    .await
+    .map_err(|e| format!("gagal mengubah status payroll: {e}"))?;
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        action,
+        "payroll.period",
+        Some(&period_id.to_string()),
+        Some(&before),
+        Some(next),
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn approve_period_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    period_id: i64,
+) -> Result<(), String> {
+    set_period_status_sea(
+        db,
+        actor_id,
+        "APPROVE",
+        period_id,
+        "review",
+        "approved",
+        "Periode harus review untuk disetujui.",
+    )
+    .await?;
+    let rows = q_all(
+        db,
+        "SELECT u.id FROM payrolls p LEFT JOIN users u ON u.employee_id = p.employee_id WHERE p.payroll_period_id = ?1 AND u.id IS NOT NULL".to_string(),
+        vec![Value::Int(period_id)],
+        1,
+        "payroll.notifusers",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca user: {e}"))?;
+    for r in &rows {
+        let uid = value_i64(&r[0]).unwrap_or(0);
+        approval::notify_sea(
+            db,
+            uid,
+            "payroll",
+            "Slip Gaji Tersedia",
+            "Payroll periode telah disetujui.",
+            "/payroll",
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+pub async fn mark_paid_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    period_id: i64,
+) -> Result<(), String> {
+    set_period_status_sea(
+        db,
+        actor_id,
+        "PAY",
+        period_id,
+        "approved",
+        "paid",
+        "Periode harus approved untuk dibayar.",
+    )
+    .await?;
+    let rows = q_all(
+        db,
+        "SELECT id, employee_id FROM payrolls WHERE payroll_period_id = ?1".to_string(),
+        vec![Value::Int(period_id)],
+        2,
+        "payroll.slips",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca payroll: {e}"))?;
+    let now = Local::now();
+    for r in &rows {
+        let (pid, eid) = (value_i64(&r[0]).unwrap_or(0), value_i64(&r[1]).unwrap_or(0));
+        let exists = q_one(
+            db,
+            "SELECT id FROM payslips WHERE payroll_id = ?1".to_string(),
+            vec![Value::Int(pid)],
+            1,
+            "payroll.slipex",
+        )
+        .await
+        .map_err(|e| format!("gagal memeriksa slip: {e}"))?;
+        if exists.is_none() {
+            let number = format!("PS-{}-{:04}-{}", now.format("%Y%m"), eid, pid);
+            exec(
+                db,
+                "INSERT INTO payslips (payroll_id, payslip_number, generated_at) VALUES (?1, ?2, ?3)".to_string(),
+                vec![
+                    Value::Int(pid),
+                    Value::Text(number),
+                    Value::Text(now.format("%Y-%m-%d %H:%M:%S").to_string()),
+                ],
+                "payroll.slipadd",
+            )
+            .await
+            .map_err(|e| format!("gagal membuat slip: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+pub async fn lock_period_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    period_id: i64,
+) -> Result<(), String> {
+    set_period_status_sea(
+        db,
+        actor_id,
+        "LOCK",
+        period_id,
+        "paid",
+        "locked",
+        "Periode harus paid untuk dikunci.",
+    )
+    .await
+}
+
+pub async fn payrolls_for_period_sea(
+    db: &sea_orm::DatabaseConnection,
+    period_id: i64,
+) -> Result<Vec<PayrollRow>, String> {
+    let rows = q_all(
+        db,
+        "SELECT p.id, p.employee_id, e.employee_number, e.first_name || ' ' || COALESCE(e.last_name, ''), p.basic_salary, p.total_income, p.total_deduction, p.net_salary, p.status FROM payrolls p INNER JOIN employees e ON e.id = p.employee_id WHERE p.payroll_period_id = ?1 ORDER BY e.first_name".to_string(),
+        vec![Value::Int(period_id)],
+        9,
+        "payroll.rows",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca daftar: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(PayrollRow {
+            id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "payroll.id")?,
+            employee_id: to_dto_int(value_i64(&r[1]).unwrap_or(0), "payroll.emp")?,
+            employee_number: value_to_string(&r[2]),
+            name: value_to_string(&r[3]),
+            basic_salary: pf64(&r[4]),
+            total_income: pf64(&r[5]),
+            total_deduction: pf64(&r[6]),
+            net_salary: pf64(&r[7]),
+            status: value_to_string(&r[8]),
+        });
+    }
+    Ok(out)
+}
+
+pub async fn payroll_detail_sea(
+    db: &sea_orm::DatabaseConnection,
+    payroll_id: i64,
+) -> Result<Option<PayrollDetail>, String> {
+    let row = q_one(
+        db,
+        "SELECT p.id, p.employee_id, e.employee_number, e.first_name || ' ' || COALESCE(e.last_name, ''), d.name, ps.name, pp.name, pp.start_date, pp.end_date, p.basic_salary, p.total_income, p.total_deduction, p.net_salary, p.status
+             FROM payrolls p
+             INNER JOIN employees e ON e.id = p.employee_id
+             LEFT JOIN departments d ON d.id = e.department_id
+             LEFT JOIN positions ps ON ps.id = e.position_id
+             INNER JOIN payroll_periods pp ON pp.id = p.payroll_period_id
+             WHERE p.id = ?1"
+            .to_string(),
+        vec![Value::Int(payroll_id)],
+        14,
+        "payroll.detail",
+    )
+    .await
+    .map_err(|e| format!("gagal memuat payroll: {e}"))?;
+    let Some(r) = row else {
+        return Ok(None);
+    };
+    let lines_rows = q_all(
+        db,
+        "SELECT component_name, type, amount FROM payroll_details WHERE payroll_id = ?1 ORDER BY type DESC, id ASC".to_string(),
+        vec![Value::Int(payroll_id)],
+        3,
+        "payroll.lines",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca rincian: {e}"))?;
+    let mut lines = Vec::new();
+    for l in &lines_rows {
+        lines.push(PayrollLine {
+            component_name: value_to_string(&l[0]),
+            line_type: value_to_string(&l[1]),
+            amount: pf64(&l[2]),
+        });
+    }
+    Ok(Some(PayrollDetail {
+        id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "payroll.id")?,
+        employee_id: to_dto_int(value_i64(&r[1]).unwrap_or(0), "payroll.emp")?,
+        employee_number: value_to_string(&r[2]),
+        name: value_to_string(&r[3]),
+        department_name: popt_text(&r[4]),
+        position_name: popt_text(&r[5]),
+        period_name: value_to_string(&r[6]),
+        start_date: value_to_string(&r[7]),
+        end_date: value_to_string(&r[8]),
+        basic_salary: pf64(&r[9]),
+        total_income: pf64(&r[10]),
+        total_deduction: pf64(&r[11]),
+        net_salary: pf64(&r[12]),
+        status: value_to_string(&r[13]),
+        lines,
+    }))
+}
+
+pub async fn my_payslips_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+) -> Result<Vec<PayslipInfo>, String> {
+    let rows = q_all(
+        db,
+        "SELECT ps.id, ps.payroll_id, ps.payslip_number, pp.name, p.net_salary, ps.pdf_path FROM payslips ps INNER JOIN payrolls p ON p.id = ps.payroll_id INNER JOIN payroll_periods pp ON pp.id = p.payroll_period_id WHERE p.employee_id = ?1 ORDER BY pp.start_date DESC".to_string(),
+        vec![Value::Int(employee_id)],
+        6,
+        "payroll.myslips",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca slip: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(PayslipInfo {
+            id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "payslip.id")?,
+            payroll_id: to_dto_int(value_i64(&r[1]).unwrap_or(0), "payslip.payroll")?,
+            payslip_number: value_to_string(&r[2]),
+            period_name: value_to_string(&r[3]),
+            net_salary: pf64(&r[4]),
+            pdf_ready: popt_text(&r[5]).map(|s| !s.is_empty()).unwrap_or(false),
+        });
+    }
+    Ok(out)
+}
+
+pub async fn deduction_list_sea(
+    db: &sea_orm::DatabaseConnection,
+    pending_only: bool,
+) -> Result<Vec<Deduction>, String> {
+    let sql = if pending_only {
+        "SELECT pd.id, pd.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), pd.type, pd.description, pd.amount, pd.installment_no, pd.total_installments, pd.status FROM payroll_deductions pd INNER JOIN employees e ON e.id = pd.employee_id WHERE pd.status = 'pending' ORDER BY pd.created_at DESC"
+    } else {
+        "SELECT pd.id, pd.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), pd.type, pd.description, pd.amount, pd.installment_no, pd.total_installments, pd.status FROM payroll_deductions pd INNER JOIN employees e ON e.id = pd.employee_id ORDER BY pd.created_at DESC"
+    };
+    let rows = q_all(db, sql.to_string(), vec![], 9, "payroll.deductions")
+        .await
+        .map_err(|e| format!("gagal membaca kasbon: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(Deduction {
+            id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "deduction.id")?,
+            employee_id: to_dto_int(value_i64(&r[1]).unwrap_or(0), "deduction.emp")?,
+            employee_name: value_to_string(&r[2]),
+            deduction_type: value_to_string(&r[3]),
+            description: value_to_string(&r[4]),
+            amount: pf64(&r[5]),
+            installment_no: match value_i64(&r[6]) {
+                Some(v) => Some(to_dto_int(v, "deduction.ino")?),
+                None => None,
+            },
+            total_installments: match value_i64(&r[7]) {
+                Some(v) => Some(to_dto_int(v, "deduction.total")?),
+                None => None,
+            },
+            status: value_to_string(&r[8]),
+        });
+    }
+    Ok(out)
+}
+
+pub async fn deduction_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: Option<i64>,
+    input: &DeductionInput,
+) -> Result<i32, String> {
+    if !["loan", "kasbon", "other"].contains(&input.deduction_type.as_str()) {
+        return Err("Jenis potongan tidak valid.".to_string());
+    }
+    if input.description.trim().is_empty() {
+        return Err("Keterangan wajib diisi.".to_string());
+    }
+    if !(input.amount > 0.0) {
+        return Err("Nominal harus lebih dari 0.".to_string());
+    }
+    match (input.installment_no, input.total_installments) {
+        (None, None) => {}
+        (Some(_), None) => {
+            return Err("Nomor cicilan butuh total tenor.".to_string());
+        }
+        (_, Some(t)) if t < 1 => {
+            return Err("Tenor minimal 1 cicilan.".to_string());
+        }
+        (None, Some(_)) => {}
+        (Some(n), Some(t)) if n < 1 || n > t => {
+            return Err("Nomor cicilan harus 1 sampai total tenor.".to_string());
+        }
+        (Some(_), Some(_)) => {}
+    }
+    let emp = q_one(
+        db,
+        "SELECT id FROM employees WHERE id = ?1 AND deleted_at IS NULL".to_string(),
+        vec![Value::Int(input.employee_id as i64)],
+        1,
+        "payroll.dedemp",
+    )
+    .await
+    .map_err(|e| format!("gagal memeriksa karyawan: {e}"))?;
+    if emp.is_none() {
+        return Err("Karyawan tidak ditemukan.".to_string());
+    }
+    let opt_int = |v: Option<i32>| match v {
+        Some(x) => Value::Int(x as i64),
+        None => Value::Null,
+    };
+    if let Some(rid) = id {
+        let st = q_one(
+            db,
+            "SELECT status FROM payroll_deductions WHERE id = ?1".to_string(),
+            vec![Value::Int(rid)],
+            1,
+            "payroll.dedst",
+        )
+        .await
+        .map_err(|e| format!("gagal memuat kasbon: {e}"))?;
+        if st.as_ref().map(|r| value_to_string(&r[0])).as_deref() != Some("pending") {
+            return Err("Hanya kasbon pending yang bisa diubah.".to_string());
+        }
+        exec(
+            db,
+            "UPDATE payroll_deductions SET type = ?1, description = ?2, amount = ?3, installment_no = ?4, total_installments = ?5 WHERE id = ?6".to_string(),
+            vec![
+                Value::Text(input.deduction_type.clone()),
+                Value::Text(input.description.trim().to_string()),
+                Value::Float(input.amount),
+                opt_int(input.installment_no),
+                opt_int(input.total_installments),
+                Value::Int(rid),
+            ],
+            "payroll.dedupd",
+        )
+        .await
+        .map_err(|e| format!("gagal menyimpan kasbon: {e}"))?;
+        audit::log_sea(
+            db,
+            Some(actor_id),
+            "UPDATE",
+            "payroll.deduction",
+            Some(&rid.to_string()),
+            None,
+            None,
+            None,
+        )
+        .await?;
+        to_dto_int(rid, "deduction.id")
+    } else {
+        exec(
+            db,
+            "INSERT INTO payroll_deductions (employee_id, type, description, amount, installment_no, total_installments, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending')".to_string(),
+            vec![
+                Value::Int(input.employee_id as i64),
+                Value::Text(input.deduction_type.clone()),
+                Value::Text(input.description.trim().to_string()),
+                Value::Float(input.amount),
+                opt_int(input.installment_no),
+                opt_int(input.total_installments),
+            ],
+            "payroll.dedadd",
+        )
+        .await
+        .map_err(|e| format!("gagal menambah kasbon: {e}"))?;
+        let rid = prow_id(db, "payroll.dedadd").await?;
+        audit::log_sea(
+            db,
+            Some(actor_id),
+            "CREATE",
+            "payroll.deduction",
+            Some(&rid.to_string()),
+            None,
+            None,
+            None,
+        )
+        .await?;
+        to_dto_int(rid, "deduction.id")
+    }
+}
+
+pub async fn deduction_delete_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: i64,
+) -> Result<(), String> {
+    let st = q_one(
+        db,
+        "SELECT status FROM payroll_deductions WHERE id = ?1".to_string(),
+        vec![Value::Int(id)],
+        1,
+        "payroll.dedst",
+    )
+    .await
+    .map_err(|e| format!("gagal memuat kasbon: {e}"))?;
+    if st.as_ref().map(|r| value_to_string(&r[0])).as_deref() != Some("pending") {
+        return Err("Hanya kasbon pending yang bisa dihapus.".to_string());
+    }
+    exec(
+        db,
+        "DELETE FROM payroll_deductions WHERE id = ?1".to_string(),
+        vec![Value::Int(id)],
+        "payroll.deddel",
+    )
+    .await
+    .map_err(|e| format!("gagal menghapus kasbon: {e}"))?;
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "DELETE",
+        "payroll.deduction",
+        Some(&id.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1670,5 +3050,107 @@ mod tests {
         )
         .is_err());
         component_delete(&conn, actor, id as i64).expect("hapus");
+    }
+
+    #[tokio::test]
+    async fn payroll_sea_paritas_dengan_sync() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files = tempfile::tempdir().expect("files");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let conn = state.db.get().expect("get");
+        let db = &state.sea;
+        let actor = admin(&conn);
+        let eid = mkemp(&conn, "EMP-SEAG", 5_000_000.0, "TK/0");
+        conn.execute(
+            "INSERT INTO overtime_requests (employee_id, date, start_time, end_time, duration_minutes, rate_multiplier, status, current_step) VALUES (?1, '2026-02-10', '2026-02-10 18:00:00', '2026-02-10 20:00:00', 120, 1.5, 'approved', 0)",
+            params![eid],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO attendances (employee_id, date, status) VALUES (?1, '2026-02-11', 'absent')",
+            params![eid],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO payroll_deductions (employee_id, type, description, amount, status) VALUES (?1, 'kasbon', 'Kasbon Feb', 300000, 'pending')",
+            params![eid],
+        )
+        .unwrap();
+        let pid = period_create_sea(
+            db,
+            actor,
+            actor,
+            &PeriodInput {
+                name: "Feb 2026".to_string(),
+                start_date: "2026-02-01".to_string(),
+                end_date: "2026-02-28".to_string(),
+                payment_date: Some("2026-03-05".to_string()),
+            },
+        )
+        .await
+        .expect("periode");
+        assert!(pid > 0);
+        generate_sea(db, actor, pid as i64).await.expect("generate");
+        let r_sync =
+            serde_json::to_string(&payrolls_for_period(&conn, pid as i64).expect("rs")).unwrap();
+        let r_sea =
+            serde_json::to_string(&payrolls_for_period_sea(db, pid as i64).await.expect("rse"))
+                .unwrap();
+        assert_eq!(r_sync, r_sea);
+        assert!(r_sea.contains("5086705.0"));
+        assert!(r_sea.contains("4342814.0"));
+        let payroll_id: i64 = conn
+            .query_row(
+                "SELECT id FROM payrolls WHERE payroll_period_id = ?1 AND employee_id = ?2",
+                params![pid, eid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let d_sync =
+            serde_json::to_string(&payroll_detail(&conn, payroll_id).expect("ds")).unwrap();
+        let d_sea =
+            serde_json::to_string(&payroll_detail_sea(db, payroll_id).await.expect("dse"))
+                .unwrap();
+        assert_eq!(d_sync, d_sea);
+        assert!(d_sea.contains("Kasbon Feb"));
+        approve_period_sea(db, actor, pid as i64).await.expect("approve");
+        mark_paid_sea(db, actor, pid as i64).await.expect("pay");
+        let s_sync = serde_json::to_string(&my_payslips(&conn, eid).expect("ss")).unwrap();
+        let s_sea =
+            serde_json::to_string(&my_payslips_sea(db, eid).await.expect("sse")).unwrap();
+        assert_eq!(s_sync, s_sea);
+        assert!(s_sea.contains("PS-"));
+        lock_period_sea(db, actor, pid as i64).await.expect("lock");
+        let rel = crate::services::payslip::render_sea(db, files.path(), payroll_id)
+            .await
+            .expect("render");
+        assert!(rel.ends_with(".pdf"));
+        let got = crate::services::payslip::read_file_sea(db, files.path(), payroll_id)
+            .await
+            .expect("baca");
+        assert_eq!(got.mime, "application/pdf");
+        assert!(got.bytes.starts_with(b"%PDF"));
+        let c_sync = serde_json::to_string(&component_list(&conn).expect("cs")).unwrap();
+        let c_sea =
+            serde_json::to_string(&component_list_sea(db).await.expect("cse")).unwrap();
+        assert_eq!(c_sync, c_sea);
+        let comp = ComponentInput {
+            code: "SEAPAY".to_string(),
+            name: "Sea Pay".to_string(),
+            component_type: "income".to_string(),
+            calculation_type: "fixed".to_string(),
+            is_taxable: false,
+            is_active: true,
+        };
+        let cid = component_save_sea(db, actor, None, &comp).await.expect("komp");
+        let e_sea = component_save_sea(db, actor, None, &comp).await.expect_err("ganda");
+        let e_sync = component_save(&conn, actor, None, &comp).expect_err("ganda sync");
+        assert_eq!(e_sea, e_sync);
+        component_delete_sea(db, actor, cid as i64).await.expect("hapus komp");
+        let g_sync =
+            serde_json::to_string(&deduction_list(&conn, true).expect("gs")).unwrap();
+        let g_sea =
+            serde_json::to_string(&deduction_list_sea(db, true).await.expect("gse")).unwrap();
+        assert_eq!(g_sync, g_sea);
     }
 }
