@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsr generate && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -32,6 +32,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@tanstack/router-cli": "1.167.36",
     "@tanstack/router-plugin": "^1.168.37",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
