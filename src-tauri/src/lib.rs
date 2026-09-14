@@ -3010,30 +3010,42 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    #[test]
-    fn init_state_menyiapkan_db_lengkap() {
+    #[tokio::test]
+    async fn init_state_menyiapkan_db_lengkap() {
+        use services::sea_raw::{q_one, Value};
         let dir = tempfile::tempdir().expect("tempdir");
         let state = init_state(dir.path().to_path_buf()).expect("init_state");
         assert!(dir.path().join("peoplex.db").exists());
         assert_eq!(state.data_dir, dir.path());
         assert!(state.session.lock().unwrap().is_none());
-        let conn = state.db.get().expect("get");
-        let tables: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let admin: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM users WHERE username = 'admin'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(tables, 88);
-        assert_eq!(admin, 1);
+        let tables = q_one(
+            &state.sea,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                .to_string(),
+            vec![],
+            1,
+            "hitung tabel",
+        )
+        .await
+        .expect("tabel")
+        .expect("baris");
+        let admin = q_one(
+            &state.sea,
+            "SELECT COUNT(*) FROM users WHERE username = 'admin'".to_string(),
+            vec![],
+            1,
+            "hitung admin",
+        )
+        .await
+        .expect("admin")
+        .expect("baris");
+        match (&tables[0], &admin[0]) {
+            (Value::Int(t), Value::Int(a)) => {
+                assert_eq!(t, &88);
+                assert_eq!(a, &1);
+            }
+            other => panic!("tipe tak terduga: {other:?}"),
+        }
     }
 
     #[test]

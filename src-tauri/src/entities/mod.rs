@@ -87,38 +87,50 @@ pub mod company {    use sea_orm::entity::prelude::*;
 #[cfg(test)]
 mod tests {
     use super::system_setting::Entity as SettingEntity;
-    use crate::{db, seed};
+    use crate::services::sea_raw::{q_one, value_to_string, Value};
     use sea_orm::EntityTrait;
 
     #[tokio::test]
-    async fn baca_seaorm_sama_dengan_rusqlite() {
+    async fn baca_seaorm_konsisten_dengan_sql_raw() {
         let dir = tempfile::tempdir().expect("dir");
-        let path = dir.path().join("t.db");
-        let pool = db::init_pool(&path).expect("pool");
-        let mut c = pool.get().expect("get");
-        db::migrate(&mut c).expect("migrate");
-        seed::seed(&mut c).expect("seed");
-        drop(c);
-        let url = format!("sqlite://{}?mode=rwc", path.display());
-        let db = sea_orm::Database::connect(&url).await.expect("connect");
-        let via_sea = SettingEntity::find().all(&db).await.expect("baca");
-        let conn = pool.get().expect("get");
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM system_settings", [], |r| r.get(0))
-            .expect("count");
-        assert_eq!(via_sea.len() as i64, n);
+        let state = crate::init_state(dir.path().to_path_buf());
+        let via_sea = SettingEntity::find()
+            .all(&state.sea)
+            .await
+            .expect("baca");
+        let counted = q_one(
+            &state.sea,
+            "SELECT COUNT(*) FROM system_settings".to_string(),
+            vec![],
+            1,
+            "hitung setting",
+        )
+        .await
+        .expect("count")
+        .expect("baris");
+        match counted[0] {
+            Value::Int(n) => assert_eq!(via_sea.len() as i64, n),
+            other => panic!("tipe tak terduga: {other:?}"),
+        }
+        assert!(!via_sea.is_empty());
         let company = via_sea
             .iter()
             .find(|s| s.setting_key == "company_name")
             .expect("ada");
-        let direct: String = conn
-            .query_row(
-                "SELECT setting_value FROM system_settings WHERE setting_key = 'company_name'",
-                [],
-                |r| r.get(0),
-            )
-            .expect("nilai");
-        assert_eq!(company.setting_value.as_deref(), Some(direct.as_str()));
+        let direct = q_one(
+            &state.sea,
+            "SELECT setting_value FROM system_settings WHERE setting_key = ?1".to_string(),
+            vec![Value::Text("company_name".to_string())],
+            1,
+            "baca company_name",
+        )
+        .await
+        .expect("nilai")
+        .expect("baris");
+        assert_eq!(
+            company.setting_value.clone().unwrap_or_default(),
+            value_to_string(&direct[0])
+        );
     }
 }
 
