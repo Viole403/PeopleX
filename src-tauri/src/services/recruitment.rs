@@ -2557,7 +2557,7 @@ mod tests {
         let actor = admin(db).await;
         let vid = vacancy(db, actor).await;
         let c1 = kandidat(db, fdir.path(), actor, vid, "Satu").await as i64;
-        let _c2 = kandidat(db, fdir.path(), actor, vid, "Dua");
+        let _c2 = kandidat(db, fdir.path(), actor, vid, "Dua").await;
         let rows = pipeline_sea(db).await.expect("pipeline");
         assert_eq!(rows.len(), 8);
         assert_eq!(rows.iter().find(|r| r.stage == "applied").expect("applied").count, 2);
