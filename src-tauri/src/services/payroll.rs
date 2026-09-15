@@ -1477,7 +1477,262 @@ pub async fn deduction_delete_sea(
     Ok(())
 }
 
+// ---------------- EWA ----------------
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct EwaWithdrawal {
+    pub id: i32,
+    pub employee_id: i32,
+    pub employee_name: String,
+    pub amount: f64,
+    pub status: String,
+    pub requested_at: String,
+    pub decided_by: Option<i32>,
+    pub decided_at: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct EwaEvent {
+    pub action: String,
+    pub user_id: Option<i32>,
+    pub created_at: String,
+}
+
+fn jumlah_hari_bulan(d: NaiveDate) -> i64 {
+    let (y, m) = (d.year(), d.month());
+    let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+    let awal = NaiveDate::from_ymd_opt(y, m, 1).expect("awal bulan");
+    let berikutnya = NaiveDate::from_ymd_opt(ny, nm, 1).expect("awal bulan depan");
+    (berikutnya - awal).num_days()
+}
+
+fn angka_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Float(f) => Some(*f),
+        Value::Int(i) => Some(*i as f64),
+        Value::Text(t) => t.parse().ok(),
+        _ => None,
+    }
+}
+
+pub async fn ewa_limit_sea(db: &sea_orm::DatabaseConnection, employee_id: i64) -> Result<f64, String> {
+    let rows = q_all(
+        db,
+        "SELECT basic_salary FROM employee_salaries WHERE employee_id = ?1 AND is_active = 1 ORDER BY effective_date DESC LIMIT 1".to_string(),
+        vec![employee_id.into()],
+        1,
+        "ewa.gaji",
+    )
+    .await?;
+    let basic = rows
+        .first()
+        .and_then(|r| r.first())
+        .and_then(angka_f64)
+        .ok_or_else(|| "Gaji pokok tidak ditemukan.".to_string())?;
+    let today = Local::now().date_naive();
+    let berjalan = basic * (today.day() as f64) / (jumlah_hari_bulan(today) as f64);
+    Ok(((berjalan * 0.5) * 100.0).round() / 100.0)
+}
+
+pub async fn ewa_request_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor: i64,
+    employee_id: i64,
+    amount: f64,
+) -> Result<i32, String> {
+    if amount <= 0.0 {
+        return Err("Nominal penarikan harus positif.".to_string());
+    }
+    let pending = q_all(
+        db,
+        "SELECT COUNT(*) FROM ewa_withdrawals WHERE employee_id = ?1 AND status = 'pending'".to_string(),
+        vec![employee_id.into()],
+        1,
+        "ewa.pending",
+    )
+    .await?;
+    let ada = pending
+        .first()
+        .and_then(|r| value_i64(&r[0]))
+        .unwrap_or(0);
+    if ada > 0 {
+        return Err("Masih ada penarikan yang menunggu keputusan.".to_string());
+    }
+    let batas = ewa_limit_sea(db, employee_id).await?;
+    if amount > batas {
+        return Err(format!(
+            "Penarikan melebihi batas aman 50% gaji berjalan (maks {batas:.0})."
+        ));
+    }
+    let rid = exec_insert(
+        db,
+        "INSERT INTO ewa_withdrawals (employee_id, amount) VALUES (?1, ?2)".to_string(),
+        vec![employee_id.into(), amount.into()],
+        "ewa.request",
+    )
+    .await?;
+    audit::log_sea(
+        db,
+        Some(actor),
+        "CREATE",
+        "payroll.ewa",
+        Some(&rid.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    to_dto_int(rid, "ID hasil")
+}
+
+const EWA_SELECT: &str = "SELECT w.id, w.employee_id, w.amount, w.status, w.requested_at, w.decided_by, w.decided_at, w.notes, e.first_name || ' ' || COALESCE(e.last_name, '') FROM ewa_withdrawals w INNER JOIN employees e ON e.id = w.employee_id";
+
+fn ewa_ambil(rows: Vec<Vec<Value>>) -> Vec<EwaWithdrawal> {
+    rows.into_iter()
+        .filter_map(|r| {
+            Some(EwaWithdrawal {
+                id: to_dto_int(value_i64(&r[0])?, "ewa.id").ok()?,
+                employee_id: to_dto_int(value_i64(&r[1])?, "ewa.emp").ok()?,
+                amount: angka_f64(&r[2])?,
+                status: value_to_string(&r[3]),
+                requested_at: value_to_string(&r[4]),
+                decided_by: value_i64(&r[5]).and_then(|v| to_dto_int(v, "ewa.by").ok()),
+                decided_at: match &r[6] {
+                    Value::Null => None,
+                    v => Some(value_to_string(v)),
+                },
+                notes: match &r[7] {
+                    Value::Null => None,
+                    v => Some(value_to_string(v)),
+                },
+                employee_name: value_to_string(&r[8]),
+            })
+        })
+        .collect()
+}
+
+pub async fn my_ewa_sea(db: &sea_orm::DatabaseConnection, employee_id: i64) -> Result<Vec<EwaWithdrawal>, String> {
+    let rows = q_all(
+        db,
+        format!("{EWA_SELECT} WHERE w.employee_id = ?1 ORDER BY w.id DESC"),
+        vec![employee_id.into()],
+        9,
+        "ewa.my",
+    )
+    .await?;
+    Ok(ewa_ambil(rows))
+}
+
+pub async fn all_ewa_sea(db: &sea_orm::DatabaseConnection, status: Option<&str>) -> Result<Vec<EwaWithdrawal>, String> {
+    let rows = match status {
+        Some(s) => {
+            q_all(
+                db,
+                format!("{EWA_SELECT} WHERE w.status = ?1 ORDER BY w.id DESC"),
+                vec![s.into()],
+                9,
+                "ewa.all",
+            )
+            .await?
+        }
+        None => {
+            q_all(
+                db,
+                format!("{EWA_SELECT} ORDER BY w.id DESC"),
+                vec![],
+                9,
+                "ewa.all",
+            )
+            .await?
+        }
+    };
+    Ok(ewa_ambil(rows))
+}
+
+pub async fn ewa_limit_for_employee_sea(db: &sea_orm::DatabaseConnection, employee_id: i64) -> Result<f64, String> {
+    ewa_limit_sea(db, employee_id).await
+}
+
+pub async fn ewa_decide_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor: i64,
+    id: i64,
+    decision: &str,
+    notes: Option<&str>,
+) -> Result<(), String> {
+    if decision != "approved" && decision != "rejected" {
+        return Err("Keputusan tidak valid.".to_string());
+    }
+    let rows = q_all(
+        db,
+        "SELECT status FROM ewa_withdrawals WHERE id = ?1".to_string(),
+        vec![id.into()],
+        1,
+        "ewa.cari",
+    )
+    .await?;
+    let status = rows
+        .first()
+        .map(|r| value_to_string(&r[0]))
+        .ok_or_else(|| "Pengajuan tidak ditemukan.".to_string())?;
+    if status != "pending" {
+        return Err("Pengajuan sudah diproses.".to_string());
+    }
+    let waktu = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    exec(
+        db,
+        "UPDATE ewa_withdrawals SET status = ?1, decided_by = ?2, decided_at = ?3, notes = ?4, updated_at = ?3 WHERE id = ?5".to_string(),
+        vec![
+            decision.into(),
+            actor.into(),
+            waktu.into(),
+            notes.map(|s| s.to_string()).into(),
+            id.into(),
+        ],
+        "ewa.decide",
+    )
+    .await?;
+    audit::log_sea(
+        db,
+        Some(actor),
+        "UPDATE",
+        "payroll.ewa",
+        Some(&id.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn ewa_audit_trail_sea(db: &sea_orm::DatabaseConnection, id: i64) -> Result<Vec<EwaEvent>, String> {
+    let rows = q_all(
+        db,
+        "SELECT action, user_id, created_at FROM audit_logs WHERE module = 'payroll.ewa' AND record_id = ?1 ORDER BY id".to_string(),
+        vec![Value::Text(id.to_string())],
+        3,
+        "ewa.trail",
+    )
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| {
+            Some(EwaEvent {
+                action: value_to_string(&r[0]),
+                user_id: match &r[1] {
+                    Value::Null => None,
+                    v => value_i64(v).and_then(|x| to_dto_int(x, "ewa.user").ok()),
+                },
+                created_at: value_to_string(&r[2]),
+            })
+        })
+        .collect())
+}
+
 #[cfg(test)]
+
 mod tests {
     use super::*;
 
@@ -1837,5 +2092,40 @@ mod tests {
         assert_eq!(dup, "Kode komponen sudah dipakai.");
         component_delete_sea(db, actor, id as i64).await.expect("hapus");
         assert!(component_delete_sea(db, actor, id as i64).await.is_err());
+    }
+    #[tokio::test]
+    async fn ewa_batas_aman_dan_jejak_audit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = admin(db).await;
+        let eid = mkemp(db, "EMP-EWA", 8_000_000.0, "TK/0").await;
+        assert!(ewa_request_sea(db, actor, eid, -5.0).await.unwrap_err().contains("positif"));
+        let batas = ewa_limit_sea(db, eid).await.expect("batas");
+        assert!(batas > 0.0);
+        assert!(ewa_request_sea(db, actor, eid, batas + 1.0)
+            .await
+            .unwrap_err()
+            .contains("batas aman"));
+        let id = ewa_request_sea(db, actor, eid, 100.0).await.expect("ajukan");
+        assert!(ewa_request_sea(db, actor, eid, 50.0).await.unwrap_err().contains("menunggu"));
+        let milik = my_ewa_sea(db, eid).await.expect("my");
+        assert_eq!(milik.len(), 1);
+        assert_eq!(milik[0].status, "pending");
+        assert!(ewa_decide_sea(db, actor, id as i64, "mungkin", None).await.is_err());
+        ewa_decide_sea(db, actor, id as i64, "approved", Some("ok"))
+            .await
+            .expect("putus");
+        assert!(ewa_decide_sea(db, actor, id as i64, "approved", None)
+            .await
+            .unwrap_err()
+            .contains("sudah diproses"));
+        let jejak = ewa_audit_trail_sea(db, id as i64).await.expect("jejak");
+        assert_eq!(jejak.len(), 2);
+        assert_eq!(jejak[0].action, "CREATE");
+        assert_eq!(jejak[1].action, "UPDATE");
+        let semua = all_ewa_sea(db, Some("approved")).await.expect("list");
+        assert_eq!(semua.len(), 1);
+        assert_eq!(semua[0].notes.as_deref(), Some("ok"));
     }
 }

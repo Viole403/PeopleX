@@ -1663,6 +1663,64 @@ async fn payroll_deduction_delete(state: tauri::State<'_, AppState>, id: i32) ->
 
 #[tauri::command]
 #[specta::specta]
+async fn payroll_ewa_limit(state: tauri::State<'_, AppState>) -> Result<f64, String> {
+    let (uid, _) = current_actor(&state).await?;
+    let emp = my_employee_sea(&state.sea, uid).await?;
+    services::payroll::ewa_limit_for_employee_sea(&state.sea, emp).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn payroll_ewa_request(state: tauri::State<'_, AppState>, amount: f64) -> Result<i32, String> {
+    let (uid, _) = current_actor(&state).await?;
+    let emp = my_employee_sea(&state.sea, uid).await?;
+    services::payroll::ewa_request_sea(&state.sea, uid, emp, amount).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn payroll_ewa_my(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::payroll::EwaWithdrawal>, String> {
+    let (uid, _) = current_actor(&state).await?;
+    let emp = my_employee_sea(&state.sea, uid).await?;
+    services::payroll::my_ewa_sea(&state.sea, emp).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn payroll_ewa_list(
+    state: tauri::State<'_, AppState>,
+    status: Option<String>,
+) -> Result<Vec<services::payroll::EwaWithdrawal>, String> {
+    require(&state, &["payroll.approve", "system.manage"]).await?;
+    services::payroll::all_ewa_sea(&state.sea, status.as_deref()).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn payroll_ewa_decide(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+    decision: String,
+    notes: Option<String>,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["payroll.approve", "system.manage"]).await?;
+    services::payroll::ewa_decide_sea(&state.sea, uid, id as i64, &decision, notes.as_deref()).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn payroll_ewa_trail(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+) -> Result<Vec<services::payroll::EwaEvent>, String> {
+    require(&state, &["payroll.view", "system.manage"]).await?;
+    services::payroll::ewa_audit_trail_sea(&state.sea, id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn vacancy_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::recruitment::Vacancy>, String> {
@@ -3186,6 +3244,12 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         payroll_deductions,
         payroll_deduction_save,
         payroll_deduction_delete,
+        payroll_ewa_limit,
+        payroll_ewa_request,
+        payroll_ewa_my,
+        payroll_ewa_list,
+        payroll_ewa_decide,
+        payroll_ewa_trail,
         vacancy_list,
         vacancy_get,
         vacancy_save,
@@ -3370,7 +3434,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &93);
+                assert_eq!(t, &95);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),
