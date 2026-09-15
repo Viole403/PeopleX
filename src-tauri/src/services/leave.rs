@@ -1115,6 +1115,110 @@ pub async fn type_delete_sea(
     Ok(())
 }
 
+
+pub async fn leave_accrual_run_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    year: i64,
+) -> Result<i32, String> {
+    if year < 2000 || year > 2100 {
+        return Err("Tahun tidak valid.".to_string());
+    }
+    let tid = q_one(
+        db,
+        "SELECT id FROM leave_types WHERE code = 'AL' AND deleted_at IS NULL".to_string(),
+        vec![],
+        1,
+        "acc.type",
+    )
+    .await?
+    .and_then(|r| value_i64(&r[0]))
+    .ok_or("Jenis cuti tahunan tidak ditemukan.".to_string())?;
+    let rows = q_all(
+        db,
+        "SELECT id, join_date FROM employees WHERE deleted_at IS NULL AND employment_status = 'active'".to_string(),
+        vec![],
+        2,
+        "acc.emp",
+    )
+    .await?;
+    let akhir = NaiveDate::from_ymd_opt(year as i32, 12, 31)
+        .ok_or("Tahun tidak valid.".to_string())?;
+    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut naik = 0i64;
+    for r in &rows {
+        let eid = value_i64(&r[0]).unwrap_or(0);
+        let jd = value_to_string(&r[1]);
+        let masuk = NaiveDate::parse_from_str(&jd, "%Y-%m-%d")
+            .map_err(|_| format!("Tanggal masuk tidak valid untuk karyawan {eid}."))?;
+        let bulan = (akhir.year() * 12 + akhir.month() as i32)
+            - (masuk.year() * 12 + masuk.month() as i32);
+        if bulan < 12 {
+            continue;
+        }
+        let tahun_penuh = bulan / 12;
+        let grant = 12 + (tahun_penuh / 3).min(6);
+        let ada: Option<Vec<Value>> = q_one(
+            db,
+            "SELECT allocated_days FROM leave_balances WHERE employee_id = ?1 AND leave_type_id = ?2 AND year = ?3".to_string(),
+            vec![Value::Int(eid), Value::Int(tid), Value::Int(year)],
+            1,
+            "acc.ada",
+        )
+        .await?;
+        let ada_bar = ada.is_some();
+        let lama = ada
+            .as_ref()
+            .map(|a| sea_f64(&a[0]))
+            .unwrap_or(0.0);
+        if (grant as f64) > lama {
+            if ada_bar {
+                exec(
+                    db,
+                    "UPDATE leave_balances SET allocated_days = ?1, updated_at = ?2 WHERE employee_id = ?3 AND leave_type_id = ?4 AND year = ?5".to_string(),
+                    vec![
+                        Value::Int(grant as i64),
+                        Value::Text(now.clone()),
+                        Value::Int(eid),
+                        Value::Int(tid),
+                        Value::Int(year),
+                    ],
+                    "acc.upd",
+                )
+                .await?;
+            } else {
+                exec(
+                    db,
+                    "INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days, carried_days, adjustment_days, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, 0, 0, 0, ?5, ?6)".to_string(),
+                    vec![
+                        Value::Int(eid),
+                        Value::Int(tid),
+                        Value::Int(year),
+                        Value::Int(grant as i64),
+                        Value::Text(now.clone()),
+                        Value::Text(now.clone()),
+                    ],
+                    "acc.ins",
+                )
+                .await?;
+            }
+            naik += 1;
+        }
+    }
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "CREATE",
+        "leave.accrual",
+        None,
+        None,
+        None,
+        Some(&format!("Accrual cuti tahun {year}")),
+    )
+    .await?;
+    to_dto_int(naik, "acc.naik")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1644,4 +1748,63 @@ mod tests {
             .expect_err("ganda");
         assert!(err.contains("sudah diproses"));
     }
+
+    #[tokio::test]
+    async fn accrual_cuti_tahunan_sesuai_masa_kerja() {
+        let dir = state().await;
+        let app = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &app.sea;
+        let actor = admin_id(db).await;
+        let (_, e1) = mkuser(db, "akr1", "EMP-AKR1", None).await;
+        let (_, e2) = mkuser(db, "akr2", "EMP-AKR2", None).await;
+        exec(
+            db,
+            "UPDATE employees SET join_date = '2021-03-15' WHERE id = ?1".to_string(),
+            vec![Value::Int(e1)],
+            "t.j1",
+        )
+        .await
+        .expect("j1");
+        exec(
+            db,
+            "UPDATE employees SET join_date = '2026-06-01' WHERE id = ?1".to_string(),
+            vec![Value::Int(e2)],
+            "t.j2",
+        )
+        .await
+        .expect("j2");
+        let al = al_type(db).await;
+        let n = leave_accrual_run_sea(db, actor, 2026).await.expect("accrual");
+        assert!(n >= 1);
+        let ambil = |tag| async move {
+            q_one(
+                db,
+                format!("SELECT allocated_days FROM leave_balances WHERE employee_id = {e1} AND leave_type_id = {al} AND year = 2026"),
+                vec![],
+                1,
+                tag,
+            )
+            .await
+        };
+        let g1 = ambil("t.a1")
+            .await
+            .expect("baca")
+            .expect("baris");
+        assert!((sea_f64(&g1[0]) - 13.0).abs() < 1e-6);
+        let n2 = leave_accrual_run_sea(db, actor, 2026).await.expect("accrual2");
+        let g2 = ambil("t.a2")
+            .await
+            .expect("baca2")
+            .expect("baris2");
+        assert!((sea_f64(&g2[0]) - 13.0).abs() < 1e-6);
+        assert_eq!(n2, 0);
+        let c2 = one(
+            db,
+            &format!("SELECT COUNT(*) FROM leave_balances WHERE employee_id = {e2} AND year = 2026"),
+            "t.c2",
+        )
+        .await;
+        assert_eq!(c2, 0);
+    }
 }
+
