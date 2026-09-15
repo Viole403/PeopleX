@@ -77,6 +77,16 @@ pub async fn connect_sea(cfg: &AppConfig, data_dir: &Path) -> Result<DatabaseCon
                 .map_err(|e| format!("gagal membaca konfigurasi MySQL: {e}"))?;
             let pool = sea_orm::sqlx::mysql::MySqlPoolOptions::new()
                 .max_connections(10)
+                .after_connect(|conn, _| {
+                    Box::pin(async move {
+                        use sea_orm::sqlx::Executor;
+                        conn.execute(
+                            "SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',PIPES_AS_CONCAT')",
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                })
                 .connect_with(options)
                 .await
                 .map_err(|e| format!("gagal membuat connection pool: {e}"))?;

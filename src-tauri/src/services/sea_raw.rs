@@ -42,6 +42,25 @@ impl From<i32> for Value {
     }
 }
 
+fn ramah(label: &str, e: impl std::fmt::Display) -> String {
+    let t = e.to_string();
+    let kecil = t.to_ascii_lowercase();
+    if kecil.contains("duplicate key")
+        || kecil.contains("duplicate entry")
+        || kecil.contains("unique constraint")
+        || kecil.contains("unique index")
+    {
+        return format!("gagal {label}: UNIQUE constraint gagal: {t}");
+    }
+    if kecil.contains("foreign key") {
+        return format!("gagal {label}: FOREIGN KEY constraint gagal: {t}");
+    }
+    if kecil.contains("not-null constraint") || kecil.contains("cannot be null") {
+        return format!("gagal {label}: NOT NULL constraint gagal: {t}");
+    }
+    format!("gagal {label}: {t}")
+}
+
 /// Jalankan SELECT dan kembalikan semua baris sebagai kolom bernilai `Value`.
 pub async fn q_all<C: ConnectionTrait>(
     db: &C,
@@ -54,7 +73,7 @@ pub async fn q_all<C: ConnectionTrait>(
     let rows = db
         .query_all_raw(stmt)
         .await
-        .map_err(|e| format!("gagal {}: {}", label, e))?;
+        .map_err(|e| ramah(label, e))?;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let mut cells = Vec::with_capacity(ncols);
@@ -89,8 +108,38 @@ pub async fn exec<C: ConnectionTrait>(
     let res = db
         .execute_raw(stmt)
         .await
-        .map_err(|e| format!("gagal {}: {}", label, e))?;
+        .map_err(|e| ramah(label, e))?;
     Ok(res.rows_affected())
+}
+
+pub async fn exec_insert<C: ConnectionTrait>(
+    db: &C,
+    sql: String,
+    vals: Vec<Value>,
+    label: &str,
+) -> Result<i64, String> {
+    let row = match db.get_database_backend() {
+        DbBackend::Postgres => {
+            q_one(db, format!("{sql} RETURNING id"), vals, 1, label)
+                .await?
+                .ok_or_else(|| format!("gagal {label}: tidak ada id kembali"))?
+        }
+        DbBackend::MySql => {
+            exec(db, sql, vals, label).await?;
+            q_one(db, "SELECT LAST_INSERT_ID()".to_string(), vec![], 1, label)
+                .await?
+                .ok_or_else(|| format!("gagal {label}: tidak ada id kembali"))?
+        }
+        _ => {
+            exec(db, sql, vals, label).await?;
+            q_one(db, "SELECT last_insert_rowid()".to_string(), vec![], 1, label)
+                .await?
+                .ok_or_else(|| format!("gagal {label}: tidak ada id kembali"))?
+        }
+    };
+    row.first()
+        .and_then(value_i64)
+        .ok_or_else(|| format!("gagal {label}: id tidak valid"))
 }
 
 /// Ubah placeholder dan parameter sesuai backend, lalu buat Statement.
@@ -120,6 +169,17 @@ fn siapkan<C: ConnectionTrait>(
     Statement::from_sql_and_values(backend, sql2, binds)
 }
 
+fn pola_cocok(bytes: &[char], i: usize, pola: &str) -> bool {
+    let p: Vec<char> = pola.chars().collect();
+    if i + p.len() > bytes.len() {
+        return false;
+    }
+    bytes[i..i + p.len()]
+        .iter()
+        .zip(p.iter())
+        .all(|(a, b)| a.to_ascii_uppercase() == *b)
+}
+
 /// Terjemahkan placeholder `?N` ke dialek backend.
 ///
 /// SQLite dan backend lain: apa adanya. PostgreSQL: `?N` menjadi `$N`
@@ -134,6 +194,8 @@ fn terjemahkan(backend: DbBackend, sql: &str) -> (String, Option<Vec<u32>>) {
             let mut out = String::with_capacity(sql.len());
             let mut order: Vec<u32> = Vec::new();
             let mut in_str = false;
+            let mut di_awal = true;
+            let mut tanpa_ganda = false;
             let mut i = 0usize;
             while i < bytes.len() {
                 let c = bytes[i];
@@ -179,7 +241,46 @@ fn terjemahkan(backend: DbBackend, sql: &str) -> (String, Option<Vec<u32>>) {
                     }
                     continue;
                 }
-                if c == '?' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+                if c.is_whitespace() && di_awal {
+                    out.push(c);
+                    i += 1;
+                    continue;
+                }
+                if di_awal {
+                    di_awal = false;
+                    if pola_cocok(&bytes, i, "INSERT OR IGNORE INTO") {
+                        if matches!(backend, DbBackend::Postgres) {
+                            out.push_str("INSERT INTO");
+                            tanpa_ganda = true;
+                        } else {
+                            out.push_str("INSERT IGNORE INTO");
+                        }
+                        i += "INSERT OR IGNORE INTO".len();
+                        continue;
+                    }
+                }
+                if pola_cocok(&bytes, i, "datetime('now','localtime')") {
+                    if matches!(backend, DbBackend::Postgres) {
+                        out.push_str("to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')");
+                    } else {
+                        out.push_str("NOW()");
+                    }
+                    i += "datetime('now','localtime')".len();
+                    continue;
+                }
+                if pola_cocok(&bytes, i, "date('now','localtime')") {
+                    if matches!(backend, DbBackend::Postgres) {
+                        out.push_str("CURRENT_DATE");
+                    } else {
+                        out.push_str("CURDATE()");
+                    }
+                    i += "date('now','localtime')".len();
+                    continue;
+                }
+                if c == '?'
+                    && i + 1 < bytes.len()
+                    && bytes[i + 1].is_ascii_digit()
+                {
                     let mut num = String::new();
                     let mut j = i + 1;
                     while j < bytes.len() && bytes[j].is_ascii_digit() {
@@ -204,6 +305,9 @@ fn terjemahkan(backend: DbBackend, sql: &str) -> (String, Option<Vec<u32>>) {
                 }
                 out.push(c);
                 i += 1;
+            }
+            if tanpa_ganda && matches!(backend, DbBackend::Postgres) {
+                out.push_str(" ON CONFLICT DO NOTHING");
             }
             match backend {
                 DbBackend::Postgres => (out, None),
@@ -250,5 +354,59 @@ pub fn value_i64(v: &Value) -> Option<i64> {
         Value::Int(i) => Some(*i),
         Value::Text(s) => s.parse::<i64>().ok(),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn placeholder_postgres_dan_mysql() {
+        let (pg, order_pg) = terjemahkan(
+            DbBackend::Postgres,
+            "SELECT * FROM t WHERE a = ?1 AND b = ?2",
+        );
+        assert_eq!(pg, "SELECT * FROM t WHERE a = $1 AND b = $2");
+        assert!(order_pg.is_none());
+        let (my, order_my) = terjemahkan(
+            DbBackend::MySql,
+            "SELECT * FROM t WHERE a = ?2 AND b = ?1",
+        );
+        assert_eq!(my, "SELECT * FROM t WHERE a = ? AND b = ?");
+        assert_eq!(order_my, Some(vec![2, 1]));
+    }
+
+    #[test]
+    fn literal_dan_komentar_tidak_disentuh() {
+        let (pg, _) = terjemahkan(
+            DbBackend::Postgres,
+            "SELECT '?1' -- ?2\n/* ?3 */ FROM t WHERE a = ?1",
+        );
+        assert_eq!(pg, "SELECT '?1' -- ?2\n/* ?3 */ FROM t WHERE a = $1");
+    }
+
+    #[test]
+    fn waktu_kini_dan_abaikan_ganda_per_dialek() {
+        let (pg, _) = terjemahkan(
+            DbBackend::Postgres,
+            "INSERT OR IGNORE INTO t (a, b) VALUES (?1, datetime('now','localtime'))",
+        );
+        assert_eq!(
+            pg,
+            "INSERT INTO t (a, b) VALUES ($1, to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')) ON CONFLICT DO NOTHING"
+        );
+        let (my, order_my) = terjemahkan(
+            DbBackend::MySql,
+            "INSERT OR IGNORE INTO t (a, b) VALUES (?1, datetime('now','localtime'))",
+        );
+        assert_eq!(my, "INSERT IGNORE INTO t (a, b) VALUES (?, NOW())");
+        assert_eq!(order_my, Some(vec![1]));
+        let (lite, order_lite) = terjemahkan(
+            DbBackend::Sqlite,
+            "INSERT OR IGNORE INTO t (a) VALUES (?1)",
+        );
+        assert_eq!(lite, "INSERT OR IGNORE INTO t (a) VALUES (?1)");
+        assert!(order_lite.is_none());
     }
 }
