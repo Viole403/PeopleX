@@ -231,4 +231,69 @@ mod tests {
         .await;
         assert!(bad.is_err(), "branch tanpa company harus ditolak FK");
     }
+
+    fn server_cfg(
+        driver: &str,
+        port: u16,
+        pass_env: &str,
+    ) -> Option<(AppConfig, tempfile::TempDir)> {
+        if std::env::var(pass_env).is_err() {
+            return None;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = AppConfig {
+            database: crate::config::DbConfig {
+                driver: driver.to_string(),
+                path: None,
+                host: Some("127.0.0.1".to_string()),
+                port: Some(port),
+                user: Some("peoplex".to_string()),
+                password_env: Some(pass_env.to_string()),
+                database: Some("peoplex_test".to_string()),
+            },
+        };
+        Some((cfg, dir))
+    }
+
+    async fn smoke_migrasi(cfg: &AppConfig, dir: &tempfile::TempDir, label: &str) {
+        let db = connect_sea(cfg, dir.path())
+            .await
+            .unwrap_or_else(|e| panic!("sambung {label}: {e}"));
+        migrate_sea(&db)
+            .await
+            .unwrap_or_else(|e| panic!("migrasi {label}: {e}"));
+        migrate_sea(&db)
+            .await
+            .unwrap_or_else(|e| panic!("migrasi ulang {label}: {e}"));
+        let rows = q_all(
+            &db,
+            schema_sql::count_tables_sql(db.get_database_backend()),
+            vec![],
+            1,
+            "count",
+        )
+        .await
+        .expect("count");
+        let n: i64 = match rows.first().and_then(|r| r.first()) {
+            Some(Value::Int(v)) => *v,
+            _ => panic!("n"),
+        };
+        assert!(n >= 88, "skema {label} harus memuat 88 tabel, dapat {n}");
+    }
+
+    #[tokio::test]
+    async fn smoke_postgres_bila_server_ada() {
+        let Some((cfg, dir)) = server_cfg("postgres", 5432, "PEOPLEX_PG_PASSWORD") else {
+            return;
+        };
+        smoke_migrasi(&cfg, &dir, "postgres").await;
+    }
+
+    #[tokio::test]
+    async fn smoke_mysql_bila_server_ada() {
+        let Some((cfg, dir)) = server_cfg("mysql", 3306, "PEOPLEX_MYSQL_PASSWORD") else {
+            return;
+        };
+        smoke_migrasi(&cfg, &dir, "mysql").await;
+    }
 }

@@ -53,3 +53,66 @@ jobs:
 
       - name: Uji backend
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+  matrix-db:
+    name: Asap migrasi Postgres dan MySQL
+    runs-on: ubuntu-22.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: peoplex
+          POSTGRES_PASSWORD: peoplex
+          POSTGRES_DB: peoplex_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U peoplex"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: peoplex_test
+          MYSQL_USER: peoplex
+          MYSQL_PASSWORD: peoplex
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - name: Checkout kode
+        uses: actions/checkout@v7
+
+      - name: Instal dependensi sistem Tauri Linux
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Setup Rust stabil
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Asap migrasi dua backend
+        env:
+          PEOPLEX_PG_PASSWORD: peoplex
+          PEOPLEX_MYSQL_PASSWORD: peoplex
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib smoke_
