@@ -1203,7 +1203,7 @@ mod tests {
         let (_dir, db) = seeded_db().await;
         let c = counts(&db).await;
         assert_eq!(c["roles"], 8);
-        assert_eq!(c["permissions"], 87);
+        assert_eq!(c["permissions"], 90);
         assert_eq!(c["leave_types"], 8);
         assert_eq!(c["salary_components"], 16);
         assert_eq!(c["approval_workflows"], 5);
@@ -1221,7 +1221,7 @@ mod tests {
             .first()
             .and_then(|r| crate::services::sea_raw::value_i64(&r[0]))
             .unwrap_or(0);
-        assert_eq!(super_perms, 87);
+        assert_eq!(super_perms, 90);
     }
 
     #[tokio::test]
