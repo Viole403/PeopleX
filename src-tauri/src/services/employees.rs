@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::audit;
+use super::security::{pii_decrypt, pii_encrypt};
 use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 use crate::to_dto_int;
 
@@ -1079,9 +1080,10 @@ async fn validate_employee_sea(
         if nik.len() > 20 {
             return Err("NIK maksimal 20 karakter.".to_string());
         }
+        let nik_enc = pii_encrypt(db, nik).await?;
         let mut sql =
             "SELECT id FROM employees WHERE nik = ?1 AND deleted_at IS NULL".to_string();
-        let mut vals = vec![Value::from(nik.to_string())];
+        let mut vals = vec![Value::from(nik_enc)];
         if let Some(ex) = exclude_id {
             sql.push_str(" AND id != ?2");
             vals.push(Value::from(ex));
@@ -1326,7 +1328,7 @@ pub async fn detail_sea(
         "memuat karyawan",
     )
     .await?;
-    row.map(|v| {
+    let mut det = row.map(|v| {
         Ok(EmployeeDetail {
             id: to_dto_int(value_i64(&v[0]).unwrap_or(0), "employee.id")?,
             employee_number: value_to_string(&v[1]),
@@ -1379,7 +1381,27 @@ pub async fn detail_sea(
             manager_name: opt_text(&v[48]),
         })
     })
-    .transpose()
+    .transpose()?;
+    if let Some(d) = det.as_mut() {
+        open_pii(db, d).await?;
+    }
+    Ok(det)
+}
+
+async fn open_pii(db: &sea_orm::DatabaseConnection, d: &mut EmployeeDetail) -> Result<(), String> {
+    if let Some(s) = d.nik.take() {
+        d.nik = Some(pii_decrypt(db, &s).await?);
+    }
+    if let Some(s) = d.npwp.take() {
+        d.npwp = Some(pii_decrypt(db, &s).await?);
+    }
+    if let Some(s) = d.phone.take() {
+        d.phone = Some(pii_decrypt(db, &s).await?);
+    }
+    if let Some(s) = d.personal_email.take() {
+        d.personal_email = Some(pii_decrypt(db, &s).await?);
+    }
+    Ok(())
 }
 
 async fn named_opts_sea(
@@ -1419,10 +1441,13 @@ pub async fn dropdowns_sea(db: &sea_orm::DatabaseConnection) -> Result<Dropdowns
     })
 }
 
-fn profile_vals_sea(input: &EmployeeInput) -> Vec<Value> {
-    PROFILE_COLS
-        .iter()
-        .map(|c| match *c {
+async fn profile_vals_sea(
+    db: &sea_orm::DatabaseConnection,
+    input: &EmployeeInput,
+) -> Result<Vec<Value>, String> {
+    let mut out = Vec::with_capacity(PROFILE_COLS.len());
+    for c in PROFILE_COLS {
+        let mut value = match *c {
             "company_id" | "branch_id" | "department_id" | "division_id" | "section_id"
             | "position_id" | "job_level_id" | "job_grade_id" | "work_location_id"
             | "cost_center_id" | "supervisor_id" | "manager_id" => match input_id(input, c) {
@@ -1433,8 +1458,20 @@ fn profile_vals_sea(input: &EmployeeInput) -> Vec<Value> {
                 Some(v) => Value::from(v),
                 None => Value::Null,
             },
-        })
-        .collect()
+        };
+        if matches!(
+            *c,
+            "nik" | "npwp" | "phone" | "personal_email"
+        ) {
+            if let Value::Text(text) = &value {
+                if !text.is_empty() {
+                    value = Value::Text(pii_encrypt(db, text).await?);
+                }
+            }
+        }
+        out.push(value);
+    }
+    Ok(out)
 }
 
 pub async fn create_sea(
@@ -1461,7 +1498,7 @@ pub async fn create_sea(
             None => Value::Null,
         },
     ];
-    vals.extend(profile_vals_sea(input));
+    vals.extend(profile_vals_sea(db, input).await?);
     let id = exec_insert(
         db,
         format!("INSERT INTO employees ({cols}) VALUES ({})", holders.join(", ")),
@@ -1521,7 +1558,7 @@ pub async fn update_sea(
     if photo_rel.is_some() {
         sets.push("photo = ?".to_string());
     }
-    let mut vals = profile_vals_sea(input);
+    let mut vals = profile_vals_sea(db, input).await?;
     if let Some(rd) = resign_date {
         if !rd.trim().is_empty() {
             vals.push(Value::from(rd.trim().to_string()));
@@ -3252,5 +3289,64 @@ mod tests {
         .await
         .expect("tamper");
         assert!(!contract_verify_sea(db, cid).await.expect("verif2"));
+    }
+
+    #[tokio::test]
+    async fn pii_karyawan_terenkripsi_saat_disimpan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files = tempfile::tempdir().expect("files");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = admin_id(db).await;
+        exec(
+            db,
+            "INSERT INTO system_settings (setting_key, setting_value) VALUES ?1, ?2              ON CONFLICT(setting_key) DO UPDATE SET setting_value = ?3"
+                .to_string(),
+            vec![
+                Value::from("pii_key".to_string()),
+                Value::from("kunci-tes-rahasia".to_string()),
+                Value::from("kunci-tes-rahasia".to_string()),
+            ],
+            "t.pii_key",
+        )
+        .await
+        .expect("seed kunci");
+        let mut input = base_input(hq(db).await);
+        input.nik = Some("3201011203900001".to_string());
+        input.phone = Some("081234567890".to_string());
+        input.personal_email = Some("diri@example.test".to_string());
+        input.npwp = Some("09.111.222.3-333.000".to_string());
+        let emp = create_sea(db, files.path(), actor, &input, None)
+            .await
+            .expect("buat") as i64;
+        let raw = q_one(
+            db,
+            "SELECT nik FROM employees WHERE id = ?1".to_string(),
+            vec![Value::Int(emp)],
+            1,
+            "t.raw",
+        )
+        .await
+        .expect("raw")
+        .expect("baris");
+        let simpanan = value_to_string(&raw[0]);
+        assert!(simpanan.starts_with("px1$"), "nik harus tersandi");
+        assert_ne!(simpanan, "3201011203900001");
+        let raw_npwp = q_one(
+            db,
+            "SELECT npwp FROM employees WHERE id = ?1".to_string(),
+            vec![Value::Int(emp)],
+            1,
+            "t.raw2",
+        )
+        .await
+        .expect("raw2")
+        .expect("baris2");
+        assert!(value_to_string(&raw_npwp[0]).starts_with("px1$"));
+        let det = detail_sea(db, emp).await.expect("detail").expect("ada");
+        assert_eq!(det.nik.as_deref(), Some("3201011203900001"));
+        assert_eq!(det.npwp.as_deref(), Some("09.111.222.3-333.000"));
+        assert_eq!(det.phone.as_deref(), Some("081234567890"));
+        assert_eq!(det.personal_email.as_deref(), Some("diri@example.test"));
     }
 }

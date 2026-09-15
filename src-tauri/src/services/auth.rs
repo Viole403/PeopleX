@@ -45,6 +45,7 @@ async fn record_login_activity(
     user_id: Option<i64>,
     attempt: &str,
     status: &str,
+    ip: &str,
 ) -> Result<(), String> {
     login_activity::ActiveModel {
         user_id: Set(user_id.map(|v| v as i32)),
@@ -53,7 +54,7 @@ async fn record_login_activity(
         } else {
             Some(attempt.to_string())
         }),
-        ip_address: Set(Some("desktop".to_string())),
+        ip_address: Set(Some(ip.to_string())),
         user_agent: Set(Some("peoplex".to_string())),
         status: Set(status.to_string()),
         ..Default::default()
@@ -148,7 +149,12 @@ pub async fn attempt_login(
     db: &sea_orm::DatabaseConnection,
     login: &str,
     password: &str,
+    ip: &str,
 ) -> Result<LoginOk, String> {
+    if !super::security::ip_allowed(db, ip).await? {
+        record_login_activity(db, None, login, "ip_denied", ip).await?;
+        return Err("IP tidak diizinkan.".to_string());
+    }
     let login = login.trim();
     if login.is_empty() || password.is_empty() {
         return Err("Username/email dan password wajib diisi.".to_string());
@@ -159,7 +165,7 @@ pub async fn attempt_login(
     if let Some(u) = &user {
         if let Some(locked) = u.locked_until.as_deref() {
             if let Some(mins) = locked_minutes_remaining(locked, &now) {
-                record_login_activity(db, None, login, "failed").await?;
+                record_login_activity(db, None, login, "failed", ip).await?;
                 return Err(format!(
                     "Akun terkunci sementara. Coba lagi dalam {mins} menit."
                 ));
@@ -187,7 +193,7 @@ pub async fn attempt_login(
                 .await
                 .map_err(|e| format!("gagal mencatat percobaan: {e}"))?;
         }
-        record_login_activity(db, user.as_ref().map(|u| u.id as i64), login, "failed").await?;
+        record_login_activity(db, user.as_ref().map(|u| u.id as i64), login, "failed", ip).await?;
         return Err("Username/email atau password salah.".to_string());
     }
 
@@ -200,7 +206,7 @@ pub async fn attempt_login(
     am.update(db)
         .await
         .map_err(|e| format!("gagal memperbarui login: {e}"))?;
-    record_login_activity(db, Some(u.id as i64), login, "success").await?;
+    record_login_activity(db, Some(u.id as i64), login, "success", ip).await?;
     audit::log_sea(
         db,
         Some(u.id as i64),
@@ -485,10 +491,10 @@ pub async fn verify_mfa(
     }
     let now = Local::now().timestamp();
     if !totp_valid(&sec, code, now)? {
-        record_login_activity(db, Some(user_id), "", "failed").await?;
+        record_login_activity(db, Some(user_id), "", "failed", "desktop").await?;
         return Err("Kode MFA salah.".to_string());
     }
-    record_login_activity(db, Some(user_id), "", "success").await?;
+    record_login_activity(db, Some(user_id), "", "success", "desktop").await?;
     load_session_user(db, user_id)
         .await?
         .ok_or("Sesi berakhir. Masuk kembali.".to_string())
@@ -652,7 +658,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("dir");
         let state = init_state(dir.path().to_path_buf()).expect("state");
         let db = &state.sea;
-        let ok = attempt_login(db, "admin", "Admin@123").await.expect("login");
+        let ok = attempt_login(db, "admin", "Admin@123", "desktop").await.expect("login");
         assert!(ok.must_change_password);
         assert!(ok.user.is_super_admin);
         assert!(!ok.user.permissions.is_empty());
@@ -672,14 +678,14 @@ mod tests {
         let secret = base32_decode(&setup.secret).expect("decode");
         let code = totp_code(&secret, now);
         mfa_enable(db, uid, &code).await.expect("enable");
-        let ok = attempt_login(db, "admin", "Admin@123").await.expect("login");
+        let ok = attempt_login(db, "admin", "Admin@123", "desktop").await.expect("login");
         assert!(ok.mfa_required);
         assert!(verify_mfa(db, uid, "000000").await.is_err());
         let user = verify_mfa(db, uid, &code).await.expect("challenge");
         assert_eq!(user.id as i64, uid);
         mfa_disable(db, uid, "salah").await.expect_err("password salah");
         mfa_disable(db, uid, "Admin@123").await.expect("disable");
-        let ok = attempt_login(db, "admin", "Admin@123").await.expect("login lagi");
+        let ok = attempt_login(db, "admin", "Admin@123", "desktop").await.expect("login lagi");
         assert!(!ok.mfa_required);
     }
 
@@ -689,10 +695,10 @@ mod tests {
         let state = init_state(dir.path().to_path_buf()).expect("state");
         let db = &state.sea;
         for _ in 0..5 {
-            let e = attempt_login(db, "admin", "salah").await.expect_err("harus gagal");
+            let e = attempt_login(db, "admin", "salah", "desktop").await.expect_err("harus gagal");
             assert_eq!(e, "Username/email atau password salah.");
         }
-        let e = attempt_login(db, "admin", "Admin@123")
+        let e = attempt_login(db, "admin", "Admin@123", "desktop")
             .await
             .expect_err("harus terkunci");
         assert!(e.contains("terkunci"), "pesan: {e}");
@@ -719,7 +725,7 @@ mod tests {
         let mut am = admin.into_active_model();
         am.status = Set("inactive".to_string());
         am.update(db).await.expect("nonaktif");
-        let e = attempt_login(db, "admin", "Admin@123")
+        let e = attempt_login(db, "admin", "Admin@123", "desktop")
             .await
             .expect_err("nonaktif ditolak");
         assert_eq!(e, "Username/email atau password salah.");
@@ -732,7 +738,7 @@ mod tests {
         let mut am = admin.into_active_model();
         am.status = Set("active".to_string());
         am.update(db).await.expect("aktif");
-        let e = attempt_login(db, "hantu", "apapun")
+        let e = attempt_login(db, "hantu", "apapun", "desktop")
             .await
             .expect_err("unknown ditolak");
         assert_eq!(e, "Username/email atau password salah.");
@@ -755,7 +761,7 @@ mod tests {
         change_password(db, id, "Admin@123", "PasswordBaru1")
             .await
             .expect("ganti ok");
-        let ok = attempt_login(db, "admin", "PasswordBaru1")
+        let ok = attempt_login(db, "admin", "PasswordBaru1", "desktop")
             .await
             .expect("login baru");
         assert!(!ok.must_change_password);
@@ -777,7 +783,7 @@ mod tests {
             .await
             .expect_err("reuse ditolak");
         assert!(e.contains("tidak valid"), "pesan: {e}");
-        attempt_login(db, "admin", "ResetBaru12")
+        attempt_login(db, "admin", "ResetBaru12", "desktop")
             .await
             .expect("login password reset");
     }

@@ -14,6 +14,7 @@ pub struct AppState {
     pub sea: sea_orm::DatabaseConnection,
     pub data_dir: PathBuf,
     pub session: Mutex<Option<i64>>,
+    pub session_expires: Mutex<Option<i64>>,
 }
 
 /// Pengguna yang sedang login.
@@ -79,11 +80,29 @@ async fn db_status(state: tauri::State<'_, AppState>) -> Result<DbStatus, String
 async fn current_actor(
     state: &tauri::State<'_, AppState>,
 ) -> Result<(i64, SessionUser), String> {
-    let uid = state
-        .session
-        .lock()
-        .map_err(|_| "Sesi terkunci.".to_string())?
-        .ok_or("Belum login.".to_string())?;
+    let uid = {
+        let mut guard = state
+            .session
+            .lock()
+            .map_err(|_| "Sesi terkunci.".to_string())?;
+        let mut exp = state
+            .session_expires
+            .lock()
+            .map_err(|_| "Sesi terkunci.".to_string())?;
+        match *guard {
+            None => return Err("Belum login.".to_string()),
+            Some(id) => {
+                let now = chrono::Utc::now().timestamp();
+                if services::security::session_remaining_expired(*exp, now) == 0 {
+                    *guard = None;
+                    *exp = None;
+                    return Err("Sesi berakhir. Masuk kembali.".to_string());
+                }
+                *exp = Some(now + services::security::SESSION_TTL_SECS);
+                id
+            }
+        }
+    };
     let user = services::auth::load_session_user(&state.sea, uid)
         .await?
         .ok_or("Sesi berakhir. Masuk kembali.".to_string())?;
@@ -122,13 +141,25 @@ async fn login(
     state: tauri::State<'_, AppState>,
     username: String,
     password: String,
+    ip: Option<String>,
 ) -> Result<services::auth::LoginOk, String> {
-    let ok = services::auth::attempt_login(&state.sea, &username, &password).await?;
+    let ok = services::auth::attempt_login(
+        &state.sea,
+        &username,
+        &password,
+        ip.as_deref().unwrap_or("desktop"),
+    )
+    .await?;
     if !ok.mfa_required {
         *state
             .session
             .lock()
             .map_err(|_| "Sesi terkunci.".to_string())? = Some(ok.user.id as i64);
+        *state
+            .session_expires
+            .lock()
+            .map_err(|_| "Sesi terkunci.".to_string())? =
+            Some(chrono::Utc::now().timestamp() + services::security::SESSION_TTL_SECS);
     }
     Ok(ok)
 }
@@ -145,6 +176,11 @@ async fn mfa_challenge(
         .session
         .lock()
         .map_err(|_| "Sesi terkunci.".to_string())? = Some(user.id as i64);
+    *state
+        .session_expires
+        .lock()
+        .map_err(|_| "Sesi terkunci.".to_string())? =
+        Some(chrono::Utc::now().timestamp() + services::security::SESSION_TTL_SECS);
     Ok(services::auth::LoginOk {
         must_change_password: user.must_change_password,
         mfa_required: false,
@@ -181,6 +217,10 @@ async fn logout(state: tauri::State<'_, AppState>) -> Result<(), String> {
         .lock()
         .map_err(|_| "Sesi terkunci.".to_string())?
         .take();
+    *state
+        .session_expires
+        .lock()
+        .map_err(|_| "Sesi terkunci.".to_string())? = None;
     if let Some(id) = uid {
         services::auth::logout(&state.sea, id).await?;
     }
@@ -2649,6 +2689,41 @@ async fn recruitment_requisition_decide(
 
 #[tauri::command]
 #[specta::specta]
+async fn security_status_get(
+    state: tauri::State<'_, AppState>,
+) -> Result<services::security::SecurityStatus, String> {
+    require(&state, &["system.manage"]).await?;
+    services::security::security_status_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn security_settings_set(
+    state: tauri::State<'_, AppState>,
+    ip_whitelist: Option<String>,
+    pii_key: Option<String>,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["system.manage"]).await?;
+    services::security::set_security_settings(
+        &state.sea,
+        uid,
+        ip_whitelist.as_deref(),
+        pii_key.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn security_login_activity_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::security::LoginActivityRow>, String> {
+    require(&state, &["system.manage"]).await?;
+    services::security::login_activity_list_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn trip_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::travel::Trip>, String> {
     let (uid, _) = current_actor(&state).await?;
     services::travel::my_trips_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
@@ -3662,6 +3737,7 @@ fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
         sea,
         data_dir,
         session: Mutex::new(None),
+        session_expires: Mutex::new(None),
     })
 }
 
@@ -3873,6 +3949,9 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         recruitment_requisition_save,
         recruitment_requisition_list,
         recruitment_requisition_decide,
+        security_login_activity_list,
+        security_settings_set,
+        security_status_get,
         leave_carryover_run,
         approval_delegate,
         approval_delegations,
