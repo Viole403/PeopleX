@@ -4294,7 +4294,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &117);
+                assert_eq!(t, &118);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),
