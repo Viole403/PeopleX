@@ -9,6 +9,7 @@ import {
   Briefcase02,
   CalendarCheck01,
   CalendarDate,
+  ChevronDown,
   ChevronLeft,
   ClipboardCheck,
   Clock,
@@ -32,39 +33,82 @@ import {
   Users01,
   Wallet01,
 } from "@untitledui/icons";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { can, useLogout, useSession } from "../lib/session";
 import { unwrap } from "../lib/query";
 import { commands } from "../bindings";
 import { useTheme } from "../lib/theme";
 import { useUi } from "../lib/ui";
 
-const NAV_MAIN = [
-  { to: "/", label: "Dasbor", icon: Home01 },
-  { to: "/employees", label: "Karyawan", icon: Users01 },
-  { to: "/attendance", label: "Absensi", icon: Clock },
-  { to: "/leave", label: "Cuti & Izin", icon: CalendarCheck01 },
-  { to: "/payroll", label: "Penggajian", icon: BankNote01 },
-  { to: "/recruitment", label: "Rekrutmen", icon: Briefcase02 },
-  { to: "/onboarding", label: "Onboarding", icon: ClipboardCheck },
-  { to: "/offboarding", label: "Offboarding", icon: FileCheck01 },
-  { to: "/performance", label: "Kinerja", icon: Award01 },
-  { to: "/training", label: "Training", icon: GraduationHat01 },
-  { to: "/assets", label: "Aset", icon: Package },
-  { to: "/travel", label: "Dinas & Reimburse", icon: Truck01 },
-  { to: "/announcements", label: "Pengumuman", icon: Announcement01 },
-  { to: "/reports", label: "Laporan", icon: BarChartSquare01 },
+type NavItem = { to: string; label: string; icon: typeof Home01; perm?: string | null };
+type NavSection = { id: string; title: string; items: NavItem[] };
+
+const NAV_SECTIONS: NavSection[] = [
+  {
+    id: "utama",
+    title: "Utama",
+    items: [
+      { to: "/", label: "Dasbor", icon: Home01 },
+      { to: "/employees", label: "Karyawan", icon: Users01 },
+      { to: "/announcements", label: "Pengumuman", icon: Announcement01 },
+      { to: "/reports", label: "Laporan", icon: BarChartSquare01 },
+    ],
+  },
+  {
+    id: "kehadiran",
+    title: "Kehadiran",
+    items: [
+      { to: "/attendance", label: "Absensi", icon: Clock },
+      { to: "/leave", label: "Cuti & Izin", icon: CalendarCheck01 },
+      { to: "/schedules", label: "Shift & Jadwal", icon: CalendarDate, perm: "attendance.view" },
+    ],
+  },
+  {
+    id: "talenta",
+    title: "Talenta",
+    items: [
+      { to: "/recruitment", label: "Rekrutmen", icon: Briefcase02 },
+      { to: "/onboarding", label: "Onboarding", icon: ClipboardCheck },
+      { to: "/offboarding", label: "Offboarding", icon: FileCheck01 },
+      { to: "/performance", label: "Kinerja", icon: Award01 },
+      { to: "/training", label: "Training", icon: GraduationHat01 },
+    ],
+  },
+  {
+    id: "keuangan",
+    title: "Keuangan",
+    items: [
+      { to: "/payroll", label: "Penggajian", icon: BankNote01 },
+      { to: "/travel", label: "Dinas & Reimburse", icon: Truck01 },
+      { to: "/assets", label: "Aset", icon: Package },
+      { to: "/payroll-settings", label: "Pengaturan Gaji", icon: Wallet01, perm: "system.manage" },
+    ],
+  },
+  {
+    id: "admin",
+    title: "Administrasi",
+    items: [
+      { to: "/organization", label: "Organisasi", icon: Globe01, perm: "organization.view" },
+      { to: "/users", label: "Pengguna", icon: Key01, perm: "rbac.manage" },
+      { to: "/roles", label: "Peran", icon: Shield01, perm: "rbac.manage" },
+      { to: "/settings", label: "Pengaturan", icon: Settings01, perm: "settings.manage" },
+      { to: "/audit", label: "Audit Log", icon: List, perm: "audit.view" },
+      { to: "/status", label: "Status Basis Data", icon: Database01 },
+    ],
+  },
 ];
-const NAV_ADMIN = [
-  { to: "/users", label: "Pengguna", icon: Key01, perm: "rbac.manage" },
-  { to: "/roles", label: "Peran", icon: Shield01, perm: "rbac.manage" },
-  { to: "/organization", label: "Organisasi", icon: Globe01, perm: "organization.view" },
-  { to: "/schedules", label: "Shift & Jadwal", icon: CalendarDate, perm: "attendance.view" },
-  { to: "/settings", label: "Pengaturan", icon: Settings01, perm: "settings.manage" },
-  { to: "/payroll-settings", label: "Pengaturan Gaji", icon: Wallet01, perm: "system.manage" },
-  { to: "/audit", label: "Audit Log", icon: List, perm: "audit.view" },
-  { to: "/status", label: "Status Basis Data", icon: Database01, perm: null },
-];
+
+const NAV_OPEN_KEY = "peoplex.nav-open";
+
+function loadNavOpen(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(NAV_OPEN_KEY);
+    if (raw) return JSON.parse(raw) as Record<string, boolean>;
+  } catch {
+    // abaikan penyimpanan rusak, pakai default semua terbuka
+  }
+  return {};
+}
 
 function IconButton({
   label,
@@ -125,11 +169,33 @@ export function Shell() {
     return <Outlet />;
   }
 
-  const adminNav = NAV_ADMIN.filter((item) =>
-    item.perm === null ? true : can(session, item.perm, "system.manage"),
-  );
+  const [navOpen, setNavOpen] = useState<Record<string, boolean>>(loadNavOpen);
 
-  const navLink = (item: { to: string; label: string; icon: typeof Home01 }) => {
+  const toggleSection = (id: string) => {
+    setNavOpen((prev) => {
+      const next = { ...prev, [id]: !(prev[id] ?? true) };
+      try {
+        localStorage.setItem(NAV_OPEN_KEY, JSON.stringify(next));
+      } catch {
+        // penyimpanan opsional; state sesi tetap berlaku
+      }
+      return next;
+    });
+  };
+
+  const isOpen = (section: NavSection) => {
+    if (!sidebarOpen) return true;
+    return navOpen[section.id] ?? true;
+  };
+
+  const visibleSections = NAV_SECTIONS.map((section) => ({
+    ...section,
+    items: section.items.filter((item) =>
+      !item.perm ? true : can(session, item.perm, "system.manage"),
+    ),
+  })).filter((section) => section.items.length > 0);
+
+  const navLink = (item: NavItem) => {
     const active = pathname === item.to;
     const Icon = item.icon;
     return (
@@ -168,13 +234,30 @@ export function Shell() {
           )}
         </div>
         <nav className="flex-1 space-y-1 overflow-y-auto p-2">
-          {NAV_MAIN.map(navLink)}
-          {adminNav.length > 0 && sidebarOpen && (
-            <p className="px-3 pb-1 pt-3 text-xs font-semibold uppercase text-text-tertiary">
-              Administrasi
-            </p>
-          )}
-          {adminNav.map(navLink)}
+          {visibleSections.map((section) => {
+            const activeIn = section.items.some((item) => pathname === item.to);
+            return (
+              <div key={section.id}>
+                {sidebarOpen && (
+                  <button
+                    type="button"
+                    onClick={() => toggleSection(section.id)}
+                    aria-expanded={isOpen(section)}
+                    className={`flex w-full items-center gap-2 rounded-lg px-3 pb-1 pt-3 text-xs font-semibold uppercase transition hover:text-text-secondary ${
+                      activeIn ? "text-text-brand-primary" : "text-text-tertiary"
+                    }`}
+                  >
+                    <span className="flex-1 truncate text-left">{section.title}</span>
+                    <ChevronDown
+                      size={14}
+                      className={`shrink-0 transition-transform ${isOpen(section) ? "" : "-rotate-90"}`}
+                    />
+                  </button>
+                )}
+                {isOpen(section) && section.items.map(navLink)}
+              </div>
+            );
+          })}
         </nav>
         <div className="space-y-1 border-t border-border-secondary p-2">
           <div
