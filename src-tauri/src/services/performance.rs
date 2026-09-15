@@ -905,6 +905,447 @@ async fn recompute_sea(
     Ok(())
 }
 
+// ---------------- OKR cascading, 360, kalibrasi, succession ----------------
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct Goal {
+    pub id: i32,
+    pub parent_id: Option<i32>,
+    pub level: String,
+    pub title: String,
+    pub owner_employee_id: Option<i32>,
+    pub department_id: Option<i32>,
+    pub target: f64,
+    pub actual: Option<f64>,
+    pub weight: f64,
+    pub status: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug, Default)]
+pub struct GoalInput {
+    pub parent_id: Option<i32>,
+    pub level: String,
+    pub title: String,
+    pub owner_employee_id: Option<i32>,
+    pub department_id: Option<i32>,
+    pub target: f64,
+    pub weight: f64,
+}
+
+fn goal_levels() -> &'static [&'static str] {
+    &["company", "department", "individual"]
+}
+
+fn gopt_i(v: &Value, f: &str) -> Result<Option<i32>, String> {
+    match value_i64(v) {
+        Some(x) => Ok(Some(to_dto_int(x, f)?)),
+        None => Ok(None),
+    }
+}
+
+fn goal_row(r: &[Value]) -> Result<Goal, String> {
+    Ok(Goal {
+        id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "goal.id")?,
+        parent_id: gopt_i(&r[1], "goal.parent")?,
+        level: value_to_string(&r[2]),
+        title: value_to_string(&r[3]),
+        owner_employee_id: gopt_i(&r[4], "goal.owner")?,
+        department_id: gopt_i(&r[5], "goal.dept")?,
+        target: match &r[6] {
+            Value::Float(v) => *v,
+            Value::Int(v) => *v as f64,
+            _ => 0.0,
+        },
+        actual: match &r[7] {
+            Value::Null => None,
+            Value::Float(v) => Some(*v),
+            Value::Int(v) => Some(*v as f64),
+            _ => None,
+        },
+        weight: match &r[8] {
+            Value::Float(v) => *v,
+            Value::Int(v) => *v as f64,
+            _ => 0.0,
+        },
+        status: value_to_string(&r[9]),
+    })
+}
+
+pub async fn goal_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    period_id: i64,
+    id: Option<i64>,
+    input: &GoalInput,
+) -> Result<i32, String> {
+    if !goal_levels().contains(&input.level.as_str()) {
+        return Err("Level goal tidak valid.".to_string());
+    }
+    if input.title.trim().is_empty() {
+        return Err("Judul goal wajib diisi.".to_string());
+    }
+    if let Some(pid) = input.parent_id {
+        let prow = q_one(
+            db,
+            "SELECT level FROM goals WHERE id = ?1 AND performance_period_id = ?2".to_string(),
+            vec![Value::Int(pid as i64), Value::Int(period_id)],
+            1,
+            "goal.parent",
+        )
+        .await
+        .map_err(|e| format!("gagal memeriksa induk: {e}"))?;
+        let Some(prow) = prow else {
+            return Err("Goal induk tidak ditemukan.".to_string());
+        };
+        let plevel = value_to_string(&prow[0]);
+        let ok = match input.level.as_str() {
+            "department" => plevel == "company",
+            "individual" => plevel == "department",
+            _ => input.parent_id.is_none(),
+        };
+        if !ok {
+            return Err("Induk tidak sesuai jenjang.".to_string());
+        }
+    } else if input.level != "company" {
+        return Err("Goal non-perusahaan wajib punya induk.".to_string());
+    }
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let owner = input.owner_employee_id.map(|v| Value::Int(v as i64)).unwrap_or(Value::Null);
+    let dept = input.department_id.map(|v| Value::Int(v as i64)).unwrap_or(Value::Null);
+    let parent = input.parent_id.map(|v| Value::Int(v as i64)).unwrap_or(Value::Null);
+    let new_id = match id {
+        Some(x) => {
+            let n = exec(
+                db,
+                "UPDATE goals SET parent_id = ?1, level = ?2, title = ?3, owner_employee_id = ?4, department_id = ?5, target = ?6, weight = ?7, updated_at = ?8 WHERE id = ?9 AND performance_period_id = ?10".to_string(),
+                vec![parent, Value::Text(input.level.clone()), Value::Text(input.title.trim().to_string()), owner, dept, Value::Float(input.target), Value::Float(input.weight), Value::Text(now), Value::Int(x), Value::Int(period_id)],
+                "goal.upd",
+            )
+            .await?;
+            if n == 0 {
+                return Err("Goal tidak ditemukan.".to_string());
+            }
+            x
+        }
+        None => {
+            exec_insert(
+                db,
+                "INSERT INTO goals (performance_period_id, parent_id, level, title, owner_employee_id, department_id, target, weight, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'open', ?9, ?9)".to_string(),
+                vec![Value::Int(period_id), parent, Value::Text(input.level.clone()), Value::Text(input.title.trim().to_string()), owner, dept, Value::Float(input.target), Value::Float(input.weight), Value::Text(now)],
+                "goal.ins",
+            )
+            .await?
+        }
+    };
+    audit::log_sea(db, Some(actor_id), if id.is_some() { "UPDATE" } else { "CREATE" }, "performance.goal", Some(&new_id.to_string()), None, None, None).await?;
+    to_dto_int(new_id, "goal.id")
+}
+
+pub async fn goal_tree_sea(
+    db: &sea_orm::DatabaseConnection,
+    period_id: i64,
+) -> Result<Vec<Goal>, String> {
+    let rows = q_all(
+        db,
+        "SELECT id, parent_id, level, title, owner_employee_id, department_id, target, actual, weight, status FROM goals WHERE performance_period_id = ?1 ORDER BY id".to_string(),
+        vec![Value::Int(period_id)],
+        10,
+        "goal.tree",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca goal: {e}"))?;
+    rows.iter().map(|r| goal_row(r)).collect()
+}
+
+pub async fn goal_progress_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    goal_id: i64,
+    actual: f64,
+) -> Result<(), String> {
+    let n = exec(
+        db,
+        "UPDATE goals SET actual = ?1, updated_at = ?2 WHERE id = ?3".to_string(),
+        vec![Value::Float(actual), Value::Text(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()), Value::Int(goal_id)],
+        "goal.prog",
+    )
+    .await?;
+    if n == 0 {
+        return Err("Goal tidak ditemukan.".to_string());
+    }
+    audit::log_sea(db, Some(actor_id), "UPDATE", "performance.goal.progress", Some(&goal_id.to_string()), None, None, None).await?;
+    Ok(())
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct Feedback360 {
+    pub id: i32,
+    pub employee_id: i32,
+    pub reviewer_employee_id: i32,
+    pub relation: String,
+    pub score: f64,
+    pub comments: Option<String>,
+}
+
+fn fb_relations() -> &'static [&'static str] {
+    &["manager", "peer", "subordinate", "self"]
+}
+
+pub async fn feedback360_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    period_id: i64,
+    employee_id: i64,
+    reviewer_employee_id: i64,
+    relation: &str,
+    score: f64,
+    comments: Option<&str>,
+) -> Result<i32, String> {
+    if !fb_relations().contains(&relation) {
+        return Err("Relasi reviewer tidak valid.".to_string());
+    }
+    if !(0.0..=100.0).contains(&score) {
+        return Err("Skor 0-100.".to_string());
+    }
+    let comment = comments.map(str::trim).filter(|s| !s.is_empty()).map(|s| Value::Text(s.to_string())).unwrap_or(Value::Null);
+    let ada = q_one(
+        db,
+        "SELECT id FROM feedback_360 WHERE performance_period_id = ?1 AND employee_id = ?2 AND reviewer_employee_id = ?3".to_string(),
+        vec![Value::Int(period_id), Value::Int(employee_id), Value::Int(reviewer_employee_id)],
+        1,
+        "fb360.cek",
+    )
+    .await
+    .map_err(|e| format!("gagal memeriksa feedback: {e}"))?;
+    let rid = match ada {
+        Some(r) => {
+            let x = value_i64(&r[0]).unwrap_or(0);
+            exec(
+                db,
+                "UPDATE feedback_360 SET relation = ?1, score = ?2, comments = ?3 WHERE id = ?4".to_string(),
+                vec![Value::Text(relation.to_string()), Value::Float(score), comment, Value::Int(x)],
+                "fb360.upd",
+            )
+            .await?;
+            x
+        }
+        None => {
+            exec_insert(
+                db,
+                "INSERT INTO feedback_360 (performance_period_id, employee_id, reviewer_employee_id, relation, score, comments) VALUES (?1, ?2, ?3, ?4, ?5, ?6)".to_string(),
+                vec![Value::Int(period_id), Value::Int(employee_id), Value::Int(reviewer_employee_id), Value::Text(relation.to_string()), Value::Float(score), comment],
+                "fb360.ins",
+            )
+            .await?
+        }
+    };
+    audit::log_sea(db, Some(actor_id), "CREATE", "performance.fb360", Some(&rid.to_string()), None, None, None).await?;
+    to_dto_int(rid, "fb360.id")
+}
+
+pub async fn feedback360_list_sea(
+    db: &sea_orm::DatabaseConnection,
+    period_id: i64,
+    employee_id: i64,
+) -> Result<Vec<Feedback360>, String> {
+    let rows = q_all(
+        db,
+        "SELECT id, employee_id, reviewer_employee_id, relation, score, comments FROM feedback_360 WHERE performance_period_id = ?1 AND employee_id = ?2 ORDER BY id".to_string(),
+        vec![Value::Int(period_id), Value::Int(employee_id)],
+        6,
+        "fb360.list",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca feedback: {e}"))?;
+    rows.iter()
+        .map(|r| {
+            Ok(Feedback360 {
+                id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "fb360.id")?,
+                employee_id: to_dto_int(value_i64(&r[1]).unwrap_or(0), "fb360.emp")?,
+                reviewer_employee_id: to_dto_int(value_i64(&r[2]).unwrap_or(0), "fb360.rev")?,
+                relation: value_to_string(&r[3]),
+                score: match &r[4] {
+                    Value::Float(v) => *v,
+                    Value::Int(v) => *v as f64,
+                    _ => 0.0,
+                },
+                comments: match &r[5] {
+                    Value::Null => None,
+                    v => Some(value_to_string(v)),
+                },
+            })
+        })
+        .collect()
+}
+
+pub async fn calibrate_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    period_id: i64,
+    employee_id: i64,
+    final_score: f64,
+    notes: Option<&str>,
+) -> Result<(), String> {
+    if !(0.0..=100.0).contains(&final_score) {
+        return Err("Skor 0-100.".to_string());
+    }
+    let awal = q_one(
+        db,
+        "SELECT final_score FROM performance_reviews WHERE performance_period_id = ?1 AND employee_id = ?2".to_string(),
+        vec![Value::Int(period_id), Value::Int(employee_id)],
+        1,
+        "cal.awal",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca skor awal: {e}"))?;
+    let Some(awal) = awal else {
+        return Err("Review karyawan tidak ditemukan.".to_string());
+    };
+    let initial = match &awal[0] {
+        Value::Null => return Err("Skor awal belum ada.".to_string()),
+        Value::Float(v) => *v,
+        Value::Int(v) => *v as f64,
+        _ => 0.0,
+    };
+    let note = notes.map(str::trim).filter(|s| !s.is_empty()).map(|s| Value::Text(s.to_string())).unwrap_or(Value::Null);
+    let ada = q_one(
+        db,
+        "SELECT id FROM calibrations WHERE performance_period_id = ?1 AND employee_id = ?2".to_string(),
+        vec![Value::Int(period_id), Value::Int(employee_id)],
+        1,
+        "cal.cek",
+    )
+    .await
+    .map_err(|e| format!("gagal memeriksa kalibrasi: {e}"))?;
+    match ada {
+        Some(r) => {
+            exec(
+                db,
+                "UPDATE calibrations SET initial_score = ?1, final_score = ?2, decided_by = ?3, notes = ?4 WHERE id = ?5".to_string(),
+                vec![Value::Float(initial), Value::Float(final_score), Value::Int(actor_id), note, Value::Int(value_i64(&r[0]).unwrap_or(0))],
+                "cal.upd",
+            )
+            .await?;
+        }
+        None => {
+            exec_insert(
+                db,
+                "INSERT INTO calibrations (performance_period_id, employee_id, initial_score, final_score, decided_by, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6)".to_string(),
+                vec![Value::Int(period_id), Value::Int(employee_id), Value::Float(initial), Value::Float(final_score), Value::Int(actor_id), note],
+                "cal.ins",
+            )
+            .await?;
+        }
+    }
+    let rating = if final_score >= 90.0 { 5 } else if final_score >= 75.0 { 4 } else if final_score >= 60.0 { 3 } else if final_score >= 40.0 { 2 } else { 1 };
+    exec(
+        db,
+        "UPDATE performance_reviews SET final_score = ?1, final_rating = ?2 WHERE performance_period_id = ?3 AND employee_id = ?4".to_string(),
+        vec![Value::Float(final_score), Value::Int(rating), Value::Int(period_id), Value::Int(employee_id)],
+        "cal.apply",
+    )
+    .await?;
+    audit::log_sea(db, Some(actor_id), "UPDATE", "performance.calibration", Some(&employee_id.to_string()), None, None, None).await?;
+    Ok(())
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct Succession {
+    pub id: i32,
+    pub position_id: i32,
+    pub position_name: Option<String>,
+    pub successor_employee_id: i32,
+    pub successor_name: String,
+    pub readiness: String,
+    pub notes: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug, Default)]
+pub struct SuccessionInput {
+    pub position_id: i32,
+    pub successor_employee_id: i32,
+    pub readiness: String,
+    pub notes: Option<String>,
+}
+
+pub async fn succession_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    input: &SuccessionInput,
+) -> Result<i32, String> {
+    if !["ready", "developing", "not_ready"].contains(&input.readiness.as_str()) {
+        return Err("Kesiapan tidak valid.".to_string());
+    }
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let note = input.notes.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| Value::Text(s.to_string())).unwrap_or(Value::Null);
+    let ada = q_one(
+        db,
+        "SELECT id FROM successions WHERE position_id = ?1 AND successor_employee_id = ?2".to_string(),
+        vec![Value::Int(input.position_id as i64), Value::Int(input.successor_employee_id as i64)],
+        1,
+        "suc.cek",
+    )
+    .await
+    .map_err(|e| format!("gagal memeriksa succession: {e}"))?;
+    let rid = match ada {
+        Some(r) => {
+            let x = value_i64(&r[0]).unwrap_or(0);
+            exec(
+                db,
+                "UPDATE successions SET readiness = ?1, notes = ?2, updated_at = ?3 WHERE id = ?4".to_string(),
+                vec![Value::Text(input.readiness.clone()), note, Value::Text(now), Value::Int(x)],
+                "suc.upd",
+            )
+            .await?;
+            x
+        }
+        None => {
+            exec_insert(
+                db,
+                "INSERT INTO successions (position_id, successor_employee_id, readiness, notes, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5)".to_string(),
+                vec![Value::Int(input.position_id as i64), Value::Int(input.successor_employee_id as i64), Value::Text(input.readiness.clone()), note, Value::Text(now)],
+                "suc.ins",
+            )
+            .await?
+        }
+    };
+    audit::log_sea(db, Some(actor_id), "CREATE", "performance.succession", Some(&rid.to_string()), None, None, None).await?;
+    to_dto_int(rid, "suc.id")
+}
+
+pub async fn succession_list_sea(
+    db: &sea_orm::DatabaseConnection,
+) -> Result<Vec<Succession>, String> {
+    let rows = q_all(
+        db,
+        "SELECT s.id, s.position_id, p.name, s.successor_employee_id, TRIM(e.first_name || ' ' || COALESCE(e.last_name, '')), s.readiness, s.notes FROM successions s LEFT JOIN positions p ON p.id = s.position_id INNER JOIN employees e ON e.id = s.successor_employee_id ORDER BY s.id".to_string(),
+        vec![],
+        7,
+        "suc.list",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca succession: {e}"))?;
+    rows.iter()
+        .map(|r| {
+            Ok(Succession {
+                id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "suc.id")?,
+                position_id: to_dto_int(value_i64(&r[1]).unwrap_or(0), "suc.pos")?,
+                position_name: match &r[2] {
+                    Value::Null => None,
+                    v => Some(value_to_string(v)),
+                },
+                successor_employee_id: to_dto_int(value_i64(&r[3]).unwrap_or(0), "suc.peg")?,
+                successor_name: value_to_string(&r[4]),
+                readiness: value_to_string(&r[5]),
+                notes: match &r[6] {
+                    Value::Null => None,
+                    v => Some(value_to_string(v)),
+                },
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1031,5 +1472,163 @@ mod tests {
             .is_err());
         assert!(period_delete_sea(db, actor, pid as i64).await.is_err());
         assert!(kpi_delete_sea(db, actor, kid as i64).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn okr_360_kalibrasi_succession_sea() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = one(db, "SELECT id FROM users WHERE username = 'admin'", "test.admin").await;
+        let emp = mkemp(db, "EMP-OKR").await;
+        let peer = mkemp(db, "EMP-PEER").await;
+        let pid = period_save_sea(
+            db,
+            actor,
+            None,
+            &PerfPeriodInput {
+                name: "2026".to_string(),
+                period_type: "annual".to_string(),
+                start_date: "2026-01-01".to_string(),
+                end_date: "2026-12-31".to_string(),
+                status: "open".to_string(),
+            },
+        )
+        .await
+        .expect("periode") as i64;
+        let g1 = goal_save_sea(
+            db,
+            actor,
+            pid,
+            None,
+            &GoalInput {
+                parent_id: None,
+                level: "company".to_string(),
+                title: "Tumbuh 20%".to_string(),
+                owner_employee_id: None,
+                department_id: None,
+                target: 20.0,
+                weight: 100.0,
+            },
+        )
+        .await
+        .expect("goal1");
+        let g2 = goal_save_sea(
+            db,
+            actor,
+            pid,
+            None,
+            &GoalInput {
+                parent_id: Some(g1),
+                level: "department".to_string(),
+                title: "Rekrut 10 orang".to_string(),
+                owner_employee_id: None,
+                department_id: None,
+                target: 10.0,
+                weight: 50.0,
+            },
+        )
+        .await
+        .expect("goal2");
+        assert!(goal_save_sea(
+            db,
+            actor,
+            pid,
+            None,
+            &GoalInput {
+                parent_id: Some(g2),
+                level: "company".to_string(),
+                title: "Salah jenjang".to_string(),
+                owner_employee_id: None,
+                department_id: None,
+                target: 1.0,
+                weight: 1.0,
+            },
+        )
+        .await
+        .is_err());
+        assert!(goal_save_sea(
+            db,
+            actor,
+            pid,
+            None,
+            &GoalInput {
+                parent_id: None,
+                level: "individual".to_string(),
+                title: "Tanpa induk".to_string(),
+                owner_employee_id: Some(emp as i32),
+                department_id: None,
+                target: 1.0,
+                weight: 1.0,
+            },
+        )
+        .await
+        .is_err());
+        let g3 = goal_save_sea(
+            db,
+            actor,
+            pid,
+            None,
+            &GoalInput {
+                parent_id: Some(g2),
+                level: "individual".to_string(),
+                title: "Onboarding tepat waktu".to_string(),
+                owner_employee_id: Some(emp as i32),
+                department_id: None,
+                target: 100.0,
+                weight: 100.0,
+            },
+        )
+        .await
+        .expect("goal3");
+        goal_progress_sea(db, actor, g3 as i64, 80.0).await.expect("progress");
+        let tree = goal_tree_sea(db, pid).await.expect("tree");
+        assert_eq!(tree.len(), 3);
+        let f1 = feedback360_save_sea(db, actor, pid, emp, peer, "peer", 85.0, None)
+            .await
+            .expect("fb");
+        assert!(f1 > 0);
+        assert!(feedback360_save_sea(db, actor, pid, emp, peer, "bos", 80.0, None)
+            .await
+            .is_err());
+        let fbs = feedback360_list_sea(db, pid, emp).await.expect("list fb");
+        assert_eq!(fbs.len(), 1);
+        assert_eq!(fbs[0].score, 85.0);
+        let rid = ensure_review_sea(db, pid, emp).await.expect("review");
+        submit_review_sea(db, actor, rid as i64, "self", 70.0, None).await.expect("nilai");
+        calibrate_sea(db, actor, pid, emp, 90.0, Some("Kalibrasi lintas dept")).await.expect("kalibrasi");
+        let det = review_detail_sea(db, rid as i64).await.expect("det").expect("ada");
+        assert_eq!(det.final_score, Some(90.0));
+        assert_eq!(det.final_rating, Some(5));
+        assert!(calibrate_sea(db, actor, pid, 999999, 80.0, None).await.is_err());
+        let pos = one(db, "SELECT id FROM positions LIMIT 1", "t.pos").await;
+        let sid = succession_save_sea(
+            db,
+            actor,
+            &SuccessionInput {
+                position_id: pos as i32,
+                successor_employee_id: emp as i32,
+                readiness: "developing".to_string(),
+                notes: None,
+            },
+        )
+        .await
+        .expect("succession");
+        assert!(sid > 0);
+        assert!(succession_save_sea(
+            db,
+            actor,
+            &SuccessionInput {
+                position_id: pos as i32,
+                successor_employee_id: emp as i32,
+                readiness: "salah".to_string(),
+                notes: None,
+            },
+        )
+        .await
+        .is_err());
+        let sucs = succession_list_sea(db).await.expect("list suc");
+        assert_eq!(sucs.len(), 1);
+        assert_eq!(sucs[0].readiness, "developing");
     }
 }

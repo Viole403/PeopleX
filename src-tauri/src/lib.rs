@@ -2306,6 +2306,107 @@ async fn performance_submit_review(
 
 #[tauri::command]
 #[specta::specta]
+async fn performance_goal_save(
+    state: tauri::State<'_, AppState>,
+    period_id: i32,
+    id: Option<i32>,
+    input: services::performance::GoalInput,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state,
+        &["performance.create", "system.manage"],
+    ).await?;
+    services::performance::goal_save_sea(&state.sea, uid, period_id as i64, id.map(|v| v as i64), &input).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn performance_goal_tree(
+    state: tauri::State<'_, AppState>,
+    period_id: i32,
+) -> Result<Vec<services::performance::Goal>, String> {
+    require(&state, &["performance.view", "system.manage"]).await?;
+    services::performance::goal_tree_sea(&state.sea, period_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn performance_goal_progress(
+    state: tauri::State<'_, AppState>,
+    goal_id: i32,
+    actual: f64,
+) -> Result<(), String> {
+    let (uid, _) = require(&state,
+        &["performance.create", "system.manage"],
+    ).await?;
+    services::performance::goal_progress_sea(&state.sea, uid, goal_id as i64, actual).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn performance_fb360_save(
+    state: tauri::State<'_, AppState>,
+    period_id: i32,
+    employee_id: i32,
+    reviewer_employee_id: i32,
+    relation: String,
+    score: f64,
+    comments: Option<String>,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state,
+        &["performance.create", "performance.review", "system.manage"],
+    ).await?;
+    services::performance::feedback360_save_sea(&state.sea, uid, period_id as i64, employee_id as i64, reviewer_employee_id as i64, &relation, score, comments.as_deref()).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn performance_fb360_list(
+    state: tauri::State<'_, AppState>,
+    period_id: i32,
+    employee_id: i32,
+) -> Result<Vec<services::performance::Feedback360>, String> {
+    require(&state, &["performance.view", "system.manage"]).await?;
+    services::performance::feedback360_list_sea(&state.sea, period_id as i64, employee_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn performance_calibrate(
+    state: tauri::State<'_, AppState>,
+    period_id: i32,
+    employee_id: i32,
+    final_score: f64,
+    notes: Option<String>,
+) -> Result<(), String> {
+    let (uid, _) = require(&state,
+        &["performance.review", "system.manage"],
+    ).await?;
+    services::performance::calibrate_sea(&state.sea, uid, period_id as i64, employee_id as i64, final_score, notes.as_deref()).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn performance_succession_save(
+    state: tauri::State<'_, AppState>,
+    input: services::performance::SuccessionInput,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state,
+        &["performance.create", "system.manage"],
+    ).await?;
+    services::performance::succession_save_sea(&state.sea, uid, &input).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn performance_succession_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::performance::Succession>, String> {
+    require(&state, &["performance.view", "system.manage"]).await?;
+    services::performance::succession_list_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn training_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::training::Training>, String> {
@@ -4177,6 +4278,14 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         performance_assign_kpi,
         performance_submit_actual,
         performance_submit_review,
+        performance_goal_save,
+        performance_goal_tree,
+        performance_goal_progress,
+        performance_fb360_save,
+        performance_fb360_list,
+        performance_calibrate,
+        performance_succession_save,
+        performance_succession_list,
         training_list,
         training_participants,
         training_save,
@@ -4316,7 +4425,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &118);
+                assert_eq!(t, &122);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),
