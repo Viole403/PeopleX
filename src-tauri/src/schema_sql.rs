@@ -33,7 +33,7 @@ pub fn collect_indexed_text(sql_all: &str) -> HashSet<(String, String)> {
             if toks.is_empty() {
                 continue;
             }
-            if toks[0] == "unique" {
+            if t.trim_start().to_lowercase().starts_with("unique") {
                 if let Some(inner) = between_parens(t) {
                     for c in inner.split(',') {
                         let col = c.trim().split_whitespace().next().unwrap_or("");
@@ -727,6 +727,22 @@ mod tests {
         let my = transpile(DbBackend::MySql, stmt, &HashSet::new());
         assert!(my.contains("id BIGINT AUTO_INCREMENT PRIMARY KEY"));
         assert!(!my.contains("AUTOINCREMENT"));
+    }
+
+    #[test]
+    fn collect_menangkap_unique_tanpa_spasi() {
+        let script = include_str!("migrations/m18_bpjs.sql");
+        let set = collect_indexed_text(script);
+        assert!(set.contains(&("bpjs_dependents".to_string(), "name".to_string())));
+        assert!(!set.contains(&("bpjs_dependents".to_string(), "employee_id".to_string())));
+        for part in script.split(';') {
+            let stmt = part.trim();
+            if stmt.is_empty() || stmt.starts_with("--") || !is_create_table(stmt) {
+                continue;
+            }
+            let out = transpile(DbBackend::MySql, stmt, &set);
+            assert!(out.contains("name VARCHAR(255)"), "m18 nospace: {out}");
+        }
     }
 
     #[test]
