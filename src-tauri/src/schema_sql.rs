@@ -295,11 +295,19 @@ fn transpile_mysql(stmt: &str, indexed_text: &HashSet<(String, String)>) -> Stri
         "id BIGINT AUTO_INCREMENT PRIMARY KEY",
     );
     out = map_ct_lines(&out, |line| {
-        replace_ci(
-            line,
-            "DEFAULT CURRENT_TIMESTAMP",
-            "DEFAULT (CAST(CURRENT_TIMESTAMP AS CHAR))",
-        )
+        if line.to_lowercase().contains("varchar(255)") {
+            replace_ci(
+                line,
+                "DEFAULT CURRENT_TIMESTAMP",
+                "DEFAULT (CAST(CURRENT_TIMESTAMP AS CHAR))",
+            )
+        } else {
+            let mut s = replace_ci(line, "DEFAULT CURRENT_TIMESTAMP", "");
+            while s.contains("  ") {
+                s = s.replace("  ", " ");
+            }
+            s
+        }
     });
     out = integer_to_bigint(&out);
     out = replace_word_ci(&out, "numeric", "DECIMAL(20,6)");
@@ -318,7 +326,9 @@ fn map_ct_lines<F: Fn(&str) -> String>(stmt: &str, f: F) -> String {
     stmt.lines()
         .map(|line| {
             let l = line.to_lowercase();
-            if l.contains("text") && l.contains("default current_timestamp") {
+            if (l.contains("text") || l.contains("varchar"))
+                && l.contains("default current_timestamp")
+            {
                 f(line)
             } else {
                 line.to_string()
@@ -527,7 +537,7 @@ mod tests {
         let out = transpile(DbBackend::MySql, SAMPLE, &idx_sample());
         assert!(out.contains("id BIGINT AUTO_INCREMENT PRIMARY KEY"));
         assert!(out.contains("username VARCHAR(255) NOT NULL UNIQUE"));
-        assert!(out.contains("DEFAULT (CAST(CURRENT_TIMESTAMP AS CHAR))"));
+        assert!(!out.contains("CURRENT_TIMESTAMP"));
         assert!(out.contains("amount DECIMAL(20,6)"));
         assert!(out.contains("user_id BIGINT"));
         assert!(out.contains("`status`"));
@@ -535,6 +545,20 @@ mod tests {
         assert!(out.ends_with("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"));
         // literal 'active' tidak boleh ikut di-backtick
         assert!(out.contains("DEFAULT 'active'"));
+    }
+
+    #[test]
+    fn mysql_varchar_terindeks_menyimpan_default_cast() {
+        let stmt = "CREATE TABLE IF NOT EXISTS t (
+    id INTEGER PRIMARY KEY,
+    posted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (posted_at)
+)";
+        let mut idx = HashSet::new();
+        idx.insert(("t".to_string(), "posted_at".to_string()));
+        let out = transpile(DbBackend::MySql, stmt, &idx);
+        assert!(out
+            .contains("posted_at VARCHAR(255) NOT NULL DEFAULT (CAST(CURRENT_TIMESTAMP AS CHAR))"));
     }
 
     #[test]
