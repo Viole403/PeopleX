@@ -3175,6 +3175,220 @@ async fn onboarding_preboarding_status(
     services::onboarding::preboarding_status_sea(&state.sea, employee_id as i64).await
 }
 
+// ---------------- Keterlibatan karyawan ----------------
+
+#[tauri::command]
+#[specta::specta]
+async fn engagement_kudos_send(
+    state: tauri::State<'_, AppState>,
+    to_employee_id: i32,
+    message: String,
+    badge: Option<String>,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["employee.create", "system.manage"]).await?;
+    let emp = my_employee_sea(&state.sea, uid).await?;
+    services::engagement::kudos_send_sea(
+        &state.sea,
+        emp,
+        to_employee_id as i64,
+        &message,
+        badge.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn engagement_kudos_list(
+    state: tauri::State<'_, AppState>,
+    employee_id: Option<i32>,
+) -> Result<Vec<services::engagement::Kudos>, String> {
+    require(&state, &["employee.view", "system.manage"]).await?;
+    services::engagement::kudos_list_sea(&state.sea, employee_id.map(|i| i as i64)).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn engagement_poll_save(
+    state: tauri::State<'_, AppState>,
+    id: Option<i32>,
+    question: String,
+    options: Vec<String>,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["settings.manage", "system.manage"]).await?;
+    services::engagement::poll_save_sea(
+        &state.sea,
+        uid,
+        id.map(|i| i as i64),
+        &question,
+        &options,
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn engagement_poll_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::engagement::Poll>, String> {
+    require(&state, &["settings.manage", "system.manage"]).await?;
+    services::engagement::poll_list_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn engagement_poll_results(
+    state: tauri::State<'_, AppState>,
+    poll_id: i32,
+) -> Result<services::engagement::Poll, String> {
+    require(&state, &["settings.manage", "system.manage"]).await?;
+    services::engagement::poll_results_sea(&state.sea, poll_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn engagement_poll_vote(
+    state: tauri::State<'_, AppState>,
+    poll_id: i32,
+    option_id: i32,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["employee.create", "system.manage"]).await?;
+    let emp = my_employee_sea(&state.sea, uid).await?;
+    services::engagement::poll_vote_sea(&state.sea, emp, poll_id as i64, option_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn engagement_poll_close(state: tauri::State<'_, AppState>, poll_id: i32) -> Result<(), String> {
+    let (uid, _) = require(&state, &["settings.manage", "system.manage"]).await?;
+    services::engagement::poll_close_sea(&state.sea, uid, poll_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn whistleblow_report(
+    state: tauri::State<'_, AppState>,
+    topic: String,
+    message: String,
+) -> Result<String, String> {
+    current_actor(&state).await?;
+    services::engagement::whistleblow_report_sea(&state.sea, &topic, &message).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn whistleblow_status(
+    state: tauri::State<'_, AppState>,
+    token: String,
+) -> Result<Option<services::engagement::Whistleblow>, String> {
+    services::engagement::whistleblow_status_sea(&state.sea, &token).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn whistleblow_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::engagement::Whistleblow>, String> {
+    require(&state, &["settings.manage", "system.manage"]).await?;
+    services::engagement::whistleblow_list_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn whistleblow_decide(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+    status: String,
+    response: Option<String>,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["settings.manage", "system.manage"]).await?;
+    services::engagement::whistleblow_decide_sea(
+        &state.sea,
+        uid,
+        id as i64,
+        &status,
+        response.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn policy_save(
+    state: tauri::State<'_, AppState>,
+    id: Option<i32>,
+    title: String,
+    version: String,
+    content: Option<String>,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["settings.manage", "system.manage"]).await?;
+    services::engagement::policy_save_sea(
+        &state.sea,
+        uid,
+        id.map(|i| i as i64),
+        &title,
+        &version,
+        content.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn policy_publish(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
+    let (uid, _) = require(&state, &["settings.manage", "system.manage"]).await?;
+    services::engagement::policy_publish_sea(&state.sea, uid, id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn policy_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::engagement::Policy>, String> {
+    require(&state, &["employee.view", "system.manage"]).await?;
+    services::engagement::policy_list_sea(&state.sea, true).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn policy_ack(state: tauri::State<'_, AppState>, policy_id: i32) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["employee.create", "system.manage"]).await?;
+    let emp = my_employee_sea(&state.sea, uid).await?;
+    services::engagement::policy_ack_sea(&state.sea, emp, policy_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn policy_acks(
+    state: tauri::State<'_, AppState>,
+    policy_id: i32,
+) -> Result<Vec<services::engagement::PolicyAck>, String> {
+    require(&state, &["settings.manage", "system.manage"]).await?;
+    services::engagement::policy_ack_list_sea(&state.sea, policy_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn consent_set(
+    state: tauri::State<'_, AppState>,
+    purpose: String,
+    granted: bool,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["employee.create", "system.manage"]).await?;
+    let emp = my_employee_sea(&state.sea, uid).await?;
+    services::engagement::consent_set_sea(&state.sea, emp, &purpose, granted).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn consent_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::engagement::Consent>, String> {
+    let (uid, _) = require(&state, &["employee.view", "system.manage"]).await?;
+    let emp = my_employee_sea(&state.sea, uid).await?;
+    services::engagement::consent_list_sea(&state.sea, emp).await
+}
+
 // ---------------- Analitik SDM ----------------
 
 #[tauri::command]
@@ -3537,6 +3751,24 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         onboarding_preboarding_status,
         training_skill_gap,
         recruitment_pipeline,
+        engagement_kudos_send,
+        engagement_kudos_list,
+        engagement_poll_save,
+        engagement_poll_list,
+        engagement_poll_results,
+        engagement_poll_vote,
+        engagement_poll_close,
+        whistleblow_report,
+        whistleblow_status,
+        whistleblow_list,
+        whistleblow_decide,
+        policy_save,
+        policy_publish,
+        policy_list,
+        policy_ack,
+        policy_acks,
+        consent_set,
+        consent_list,
         leave_carryover_run,
         approval_delegate,
         approval_delegations,
@@ -3731,7 +3963,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &103);
+                assert_eq!(t, &111);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),

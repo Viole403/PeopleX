@@ -7,6 +7,7 @@ pub mod auth;
 pub mod backup;
 pub mod compensation;
 pub mod dashboard;
+pub mod engagement;
 pub mod employees;
 pub mod leave;
 pub mod notifications;
