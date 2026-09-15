@@ -28,6 +28,13 @@ fn rupiah(v: f64) -> String {
     format!("{}Rp {out}", if neg { "-" } else { "" })
 }
 
+fn uang(code: &str, v: f64) -> String {
+    if code.eq_ignore_ascii_case("IDR") {
+        return rupiah(v);
+    }
+    format!("{} {:.2}", code.to_uppercase(), v)
+}
+
 fn line(ops: &mut Vec<Op>, label: &str, value: &str) {
     ops.push(Op::ShowText {
         items: vec![TextItem::Text(format!("{label:<28} {value:>22}"))],
@@ -48,10 +55,37 @@ pub async fn render_sea(
     db: &sea_orm::DatabaseConnection,
     files: &Path,
     payroll_id: i64,
+    currency: Option<&str>,
 ) -> Result<String, String> {
     let det = payroll::payroll_detail_sea(db, payroll_id)
         .await?
         .ok_or("Payroll tidak ditemukan.".to_string())?;
+    let cur = currency.map(str::trim).filter(|s| !s.is_empty()).map(|s| s.to_uppercase()).unwrap_or_else(|| "IDR".to_string());
+    let rate = if cur == "IDR" {
+        1.0
+    } else {
+        let row = q_one(
+            db,
+            "SELECT rate_to_idr FROM currency_rates WHERE code = ?1 ORDER BY as_of DESC LIMIT 1".to_string(),
+            vec![Value::Text(cur.clone())],
+            1,
+            "payslip.fx",
+        )
+        .await
+        .map_err(|e| format!("gagal membaca kurs: {e}"))?;
+        let Some(row) = row else {
+            return Err(format!("Kurs {cur} belum ada."));
+        };
+        match &row[0] {
+            Value::Float(v) => *v,
+            Value::Int(v) => *v as f64,
+            _ => return Err(format!("Kurs {cur} tidak valid.")),
+        }
+    };
+    if rate <= 0.0 {
+        return Err(format!("Kurs {cur} tidak valid."));
+    }
+    let cv = |v: f64| v / rate;
     let slip = q_one(
         db,
         "SELECT id, payslip_number FROM payslips WHERE payroll_id = ?1".to_string(),
@@ -137,24 +171,24 @@ pub async fn render_sea(
     });
     ops.push(Op::AddLineBreak);
     for l in det.lines.iter().filter(|l| l.line_type == "income") {
-        line(&mut ops, &l.component_name, &rupiah(l.amount));
+        line(&mut ops, &l.component_name, &uang(&cur, cv(l.amount)));
     }
-    line(&mut ops, "Total pendapatan", &rupiah(det.total_income));
+    line(&mut ops, "Total pendapatan", &uang(&cur, cv(det.total_income)));
     blank(&mut ops);
     ops.push(Op::ShowText {
         items: vec![TextItem::Text("POTONGAN".to_string())],
     });
     ops.push(Op::AddLineBreak);
     for l in det.lines.iter().filter(|l| l.line_type == "deduction") {
-        line(&mut ops, &l.component_name, &rupiah(l.amount));
+        line(&mut ops, &l.component_name, &uang(&cur, cv(l.amount)));
     }
-    line(&mut ops, "Total potongan", &rupiah(det.total_deduction));
+    line(&mut ops, "Total potongan", &uang(&cur, cv(det.total_deduction)));
     blank(&mut ops);
     ops.push(Op::SetFont {
         font: PdfFontHandle::Builtin(BuiltinFont::CourierBold),
         size: Pt(11.0),
     });
-    line(&mut ops, "GAJI BERSIH", &rupiah(det.net_salary));
+    line(&mut ops, "GAJI BERSIH", &uang(&cur, cv(det.net_salary)));
     ops.push(Op::SetFont {
         font: PdfFontHandle::Builtin(BuiltinFont::CourierOblique),
         size: Pt(8.0),
@@ -333,7 +367,7 @@ mod tests {
         assert!(det.total_income >= det.basic_salary);
         assert!(det.net_salary > 0.0);
         assert!((det.total_income - det.total_deduction - det.net_salary).abs() < 1.0);
-        let rel = render_sea(db, files.path(), payroll_id)
+        let rel = render_sea(db, files.path(), payroll_id, None)
             .await
             .expect("render");
         assert!(rel.ends_with(".pdf"));
@@ -365,7 +399,7 @@ mod tests {
         let state = crate::init_state(dir.path().to_path_buf()).expect("state");
         let db = &state.sea;
         let admin = admin_id(db).await;
-        let e = render_sea(db, files.path(), 999_999).await.expect_err("twd");
+        let e = render_sea(db, files.path(), 999_999, None).await.expect_err("twd");
         assert_eq!(e, "Payroll tidak ditemukan.".to_string());
         let e = read_file_sea(db, files.path(), 999_999)
             .await
@@ -390,7 +424,7 @@ mod tests {
             .await
             .expect("generate");
         let payroll_id = payroll_id_for(db, pid, eid).await;
-        let e = render_sea(db, files.path(), payroll_id)
+        let e = render_sea(db, files.path(), payroll_id, None)
             .await
             .expect_err("belum bayar");
         assert_eq!(e, "Slip belum tersedia untuk payroll ini.".to_string());

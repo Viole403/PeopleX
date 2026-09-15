@@ -2235,6 +2235,308 @@ pub async fn bpjs_dependent_delete_sea(
     Ok(())
 }
 
+// ---------------- Global: kurs, kontraktor, pembayaran, FAQ regulasi ----------------
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct CurrencyRate {
+    pub code: String,
+    pub rate_to_idr: f64,
+    pub as_of: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct Contractor {
+    pub id: i32,
+    pub name: String,
+    pub country: String,
+    pub currency: String,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug, Default)]
+pub struct ContractorInput {
+    pub name: String,
+    pub country: String,
+    pub currency: String,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct ContractorPayment {
+    pub id: i32,
+    pub contractor_id: i32,
+    pub contractor_name: String,
+    pub period: String,
+    pub amount: f64,
+    pub currency: String,
+    pub amount_idr: f64,
+    pub status: String,
+    pub paid_at: Option<String>,
+}
+
+pub async fn currency_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    code: &str,
+    rate_to_idr: f64,
+    as_of: &str,
+) -> Result<(), String> {
+    let c = code.trim().to_uppercase();
+    if c.len() != 3 || !c.chars().all(|x| x.is_ascii_alphabetic()) {
+        return Err("Kode mata uang 3 huruf.".to_string());
+    }
+    if rate_to_idr <= 0.0 {
+        return Err("Kurs harus positif.".to_string());
+    }
+    chrono::NaiveDate::parse_from_str(as_of.trim(), "%Y-%m-%d")
+        .map_err(|_| "Tanggal kurs tidak valid.".to_string())?;
+    let ada = q_one(
+        db,
+        "SELECT id FROM currency_rates WHERE code = ?1 AND as_of = ?2".to_string(),
+        vec![Value::Text(c.clone()), Value::Text(as_of.trim().to_string())],
+        1,
+        "fx.cek",
+    )
+    .await
+    .map_err(|e| format!("gagal memeriksa kurs: {e}"))?;
+    match ada {
+        Some(r) => {
+            exec(
+                db,
+                "UPDATE currency_rates SET rate_to_idr = ?1 WHERE id = ?2".to_string(),
+                vec![Value::Float(rate_to_idr), Value::Int(value_i64(&r[0]).unwrap_or(0))],
+                "fx.upd",
+            )
+            .await?;
+        }
+        None => {
+            exec_insert(
+                db,
+                "INSERT INTO currency_rates (code, rate_to_idr, as_of) VALUES (?1, ?2, ?3)".to_string(),
+                vec![Value::Text(c), Value::Float(rate_to_idr), Value::Text(as_of.trim().to_string())],
+                "fx.ins",
+            )
+            .await?;
+        }
+    }
+    audit::log_sea(db, Some(actor_id), "CREATE", "payroll.fx", None, None, None, None).await?;
+    Ok(())
+}
+
+pub async fn currency_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<CurrencyRate>, String> {
+    let rows = q_all(
+        db,
+        "SELECT code, rate_to_idr, as_of FROM currency_rates ORDER BY code, as_of DESC".to_string(),
+        vec![],
+        3,
+        "fx.list",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca kurs: {e}"))?;
+    rows.iter()
+        .map(|r| {
+            Ok(CurrencyRate {
+                code: value_to_string(&r[0]),
+                rate_to_idr: pf64(&r[1]),
+                as_of: value_to_string(&r[2]),
+            })
+        })
+        .collect()
+}
+
+pub async fn convert_to_idr_sea(db: &sea_orm::DatabaseConnection, code: &str, amount: f64) -> Result<f64, String> {
+    let c = code.trim().to_uppercase();
+    if c == "IDR" {
+        return Ok(amount);
+    }
+    let row = q_one(
+        db,
+        "SELECT rate_to_idr FROM currency_rates WHERE code = ?1 ORDER BY as_of DESC LIMIT 1".to_string(),
+        vec![Value::Text(c.clone())],
+        1,
+        "fx.get",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca kurs: {e}"))?;
+    let Some(row) = row else {
+        return Err(format!("Kurs {c} belum ada."));
+    };
+    Ok(amount * pf64(&row[0]))
+}
+
+pub async fn contractor_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: Option<i64>,
+    input: &ContractorInput,
+) -> Result<i32, String> {
+    if input.name.trim().is_empty() {
+        return Err("Nama kontraktor wajib diisi.".to_string());
+    }
+    let cur = input.currency.trim().to_uppercase();
+    if cur.len() != 3 {
+        return Err("Kode mata uang 3 huruf.".to_string());
+    }
+    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mail = input.email.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| Value::Text(s.to_string())).unwrap_or(Value::Null);
+    let phone = input.phone.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| Value::Text(s.to_string())).unwrap_or(Value::Null);
+    let rid = match id {
+        Some(x) => {
+            let n = exec(
+                db,
+                "UPDATE contractors SET name = ?1, country = ?2, currency = ?3, email = ?4, phone = ?5, updated_at = ?6 WHERE id = ?7 AND deleted_at IS NULL".to_string(),
+                vec![Value::Text(input.name.trim().to_string()), Value::Text(input.country.trim().to_uppercase()), Value::Text(cur), mail, phone, Value::Text(now), Value::Int(x)],
+                "ctr.upd",
+            )
+            .await?;
+            if n == 0 {
+                return Err("Kontraktor tidak ditemukan.".to_string());
+            }
+            x
+        }
+        None => {
+            exec_insert(
+                db,
+                "INSERT INTO contractors (name, country, currency, email, phone, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)".to_string(),
+                vec![Value::Text(input.name.trim().to_string()), Value::Text(input.country.trim().to_uppercase()), Value::Text(cur), mail, phone, Value::Text(now)],
+                "ctr.ins",
+            )
+            .await?
+        }
+    };
+    audit::log_sea(db, Some(actor_id), if id.is_some() { "UPDATE" } else { "CREATE" }, "payroll.contractor", Some(&rid.to_string()), None, None, None).await?;
+    to_dto_int(rid, "ctr.id")
+}
+
+pub async fn contractor_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Contractor>, String> {
+    let rows = q_all(
+        db,
+        "SELECT id, name, country, currency, email, phone FROM contractors WHERE deleted_at IS NULL ORDER BY name".to_string(),
+        vec![],
+        6,
+        "ctr.list",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca kontraktor: {e}"))?;
+    rows.iter()
+        .map(|r| {
+            Ok(Contractor {
+                id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "ctr.id")?,
+                name: value_to_string(&r[1]),
+                country: value_to_string(&r[2]),
+                currency: value_to_string(&r[3]),
+                email: match &r[4] {
+                    Value::Null => None,
+                    v => Some(value_to_string(v)),
+                },
+                phone: match &r[5] {
+                    Value::Null => None,
+                    v => Some(value_to_string(v)),
+                },
+            })
+        })
+        .collect()
+}
+
+pub async fn contractor_pay_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    contractor_id: i64,
+    period: &str,
+    amount: f64,
+) -> Result<i32, String> {
+    if period.len() != 7 || &period[4..5] != "-" {
+        return Err("Format periode harus YYYY-MM.".to_string());
+    }
+    if amount <= 0.0 {
+        return Err("Nominal harus positif.".to_string());
+    }
+    let c = q_one(
+        db,
+        "SELECT currency FROM contractors WHERE id = ?1 AND deleted_at IS NULL".to_string(),
+        vec![Value::Int(contractor_id)],
+        1,
+        "ctr.cur",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca kontraktor: {e}"))?;
+    let Some(c) = c else {
+        return Err("Kontraktor tidak ditemukan.".to_string());
+    };
+    let cur = value_to_string(&c[0]);
+    let idr = convert_to_idr_sea(db, &cur, amount).await?;
+    let rid = exec_insert(
+        db,
+        "INSERT INTO contractor_payments (contractor_id, period, amount, currency, amount_idr, status, paid_at) VALUES (?1, ?2, ?3, ?4, ?5, 'paid', datetime('now','localtime'))".to_string(),
+        vec![Value::Int(contractor_id), Value::Text(period.to_string()), Value::Float(amount), Value::Text(cur), Value::Float(idr)],
+        "ctr.pay",
+    )
+    .await?;
+    audit::log_sea(db, Some(actor_id), "CREATE", "payroll.contractor.pay", Some(&rid.to_string()), None, None, None).await?;
+    to_dto_int(rid, "ctr.pay")
+}
+
+pub async fn contractor_payments_sea(
+    db: &sea_orm::DatabaseConnection,
+    contractor_id: Option<i64>,
+) -> Result<Vec<ContractorPayment>, String> {
+    let (sql, vals) = match contractor_id {
+        Some(cid) => (
+            "SELECT p.id, p.contractor_id, c.name, p.period, p.amount, p.currency, p.amount_idr, p.status, p.paid_at FROM contractor_payments p INNER JOIN contractors c ON c.id = p.contractor_id WHERE p.contractor_id = ?1 ORDER BY p.id DESC".to_string(),
+            vec![Value::Int(cid)],
+        ),
+        None => (
+            "SELECT p.id, p.contractor_id, c.name, p.period, p.amount, p.currency, p.amount_idr, p.status, p.paid_at FROM contractor_payments p INNER JOIN contractors c ON c.id = p.contractor_id ORDER BY p.id DESC LIMIT 200".to_string(),
+            vec![],
+        ),
+    };
+    let rows = q_all(db, sql, vals, 9, "ctr.paylist")
+        .await
+        .map_err(|e| format!("gagal membaca pembayaran: {e}"))?;
+    rows.iter()
+        .map(|r| {
+            Ok(ContractorPayment {
+                id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "ctr.pay.id")?,
+                contractor_id: to_dto_int(value_i64(&r[1]).unwrap_or(0), "ctr.pay.ctr")?,
+                contractor_name: value_to_string(&r[2]),
+                period: value_to_string(&r[3]),
+                amount: pf64(&r[4]),
+                currency: value_to_string(&r[5]),
+                amount_idr: pf64(&r[6]),
+                status: value_to_string(&r[7]),
+                paid_at: match &r[8] {
+                    Value::Null => None,
+                    v => Some(value_to_string(v)),
+                },
+            })
+        })
+        .collect()
+}
+
+pub fn compliance_faq_sea(q: &str) -> Result<String, String> {
+    let s = q.trim().to_lowercase();
+    if s.is_empty() {
+        return Err("Pertanyaan wajib diisi.".to_string());
+    }
+    let faqs: &[(&[&str], &str)] = &[
+        (&["pph21", "pph 21", "pajak"], "PPh 21 progresif 5/15/25/30/35% atas penghasilan kena pajak tahunan; slip menampilkan estimasi."),
+        (&["bpjs", "jaminan"], "BPJS Kesehatan, JHT, dan JP dihitung dari gaji pokok x persen settings dengan batas atas per program."),
+        (&["cuti", "leave"], "Jatah cuti tahunan 12 hari plus accrual masa kerja; carry-over mengikuti batas policy."),
+        (&["thr"], "THR proporsional masa kerja bila tanggal hari raya masuk periode payroll."),
+        (&["kontrak", "pkwt", "pkwtt"], "Kontrak PKWT/PKWTT dengan pengingat H-30 dan H-7 di dasbor HR."),
+        (&["pdp", "privasi", "data"], "Data pribadi terenkripsi at-rest; hak export dan hapus tersedia lewat menu karyawan."),
+        (&["lembur", "overtime"], "Lembur = gaji pokok/173 x 1.5 x jam, minimal 30 menit."),
+    ];
+    for (keys, answer) in faqs {
+        if keys.iter().any(|k| s.contains(k)) {
+            return Ok(answer.to_string());
+        }
+    }
+    Ok("Belum ada jawaban tersimpan; hubungi HR untuk regulasi spesifik.".to_string())
+}
+
 #[cfg(test)]
 
 mod tests {
@@ -2814,5 +3116,34 @@ mod tests {
         let comp = one(db, "SELECT company_id FROM payroll_periods", "t.comp").await;
         assert_eq!(comp, 1);
         let _ = cabang;
+    }
+
+    #[tokio::test]
+    async fn global_kurs_kontraktor_dan_faq() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = admin(db).await;
+        assert!(currency_save_sea(db, actor, "US", 15000.0, "2026-01-01").await.is_err());
+        assert!(currency_save_sea(db, actor, "USD", -1.0, "2026-01-01").await.is_err());
+        currency_save_sea(db, actor, "USD", 16000.0, "2026-01-01").await.expect("kurs");
+        let daftar = currency_list_sea(db).await.expect("list kurs");
+        assert!(daftar.iter().any(|r| r.code == "USD"));
+        assert_eq!(convert_to_idr_sea(db, "IDR", 100.0).await.expect("idr"), 100.0);
+        assert_eq!(convert_to_idr_sea(db, "USD", 100.0).await.expect("usd"), 1_600_000.0);
+        assert!(convert_to_idr_sea(db, "EUR", 10.0).await.is_err());
+        let cid = contractor_save_sea(db, actor, None, &ContractorInput { name: "Andi".to_string(), country: "MY".to_string(), currency: "usd".to_string(), email: None, phone: None }).await.expect("kontraktor");
+        assert!(contractor_save_sea(db, actor, None, &ContractorInput { name: "".to_string(), country: "MY".to_string(), currency: "USD".to_string(), email: None, phone: None }).await.is_err());
+        let daftar2 = contractor_list_sea(db).await.expect("list kontraktor");
+        assert!(daftar2.iter().any(|c| c.id == cid));
+        let bayar = contractor_pay_sea(db, actor, cid as i64, "2026-05", 1000.0).await.expect("bayar");
+        assert!(bayar > 0);
+        let pays = contractor_payments_sea(db, Some(cid as i64)).await.expect("riwayat");
+        assert_eq!(pays.len(), 1);
+        assert_eq!(pays[0].amount_idr, 16_000_000.0);
+        assert!(contractor_pay_sea(db, actor, cid as i64, "Mei", 100.0).await.is_err());
+        let jawab = compliance_faq_sea("berapa tarif pph21?").expect("faq");
+        assert!(jawab.contains("progresif"));
+        assert!(compliance_faq_sea("").is_err());
     }
 }

@@ -1671,10 +1671,11 @@ async fn payroll_my_slips(
 async fn payroll_payslip_render(
     state: tauri::State<'_, AppState>,
     payroll_id: i32,
+    currency: Option<String>,
 ) -> Result<String, String> {
     require(&state, &["payroll.view", "system.manage"]).await?;
     let dir = files_dir(&state);
-    services::payslip::render_sea(&state.sea, &dir, payroll_id as i64).await
+    services::payslip::render_sea(&state.sea, &dir, payroll_id as i64, currency.as_deref()).await
 }
 
 #[tauri::command]
@@ -1703,6 +1704,76 @@ async fn payroll_payslip_file(
     }
     let dir = files_dir(&state);
     services::payslip::read_file_sea(&state.sea, &dir, payroll_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn payroll_currency_save(
+    state: tauri::State<'_, AppState>,
+    code: String,
+    rate_to_idr: f64,
+    as_of: String,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["payroll.create", "system.manage"]).await?;
+    services::payroll::currency_save_sea(&state.sea, uid, &code, rate_to_idr, &as_of).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn payroll_currency_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::payroll::CurrencyRate>, String> {
+    require(&state, &["payroll.view", "system.manage"]).await?;
+    services::payroll::currency_list_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn contractor_save(
+    state: tauri::State<'_, AppState>,
+    id: Option<i32>,
+    input: services::payroll::ContractorInput,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["payroll.create", "payroll.update", "system.manage"]).await?;
+    services::payroll::contractor_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn contractor_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::payroll::Contractor>, String> {
+    require(&state, &["payroll.view", "system.manage"]).await?;
+    services::payroll::contractor_list_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn contractor_pay(
+    state: tauri::State<'_, AppState>,
+    contractor_id: i32,
+    period: String,
+    amount: f64,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["payroll.generate", "system.manage"]).await?;
+    services::payroll::contractor_pay_sea(&state.sea, uid, contractor_id as i64, &period, amount).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn contractor_payments(
+    state: tauri::State<'_, AppState>,
+    contractor_id: Option<i32>,
+) -> Result<Vec<services::payroll::ContractorPayment>, String> {
+    require(&state, &["payroll.view", "system.manage"]).await?;
+    services::payroll::contractor_payments_sea(&state.sea, contractor_id.map(|v| v as i64)).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn compliance_ask(state: tauri::State<'_, AppState>, q: String) -> Result<String, String> {
+    require(&state, &["organization.view", "system.manage"]).await?;
+    services::payroll::compliance_faq_sea(&q)
 }
 
 #[tauri::command]
@@ -2709,6 +2780,46 @@ async fn asset_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::ass
 
 #[tauri::command]
 #[specta::specta]
+async fn license_list(state: tauri::State<'_, AppState>) -> Result<Vec<services::assets::License>, String> {
+    require(&state, &["asset.view", "system.manage"]).await?;
+    services::assets::license_list_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn license_save(
+    state: tauri::State<'_, AppState>,
+    id: Option<i32>,
+    input: services::assets::LicenseInput,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["asset.create", "asset.update", "system.manage"]).await?;
+    services::assets::license_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn license_assign(
+    state: tauri::State<'_, AppState>,
+    license_id: i32,
+    employee_id: i32,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["asset.create", "system.manage"]).await?;
+    services::assets::license_assign_sea(&state.sea, uid, license_id as i64, employee_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn license_revoke(
+    state: tauri::State<'_, AppState>,
+    license_id: i32,
+    employee_id: i32,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["asset.update", "system.manage"]).await?;
+    services::assets::license_revoke_sea(&state.sea, uid, license_id as i64, employee_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn asset_assign(
     state: tauri::State<'_, AppState>,
     asset_id: i32,
@@ -3584,6 +3695,35 @@ async fn compensation_bonus_decide(
 
 #[tauri::command]
 #[specta::specta]
+async fn compensation_esop_grant(
+    state: tauri::State<'_, AppState>,
+    input: services::compensation::EsopGrantInput,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["payroll.update", "system.manage"]).await?;
+    services::compensation::esop_grant_sea(&state.sea, uid, &input).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn compensation_esop_vest(
+    state: tauri::State<'_, AppState>,
+    as_of: String,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["payroll.update", "system.manage"]).await?;
+    services::compensation::esop_vest_run_sea(&state.sea, uid, &as_of).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn compensation_esop_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::compensation::EsopGrant>, String> {
+    require(&state, &["payroll.view", "system.manage"]).await?;
+    services::compensation::esop_list_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn compensation_benefit_save(
     state: tauri::State<'_, AppState>,
     id: Option<i32>,
@@ -4287,11 +4427,21 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         payroll_deduction_delete,
         payroll_bank_file,
         payroll_whatif,
+        payroll_currency_save,
+        payroll_currency_list,
+        contractor_save,
+        contractor_list,
+        contractor_pay,
+        contractor_payments,
+        compliance_ask,
         compensation_scheme_save,
         compensation_scheme_list,
         compensation_bonus_run,
         compensation_bonus_list,
         compensation_bonus_decide,
+        compensation_esop_grant,
+        compensation_esop_vest,
+        compensation_esop_list,
         compensation_benefit_save,
         compensation_benefit_list,
         compensation_benefit_enroll,
@@ -4436,6 +4586,10 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         asset_return,
         asset_maintenance_add,
         asset_mark_available,
+        license_list,
+        license_save,
+        license_assign,
+        license_revoke,
         trip_my,
         trip_all,
         trip_pending,
@@ -4553,7 +4707,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &125);
+                assert_eq!(t, &132);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),
