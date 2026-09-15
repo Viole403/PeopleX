@@ -78,7 +78,7 @@ pub struct CalendarDay {
 
 // ---------------- Varian SeaORM ----------------
 
-use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
+use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 
 fn sea_f64(v: &Value) -> f64 {
     match v {
@@ -94,19 +94,6 @@ fn sea_opt_text(v: &Value) -> Option<String> {
         Value::Null => None,
         _ => Some(value_to_string(v)),
     }
-}
-
-async fn sea_rowid(db: &sea_orm::DatabaseConnection, label: &str) -> Result<i64, String> {
-    let row = q_one(
-        db,
-        "SELECT last_insert_rowid()".to_string(),
-        vec![],
-        1,
-        label,
-    )
-    .await
-    .map_err(|e| format!("gagal membaca id baru: {e}"))?;
-    Ok(row.as_ref().and_then(|r| value_i64(&r[0])).unwrap_or(0))
 }
 
 pub async fn balances_sea(
@@ -183,7 +170,7 @@ async fn ensure_balance_row_sea(
         return Err("Tipe cuti tidak ditemukan.".to_string());
     };
     let def = sea_f64(&def_row[0]);
-    exec(
+    exec_insert(
         db,
         "INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days, carried_days, adjustment_days) VALUES (?1, ?2, ?3, ?4, 0, 0, 0)".to_string(),
         vec![
@@ -195,8 +182,7 @@ async fn ensure_balance_row_sea(
         "leave.balcreate",
     )
     .await
-    .map_err(|e| format!("gagal membuat saldo: {e}"))?;
-    sea_rowid(db, "leave.balcreate").await
+    .map_err(|e| format!("gagal membuat saldo: {e}"))
 }
 
 async fn apply_usage_sea(
@@ -432,7 +418,7 @@ pub async fn create_sea(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO leave_requests (employee_id, leave_type_id, start_date, end_date, total_days, reason, status, current_step) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', 1)".to_string(),
         vec![
@@ -450,7 +436,6 @@ pub async fn create_sea(
     )
     .await
     .map_err(|e| format!("gagal mengajukan cuti: {e}"))?;
-    let rid = sea_rowid(db, "leave.create").await?;
     let chain = approval::build_chain_sea(db, "leave", employee_id).await?;
     if chain.is_empty() {
         exec(
@@ -911,7 +896,7 @@ pub async fn type_save_sea(
         .await?;
         to_dto_int(rid, "leavetype.id")
     } else {
-        let res = exec(
+        let rid = exec_insert(
             db,
             "INSERT INTO leave_types (code, name, default_days_per_year, is_paid, carry_forward, carry_forward_max_days, requires_attachment) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)".to_string(),
             vec![
@@ -925,26 +910,26 @@ pub async fn type_save_sea(
             ],
             "leave.typeadd",
         )
-        .await;
-        let Err(e) = res else {
-            let rid = sea_rowid(db, "leave.typeadd").await?;
-            audit::log_sea(
-                db,
-                Some(actor_id),
-                "CREATE",
-                "leave_type",
-                Some(&rid.to_string()),
-                None,
-                None,
-                None,
-            )
-            .await?;
-            return to_dto_int(rid, "leavetype.id");
-        };
-        if e.contains("UNIQUE") {
-            return Err("Kode tipe sudah dipakai.".to_string());
-        }
-        return Err(format!("gagal menambah tipe: {e}"));
+        .await
+        .map_err(|e| {
+            if e.contains("UNIQUE") {
+                "Kode tipe sudah dipakai.".to_string()
+            } else {
+                format!("gagal menambah tipe: {e}")
+            }
+        })?;
+        audit::log_sea(
+            db,
+            Some(actor_id),
+            "CREATE",
+            "leave_type",
+            Some(&rid.to_string()),
+            None,
+            None,
+            None,
+        )
+        .await?;
+        return to_dto_int(rid, "leavetype.id");
     }
 }
 

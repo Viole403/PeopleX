@@ -249,7 +249,7 @@ mod tests {
 
 // ---------------- Varian SeaORM ----------------
 
-use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
+use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 
 fn fopt_i(v: &Value, f: &str) -> Result<Option<i32>, String> {
     match value_i64(v) {
@@ -263,19 +263,6 @@ fn fopt_text(v: &Value) -> Option<String> {
         Value::Null => None,
         _ => Some(value_to_string(v)),
     }
-}
-
-async fn frow_id(db: &sea_orm::DatabaseConnection, label: &str) -> Result<i64, String> {
-    let row = q_one(
-        db,
-        "SELECT last_insert_rowid()".to_string(),
-        vec![],
-        1,
-        label,
-    )
-    .await
-    .map_err(|e| format!("gagal membaca id baru: {e}"))?;
-    Ok(row.as_ref().and_then(|r| value_i64(&r[0])).unwrap_or(0))
 }
 
 fn map_off_row(r: &[Value]) -> Result<OffboardingRow, String> {
@@ -436,7 +423,7 @@ pub async fn create_sea(
     if active.is_some() {
         return Err("Sudah ada proses resign yang berjalan untuk karyawan ini.".to_string());
     }
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO offboarding (employee_id, resignation_date, last_working_date, reason, status, current_step) VALUES (?1, ?2, ?3, ?4, 'pending', 1)".to_string(),
         vec![
@@ -452,7 +439,6 @@ pub async fn create_sea(
     )
     .await
     .map_err(|e| format!("gagal mengajukan resign: {e}"))?;
-    let rid = frow_id(db, "offboarding.create").await?;
     for item in DEFAULT_CLEARANCE {
         exec(
             db,

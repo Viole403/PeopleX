@@ -42,23 +42,7 @@ fn parse_time(date: &str, time: &str) -> Result<NaiveDateTime, String> {
 
 // ---------------- Varian SeaORM ----------------
 
-use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
-
-async fn sea_rowid_ot(db: &sea_orm::DatabaseConnection) -> i64 {
-    q_one(
-        db,
-        "SELECT last_insert_rowid()".to_string(),
-        vec![],
-        1,
-        "overtime.rowid",
-    )
-    .await
-    .ok()
-    .flatten()
-    .as_ref()
-    .and_then(|r| value_i64(&r[0]))
-    .unwrap_or(0)
-}
+use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 
 fn map_overtime_sea(r: &[Value]) -> Result<Overtime, String> {
     Ok(Overtime {
@@ -153,7 +137,7 @@ pub async fn create_sea(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO overtime_requests (employee_id, date, start_time, end_time, duration_minutes, reason, rate_multiplier, status, current_step) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', 1)".to_string(),
         vec![
@@ -172,7 +156,6 @@ pub async fn create_sea(
     )
     .await
     .map_err(|e| format!("gagal mengajukan lembur: {e}"))?;
-    let rid = sea_rowid_ot(db).await;
     let chain = approval::build_chain_sea(db, "overtime", employee_id).await?;
     if chain.is_empty() {
         exec(

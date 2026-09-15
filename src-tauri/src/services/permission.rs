@@ -40,7 +40,7 @@ pub struct PermissionCreate {
 
 // ---------------- Varian SeaORM ----------------
 
-use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
+use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 
 const SELECT_SEA: &str = "SELECT pr.id, pr.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), e.employee_number, pr.permission_type_id, pt.name, pr.date, pr.start_time, pr.end_time, pr.reason, pr.status, pr.created_at FROM permission_requests pr INNER JOIN permission_types pt ON pt.id = pr.permission_type_id INNER JOIN employees e ON e.id = pr.employee_id";
 
@@ -190,7 +190,7 @@ pub async fn create_sea(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO permission_requests (employee_id, permission_type_id, date, start_time, end_time, reason, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending')".to_string(),
         vec![
@@ -211,19 +211,6 @@ pub async fn create_sea(
     )
     .await
     .map_err(|e| format!("gagal mengajukan izin: {e}"))?;
-    let rid_row = q_one(
-        db,
-        "SELECT last_insert_rowid()".to_string(),
-        vec![],
-        1,
-        "perm.create",
-    )
-    .await
-    .map_err(|e| format!("gagal membaca id baru: {e}"))?;
-    let rid = rid_row
-        .as_ref()
-        .and_then(|r| value_i64(&r[0]))
-        .unwrap_or(0);
     let sup_row = q_one(
         db,
         "SELECT supervisor_id FROM employees WHERE id = ?1".to_string(),

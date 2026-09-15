@@ -39,7 +39,7 @@ pub struct Onboarding {
 
 // ---------------- Varian SeaORM ----------------
 
-use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
+use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 
 /// Buat paket onboarding (idempoten per karyawan).
 pub async fn create_for_employee_sea(
@@ -61,7 +61,7 @@ pub async fn create_for_employee_sea(
     if let Some(r) = row {
         return to_dto_int(value_i64(&r[0]).unwrap_or(0), "onboarding.id");
     }
-    exec(
+    let id = exec_insert(
         db,
         "INSERT INTO onboarding (employee_id, candidate_id, start_date, status, progress_percent) VALUES (?1, ?2, ?3, 'in_progress', 0)".to_string(),
         vec![
@@ -76,19 +76,6 @@ pub async fn create_for_employee_sea(
     )
     .await
     .map_err(|e| format!("gagal membuat onboarding: {e}"))?;
-    let id_row = q_one(
-        db,
-        "SELECT last_insert_rowid()".to_string(),
-        vec![],
-        1,
-        "onboarding.create",
-    )
-    .await
-    .map_err(|e| format!("gagal membaca id baru: {e}"))?;
-    let id = id_row
-        .as_ref()
-        .and_then(|r| value_i64(&r[0]))
-        .unwrap_or(0);
     for (i, task) in DEFAULT_TASKS.iter().enumerate() {
         exec(
             db,
