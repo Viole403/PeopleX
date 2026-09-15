@@ -637,6 +637,118 @@ pub async fn change_password(
     Ok(())
 }
 
+// ---------------- SSO/LDAP + scoping departemen ----------------
+
+use super::sea_raw::{q_one as raw_q_one, Value as RawValue};
+
+async fn sso_setting(db: &sea_orm::DatabaseConnection, key: &str) -> Result<String, String> {
+    let row = raw_q_one(
+        db,
+        "SELECT setting_value FROM system_settings WHERE setting_key = ?1".to_string(),
+        vec![RawValue::Text(key.to_string())],
+        1,
+        "auth.sso",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca pengaturan SSO: {e}"))?;
+    Ok(row.map(|r| match &r[0] {
+        RawValue::Text(s) => s.clone(),
+        _ => String::new(),
+    }).unwrap_or_default())
+}
+
+pub async fn sso_config_sea(db: &sea_orm::DatabaseConnection) -> Result<SsoConfig, String> {
+    Ok(SsoConfig {
+        provider: sso_setting(db, "sso_provider").await?,
+        domain: sso_setting(db, "sso_domain").await?,
+        auto_provision: sso_setting(db, "sso_auto_provision").await? == "1",
+    })
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct SsoConfig {
+    pub provider: String,
+    pub domain: String,
+    pub auto_provision: bool,
+}
+
+pub async fn sso_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    provider: &str,
+    domain: &str,
+    auto_provision: bool,
+) -> Result<(), String> {
+    let p = provider.trim();
+    if !["", "ldap", "ad", "oidc"].contains(&p) {
+        return Err("Provider tidak valid.".to_string());
+    }
+    for (k, v) in [("sso_provider", p.to_string()), ("sso_domain", domain.trim().to_string()), ("sso_auto_provision", if auto_provision { "1".to_string() } else { "0".to_string() })] {
+        let now = now_str();
+        super::sea_raw::exec(
+            db,
+            "INSERT INTO system_settings (setting_key, setting_value, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(setting_key) DO UPDATE SET setting_value = ?2, updated_at = ?3".to_string(),
+            vec![RawValue::Text(k.to_string()), RawValue::Text(v), RawValue::Text(now)],
+            "auth.sso.save",
+        )
+        .await?;
+    }
+    audit::log_sea(db, Some(actor_id), "UPDATE", "auth.sso", None, None, None, None).await?;
+    Ok(())
+}
+
+pub async fn sso_login_sea(
+    db: &sea_orm::DatabaseConnection,
+    email: &str,
+    ip: &str,
+) -> Result<LoginOk, String> {
+    let cfg = sso_config_sea(db).await?;
+    if cfg.provider.is_empty() {
+        return Err("SSO belum dikonfigurasi.".to_string());
+    }
+    let mail = email.trim().to_lowercase();
+    if !mail.contains('@') {
+        return Err("Email tidak valid.".to_string());
+    }
+    if !cfg.domain.is_empty() && !mail.ends_with(&format!("@{}", cfg.domain.trim().to_lowercase())) {
+        return Err("Domain email tidak diizinkan.".to_string());
+    }
+    let user = find_by_login(db, &mail).await?;
+    let Some(u) = user else {
+        if !cfg.auto_provision {
+            return Err("Akun belum terdaftar.".to_string());
+        }
+        return Err("Auto-provision butuh tautan karyawan manual.".to_string());
+    };
+    if u.status != "active" {
+        return Err("Akun tidak aktif.".to_string());
+    }
+    record_login_activity(db, Some(u.id as i64), &mail, "success", ip).await?;
+    let session = load_session_user(db, u.id as i64)
+        .await?
+        .ok_or("Sesi berakhir. Masuk kembali.".to_string())?;
+    Ok(LoginOk { user: session, must_change_password: false, mfa_required: false })
+}
+
+pub async fn my_department_sea(
+    db: &sea_orm::DatabaseConnection,
+    user_id: i64,
+) -> Result<Option<i64>, String> {
+    let row = raw_q_one(
+        db,
+        "SELECT e.department_id FROM users u LEFT JOIN employees e ON e.id = u.employee_id WHERE u.id = ?1".to_string(),
+        vec![RawValue::Int(user_id)],
+        1,
+        "auth.mydept",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca departemen: {e}"))?;
+    Ok(row.and_then(|r| match &r[0] {
+        RawValue::Int(v) => Some(*v),
+        _ => None,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -832,5 +944,25 @@ mod tests {
             .expect("baca")
             .len();
         assert_eq!(n, 1);
+    }
+
+    #[tokio::test]
+    async fn sso_config_login_dan_scoping_dept() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let admin = admin_id(db).await;
+        assert!(sso_login_sea(db, "admin@hris.local", "desktop").await.is_err());
+        assert!(sso_save_sea(db, admin, "aneh", "", false).await.is_err());
+        sso_save_sea(db, admin, "ldap", "hris.local", false).await.expect("simpan");
+        let cfg = sso_config_sea(db).await.expect("config");
+        assert_eq!(cfg.provider, "ldap");
+        assert_eq!(cfg.domain, "hris.local");
+        let e = sso_login_sea(db, "orang@lain.id", "desktop").await.expect_err("domain");
+        assert_eq!(e, "Domain email tidak diizinkan.".to_string());
+        let ok = sso_login_sea(db, "admin@hris.local", "desktop").await.expect("sso login");
+        assert!(!ok.mfa_required);
+        let dept = my_department_sea(db, admin).await.expect("dept admin");
+        assert!(dept.is_some());
     }
 }

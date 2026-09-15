@@ -436,6 +436,12 @@ async fn seed_roles(
         ),
         ("employee", "Employee", "Pengguna karyawan standar", 0),
         (
+            "it-administrator",
+            "IT Administrator",
+            "Mengelola cadangan dan konfigurasi database",
+            0,
+        ),
+        (
             "auditor",
             "Auditor",
             "Akses baca untuk audit dan kepatuhan",
@@ -521,6 +527,8 @@ async fn seed_permissions(
         ("settings", vec!["manage"]),
         ("rbac", vec!["manage"]),
         ("workflow", vec!["manage"]),
+        ("backup", vec!["manage"]),
+        ("sso", vec!["manage"]),
         ("system", vec!["manage"]),
         ("audit", vec!["view"]),
     ];
@@ -676,6 +684,20 @@ async fn seed_role_permissions(
                 "payroll.view",
                 "attendance.view",
                 "leave.view",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        ),
+        (
+            "it-administrator",
+            [
+                "backup.manage",
+                "sso.manage",
+                "settings.manage",
+                "audit.view",
+                "report.view",
+                "employee.view",
             ]
             .iter()
             .map(|s| s.to_string())
@@ -1202,8 +1224,8 @@ mod tests {
     async fn seed_mengisi_master_data_kunci() {
         let (_dir, db) = seeded_db().await;
         let c = counts(&db).await;
-        assert_eq!(c["roles"], 8);
-        assert_eq!(c["permissions"], 90);
+        assert_eq!(c["roles"], 9);
+        assert_eq!(c["permissions"], 92);
         assert_eq!(c["leave_types"], 8);
         assert_eq!(c["salary_components"], 16);
         assert_eq!(c["approval_workflows"], 5);
@@ -1221,7 +1243,7 @@ mod tests {
             .first()
             .and_then(|r| crate::services::sea_raw::value_i64(&r[0]))
             .unwrap_or(0);
-        assert_eq!(super_perms, 90);
+        assert_eq!(super_perms, 92);
     }
 
     #[tokio::test]

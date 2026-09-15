@@ -166,6 +166,54 @@ async fn login(
 
 #[tauri::command]
 #[specta::specta]
+async fn sso_config(state: tauri::State<'_, AppState>) -> Result<services::auth::SsoConfig, String> {
+    require(&state, &["sso.manage", "system.manage"]).await?;
+    services::auth::sso_config_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn sso_save(
+    state: tauri::State<'_, AppState>,
+    provider: String,
+    domain: String,
+    auto_provision: bool,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["sso.manage", "system.manage"]).await?;
+    services::auth::sso_save_sea(&state.sea, uid, &provider, &domain, auto_provision).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn sso_login(
+    state: tauri::State<'_, AppState>,
+    email: String,
+) -> Result<services::auth::LoginOk, String> {
+    let ok = services::auth::sso_login_sea(&state.sea, &email, "desktop").await?;
+    *state
+        .session
+        .lock()
+        .map_err(|_| "Sesi terkunci.".to_string())? = Some(ok.user.id as i64);
+    *state
+        .session_expires
+        .lock()
+        .map_err(|_| "Sesi terkunci.".to_string())? =
+        Some(chrono::Utc::now().timestamp() + services::security::SESSION_TTL_SECS);
+    Ok(ok)
+}
+
+async fn scoped_department(
+    state: &tauri::State<'_, AppState>,
+    user: &SessionUser,
+) -> Result<Option<i64>, String> {
+    if user.is_super_admin || user.permissions.iter().any(|p| p == "system.manage") {
+        return Ok(None);
+    }
+    services::auth::my_department_sea(&state.sea, user.id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn mfa_challenge(
     state: tauri::State<'_, AppState>,
     user_id: i32,
@@ -673,7 +721,13 @@ async fn employee_list(
     page: i32,
     per_page: i32,
 ) -> Result<services::employees::EmployeePage, String> {
-    require(&state, &["employee.view", "system.manage"]).await?;
+    let (_, user) = require(&state, &["employee.view", "system.manage"]).await?;
+    let mut filters = filters;
+    if filters.department_id.is_none() {
+        if let Some(did) = scoped_department(&state, &user).await? {
+            filters.department_id = Some(did as i32);
+        }
+    }
     services::employees::list_sea(&state.sea, &search, &filters, page, per_page).await
 }
 
@@ -4045,21 +4099,21 @@ fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
 #[tauri::command]
 #[specta::specta]
 async fn backup_now(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    require(&state, &["system.manage"]).await?;
+    require(&state, &["backup.manage", "system.manage"]).await?;
     services::backup::backup_now_sea(&state.sea, &services::backup::backup_dir(&state.data_dir)).await
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn backup_list(state: tauri::State<'_, AppState>) -> Result<Vec<services::backup::BackupFile>, String> {
-    require(&state, &["system.manage"]).await?;
+    require(&state, &["backup.manage", "system.manage"]).await?;
     services::backup::backup_list(&services::backup::backup_dir(&state.data_dir))
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn backup_restore(state: tauri::State<'_, AppState>, name: String) -> Result<String, String> {
-    require(&state, &["system.manage"]).await?;
+    require(&state, &["backup.manage", "system.manage"]).await?;
     services::backup::backup_restore_sea(
         &state.data_dir.join("peoplex.db"),
         &services::backup::backup_dir(&state.data_dir),
@@ -4079,6 +4133,9 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         request_password_reset,
         reset_password,
         mfa_challenge,
+        sso_config,
+        sso_save,
+        sso_login,
         mfa_setup,
         mfa_enable,
         mfa_disable,

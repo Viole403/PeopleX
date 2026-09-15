@@ -416,8 +416,63 @@ function SecurityTab() {
     },
     onError: (e: Error) => toast.error(e.message),
   });
+  const ssoCfg = useQuery({
+    queryKey: ["ssoConfig"],
+    queryFn: () => unwrap(commands.ssoConfig()),
+    retry: false,
+  });
+  const [provider, setProvider] = useState("");
+  const [domain, setDomain] = useState("");
+  const [autoProv, setAutoProv] = useState(false);
+  const ssoSave = useMutation({
+    mutationFn: () => unwrap(commands.ssoSave(provider, domain, autoProv)),
+    onSuccess: () => {
+      toast.success("Konfigurasi SSO disimpan.");
+      void ssoCfg.refetch();
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
 
   return (
+    <div className="space-y-4">
+    <div className="space-y-4 rounded-xl border border-border-secondary bg-bg-primary p-4">
+      <h2 className="text-sm font-semibold">SSO / LDAP / AD</h2>
+      <p className="text-sm text-text-tertiary">
+        Aktif: {ssoCfg.data?.provider || "mati"}
+        {ssoCfg.data?.domain ? ` · domain ${ssoCfg.data.domain}` : ""}
+        {ssoCfg.data?.auto_provision ? " · auto-provision" : ""}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <select
+          value={provider}
+          onChange={(e) => setProvider(e.target.value)}
+          className="rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm"
+        >
+          <option value="">Mati</option>
+          <option value="ldap">LDAP</option>
+          <option value="ad">Active Directory</option>
+          <option value="oidc">OIDC</option>
+        </select>
+        <input
+          value={domain}
+          onChange={(e) => setDomain(e.target.value)}
+          placeholder="Domain email, mis. perusahaan.id"
+          className="w-64 rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm"
+        />
+        <label className="flex items-center gap-1.5 text-sm">
+          <input type="checkbox" checked={autoProv} onChange={(e) => setAutoProv(e.target.checked)} />
+          Auto-provision
+        </label>
+        <button
+          type="button"
+          onClick={() => ssoSave.mutate()}
+          disabled={ssoSave.isPending}
+          className="rounded-lg bg-bg-brand-solid px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+        >
+          Simpan SSO
+        </button>
+      </div>
+    </div>
     <div className="space-y-4 rounded-xl border border-border-secondary bg-bg-primary p-4">
       <h2 className="text-sm font-semibold">Autentikasi dua faktor (MFA)</h2>
       <p className="text-sm text-text-tertiary">
@@ -484,6 +539,7 @@ function SecurityTab() {
           Matikan MFA
         </button>
       </form>
+    </div>
     </div>
   );
 }

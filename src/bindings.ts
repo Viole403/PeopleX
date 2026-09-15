@@ -19,6 +19,9 @@ export const commands = {
 	requestPasswordReset: (email: string) => typedError<string | null, string>(__TAURI_INVOKE("request_password_reset", { email })),
 	resetPassword: (token: string, newPassword: string) => typedError<null, string>(__TAURI_INVOKE("reset_password", { token, newPassword })),
 	mfaChallenge: (userId: number, code: string) => typedError<LoginOk, string>(__TAURI_INVOKE("mfa_challenge", { userId, code })),
+	ssoConfig: () => typedError<SsoConfig, string>(__TAURI_INVOKE("sso_config")),
+	ssoSave: (provider: string, domain: string, autoProvision: boolean) => typedError<null, string>(__TAURI_INVOKE("sso_save", { provider, domain, autoProvision })),
+	ssoLogin: (email: string) => typedError<LoginOk, string>(__TAURI_INVOKE("sso_login", { email })),
 	mfaSetup: () => typedError<MfaSetup, string>(__TAURI_INVOKE("mfa_setup")),
 	mfaEnable: (code: string) => typedError<null, string>(__TAURI_INVOKE("mfa_enable", { code })),
 	mfaDisable: (password: string) => typedError<null, string>(__TAURI_INVOKE("mfa_disable", { password })),
@@ -477,6 +480,14 @@ export const commands = {
 	performanceAssignKpi: (periodId: number, employeeId: number, kpiId: number, target: number | null, weight: number | null) => typedError<number, string>(__TAURI_INVOKE("performance_assign_kpi", { periodId, employeeId, kpiId, target, weight })),
 	performanceSubmitActual: (employeeKpiId: number, actual: number | null) => typedError<number | null, string>(__TAURI_INVOKE("performance_submit_actual", { employeeKpiId, actual })),
 	performanceSubmitReview: (reviewId: number, role: string, score: number | null, comments: string | null) => typedError<null, string>(__TAURI_INVOKE("performance_submit_review", { reviewId, role, score, comments })),
+	performanceGoalSave: (periodId: number, id: number | null, input: GoalInput) => typedError<number, string>(__TAURI_INVOKE("performance_goal_save", { periodId, id, input })),
+	performanceGoalTree: (periodId: number) => typedError<Goal[], string>(__TAURI_INVOKE("performance_goal_tree", { periodId })),
+	performanceGoalProgress: (goalId: number, actual: number | null) => typedError<null, string>(__TAURI_INVOKE("performance_goal_progress", { goalId, actual })),
+	performanceFb360Save: (periodId: number, employeeId: number, reviewerEmployeeId: number, relation: string, score: number | null, comments: string | null) => typedError<number, string>(__TAURI_INVOKE("performance_fb360_save", { periodId, employeeId, reviewerEmployeeId, relation, score, comments })),
+	performanceFb360List: (periodId: number, employeeId: number) => typedError<Feedback360[], string>(__TAURI_INVOKE("performance_fb360_list", { periodId, employeeId })),
+	performanceCalibrate: (periodId: number, employeeId: number, finalScore: number | null, notes: string | null) => typedError<null, string>(__TAURI_INVOKE("performance_calibrate", { periodId, employeeId, finalScore, notes })),
+	performanceSuccessionSave: (input: SuccessionInput) => typedError<number, string>(__TAURI_INVOKE("performance_succession_save", { input })),
+	performanceSuccessionList: () => typedError<Succession[], string>(__TAURI_INVOKE("performance_succession_list")),
 	trainingList: () => typedError<Training[], string>(__TAURI_INVOKE("training_list")),
 	trainingParticipants: (trainingId: number) => typedError<Participant[], string>(__TAURI_INVOKE("training_participants", { trainingId })),
 	trainingSave: (id: number | null, input: TrainingInput) => typedError<number, string>(__TAURI_INVOKE("training_save", { id, input })),
@@ -532,6 +543,10 @@ export const commands = {
 	reimburseDecide: (id: number, action: string) => typedError<string, string>(__TAURI_INVOKE("reimburse_decide", { id, action })),
 	dashboardHr: () => typedError<HrDashboard, string>(__TAURI_INVOKE("dashboard_hr")),
 	dashboardMe: () => typedError<MySummary, string>(__TAURI_INVOKE("dashboard_me")),
+	workforcePlanSave: (year: number, departmentId: number, planned: number) => typedError<null, string>(__TAURI_INVOKE("workforce_plan_save", { year, departmentId, planned })),
+	workforceBudgetSave: (year: number, departmentId: number, budget: number | null) => typedError<null, string>(__TAURI_INVOKE("workforce_budget_save", { year, departmentId, budget })),
+	workforceOverview: (year: number) => typedError<DeptPlan[], string>(__TAURI_INVOKE("workforce_overview", { year })),
+	organizationDrilldown: () => typedError<DrillNode[], string>(__TAURI_INVOKE("organization_drilldown")),
 	notificationRecent: () => typedError<Notification[], string>(__TAURI_INVOKE("notification_recent")),
 	notificationAll: () => typedError<Notification[], string>(__TAURI_INVOKE("notification_all")),
 	notificationUnread: () => typedError<number, string>(__TAURI_INVOKE("notification_unread")),
@@ -1140,6 +1155,16 @@ export type Dependent = {
 	birth_date: string | null,
 };
 
+export type DeptPlan = {
+	department_id: number,
+	department_name: string,
+	planned: number,
+	actual: number,
+	gap: number,
+	budget: number | null,
+	payroll_cost: number | null,
+};
+
 export type DeptStat = {
 	department: string,
 	employees: number,
@@ -1171,6 +1196,13 @@ export type DocumentBytes = {
 	mime: string,
 	name: string,
 	bytes: number[],
+};
+
+export type DrillNode = {
+	id: string,
+	label: string,
+	headcount: number,
+	children: DrillNode[],
 };
 
 export type Dropdowns = {
@@ -1380,6 +1412,15 @@ export type ExportFile = {
 	bytes: number[],
 };
 
+export type Feedback360 = {
+	id: number,
+	employee_id: number,
+	reviewer_employee_id: number,
+	relation: string,
+	score: number | null,
+	comments: string | null,
+};
+
 /**  Metadata field untuk membangun form dinamis. */
 export type FieldMeta = {
 	name: string,
@@ -1394,6 +1435,29 @@ export type FileUpload = {
 	name: string,
 	mime: string,
 	bytes: number[],
+};
+
+export type Goal = {
+	id: number,
+	parent_id: number | null,
+	level: string,
+	title: string,
+	owner_employee_id: number | null,
+	department_id: number | null,
+	target: number | null,
+	actual: number | null,
+	weight: number | null,
+	status: string,
+};
+
+export type GoalInput = {
+	parent_id: number | null,
+	level: string,
+	title: string,
+	owner_employee_id: number | null,
+	department_id: number | null,
+	target: number | null,
+	weight: number | null,
 };
 
 export type Holiday = {
@@ -2238,6 +2302,12 @@ export type SkillGapRow = {
 	below_target: number,
 };
 
+export type SsoConfig = {
+	provider: string,
+	domain: string,
+	auto_provision: boolean,
+};
+
 export type StageEvent = {
 	stage: string,
 	notes: string | null,
@@ -2248,6 +2318,23 @@ export type StageEvent = {
 export type StaticOpt = {
 	value: string,
 	label: string,
+};
+
+export type Succession = {
+	id: number,
+	position_id: number,
+	position_name: string | null,
+	successor_employee_id: number,
+	successor_name: string,
+	readiness: string,
+	notes: string | null,
+};
+
+export type SuccessionInput = {
+	position_id: number,
+	successor_employee_id: number,
+	readiness: string,
+	notes: string | null,
 };
 
 export type Swap = {

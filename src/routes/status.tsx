@@ -72,7 +72,7 @@ function StatusPage() {
 function BackupSection() {
   const queryClient = useQueryClient();
   const session = useSession();
-  const allowed = can(session.data, "system.manage");
+  const allowed = can(session.data, "backup.manage", "system.manage");
   const list = useQuery({
     queryKey: ["backups"],
     queryFn: () => unwrap(commands.backupList()),
