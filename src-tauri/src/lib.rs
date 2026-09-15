@@ -1820,6 +1820,69 @@ async fn candidate_cv(
 
 #[tauri::command]
 #[specta::specta]
+async fn offer_save(
+    state: tauri::State<'_, AppState>,
+    id: Option<i32>,
+    input: services::recruitment::OfferInput,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["recruitment.create", "system.manage"]).await?;
+    services::recruitment::offer_save_sea(&state.sea, uid, id, &input).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn offer_list(
+    state: tauri::State<'_, AppState>,
+    candidate_id: i32,
+) -> Result<Vec<services::recruitment::OfferLetter>, String> {
+    require(&state, &["recruitment.view", "system.manage"]).await?;
+    services::recruitment::offer_list_sea(&state.sea, candidate_id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn offer_get(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+) -> Result<Option<services::recruitment::OfferLetter>, String> {
+    require(&state, &["recruitment.view", "system.manage"]).await?;
+    services::recruitment::offer_get_sea(&state.sea, id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn offer_send(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
+    let (uid, _) = require(&state, &["recruitment.update", "system.manage"]).await?;
+    services::recruitment::offer_send_sea(&state.sea, uid, id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn offer_sign(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+    signature_name: String,
+) -> Result<(), String> {
+    require(&state, &["recruitment.update", "system.manage"]).await?;
+    services::recruitment::offer_sign_sea(&state.sea, id, &signature_name).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn offer_decline(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
+    require(&state, &["recruitment.update", "system.manage"]).await?;
+    services::recruitment::offer_decline_sea(&state.sea, id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn offer_verify(state: tauri::State<'_, AppState>, id: i32) -> Result<bool, String> {
+    require(&state, &["recruitment.view", "system.manage"]).await?;
+    services::recruitment::offer_verify_sea(&state.sea, id).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn onboarding_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::onboarding::Onboarding>, String> {
@@ -3109,6 +3172,13 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         candidate_cv,
         career_list,
         career_apply,
+        offer_save,
+        offer_list,
+        offer_get,
+        offer_send,
+        offer_sign,
+        offer_decline,
+        offer_verify,
         onboarding_list,
         onboarding_get,
         onboarding_mine,

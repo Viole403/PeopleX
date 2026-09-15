@@ -152,6 +152,29 @@ pub struct CareerApplyInput {
     pub address: Option<String>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct OfferLetter {
+    pub id: i32,
+    pub candidate_id: i32,
+    pub title: String,
+    pub message: String,
+    pub status: String,
+    pub recipient_name: String,
+    pub signature_name: Option<String>,
+    pub signature_hash: Option<String>,
+    pub sent_at: Option<String>,
+    pub signed_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug, Default)]
+pub struct OfferInput {
+    pub candidate_id: i32,
+    pub title: String,
+    pub message: String,
+    pub recipient_name: String,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug, Default)]
 pub struct InterviewInput {
     pub interviewer_id: Option<i32>,
@@ -1286,6 +1309,115 @@ pub async fn hire_sea(
     Ok(employee_id)
 }
 
+pub async fn offer_save_sea(db: &sea_orm::DatabaseConnection, actor:i64, id:Option<i32>, input:&OfferInput)->Result<i32,String>{
+    use super::sea_raw::{exec, exec_insert, q_one, value_i64, Value};
+    let judul = input.title.trim();
+    if judul.is_empty() || judul.chars().count() > 200 { return Err("Judul tawaran wajib diisi sampai 200 karakter.".to_string()); }
+    let penerima = input.recipient_name.trim();
+    if penerima.is_empty() || penerima.chars().count() > 120 { return Err("Nama penerima wajib diisi sampai 120 karakter.".to_string()); }
+    if input.message.chars().count() > 4000 { return Err("Isi tawaran maksimal 4000 karakter.".to_string()); }
+    if input.message.trim().is_empty() { return Err("Isi tawaran wajib diisi.".to_string()); }
+    let ada = q_one(db, "SELECT id FROM candidates WHERE id = ?1 AND deleted_at IS NULL".to_string(), vec![Value::Int(input.candidate_id as i64)], 1, "offer.candidate").await?;
+    if ada.is_none() { return Err("Kandidat tidak ditemukan.".to_string()); }
+    match id {
+        None => {
+            let now = now_str();
+            let rid = exec_insert(db, "INSERT INTO offer_letters (candidate_id, title, message, status, recipient_name, created_at, updated_at) VALUES (?1, ?2, ?3, 'draft', ?4, ?5, ?5)".to_string(), vec![Value::Int(input.candidate_id as i64), Value::Text(judul.to_string()), Value::Text(input.message.clone()), Value::Text(penerima.to_string()), Value::Text(now)], "offer.save").await?;
+            audit::log_sea(db, Some(actor), "CREATE", "recruitment.offer", Some(&rid.to_string()), None, None, None).await?;
+            Ok(to_dto_int(rid, "id tawaran"))
+        }
+        Some(_existing) => {
+            let baris = tawaran_by_id(db, _existing).await?.ok_or("Tawaran tidak ditemukan.")?;
+            if baris.status != "draft" { return Err("Hanya tawaran berstatus draf dapat diubah.".to_string()); }
+            exec(db, "UPDATE offer_letters SET title = ?1, message = ?2, recipient_name = ?3, updated_at = ?4 WHERE id = ?5".to_string(), vec![Value::Text(judul.to_string()), Value::Text(input.message.clone()), Value::Text(penerima.to_string()), Value::Text(now_str()), Value::Int(_existing as i64)], "offer.update").await?;
+            audit::log_sea(db, Some(actor), "UPDATE", "recruitment.offer", Some(&_existing.to_string()), None, None, None).await?;
+            Ok(_existing)
+        }
+    }
+}
+
+pub async fn offer_send_sea(db: &sea_orm::DatabaseConnection, actor:i64, id:i32)->Result<(),String>{
+    use super::sea_raw::{exec, q_one, Value};
+    let baris = tawaran_by_id(db, id).await?.ok_or("Tawaran tidak ditemukan.")?;
+    if baris.status != "draft" { return Err("Hanya tawaran berstatus draf dapat dikirim.".to_string()); }
+    exec(db, "UPDATE offer_letters SET status = 'sent', sent_at = ?1, updated_at = ?1 WHERE id = ?2".to_string(), vec![Value::Text(now_str()), Value::Int(id as i64)], "offer.send").await?;
+    audit::log_sea(db, Some(actor), "UPDATE", "recruitment.offer.send", Some(&id.to_string()), None, None, None).await?;
+    Ok(())
+}
+
+pub async fn offer_sign_sea(db: &sea_orm::DatabaseConnection, id:i32, signature_name:&str)->Result<(),String>{
+    use super::sea_raw::{exec, Value};
+    let nama = signature_name.trim();
+    if nama.is_empty() || nama.chars().count() > 120 { return Err("Nama tanda tangan wajib diisi sampai 120 karakter.".to_string()); }
+    let baris = tawaran_by_id(db, id).await?.ok_or("Tawaran tidak ditemukan.")?;
+    if baris.status != "sent" { return Err("Hanya tawaran terkirim dapat ditandatangani.".to_string()); }
+    let signed = now_str();
+    let hash = sha256_hex(&format!("{}|{}|{}|{}", baris.id, baris.candidate_id, nama, signed));
+    exec(db, "UPDATE offer_letters SET status = 'signed', signature_name = ?1, signature_hash = ?2, signed_at = ?3, updated_at = ?3 WHERE id = ?4".to_string(), vec![Value::Text(nama.to_string()), Value::Text(hash), Value::Text(signed), Value::Int(id as i64)], "offer.sign").await?;
+    audit::log_sea(db, None, "UPDATE", "recruitment.offer.sign", Some(&id.to_string()), None, None, None).await?;
+    Ok(())
+}
+
+pub async fn offer_decline_sea(db: &sea_orm::DatabaseConnection, id:i32)->Result<(),String>{
+    use super::sea_raw::{exec, Value};
+    let baris = tawaran_by_id(db, id).await?.ok_or("Tawaran tidak ditemukan.")?;
+    if baris.status != "sent" { return Err("Hanya tawaran terkirim dapat ditolak.".to_string()); }
+    exec(db, "UPDATE offer_letters SET status = 'declined', updated_at = ?1 WHERE id = ?2".to_string(), vec![Value::Text(now_str()), Value::Int(id as i64)], "offer.decline").await?;
+    Ok(())
+}
+
+pub async fn offer_get_sea(db: &sea_orm::DatabaseConnection, id:i32)->Result<Option<OfferLetter>,String>{
+    tawaran_by_id(db, id).await
+}
+
+pub async fn offer_list_sea(db: &sea_orm::DatabaseConnection, candidate_id:i32)->Result<Vec<OfferLetter>,String>{
+    use super::sea_raw::{q_all, Value};
+    let rows = q_all(db, format!("{TAWARAN_SELECT} WHERE candidate_id = ?1 ORDER BY id DESC"), vec![Value::Int(candidate_id as i64)], 11, "offer.list").await?;
+    Ok(rows.iter().map(tawaran_row).collect())
+}
+
+pub async fn offer_verify_sea(db: &sea_orm::DatabaseConnection, id:i32)->Result<bool,String>{
+    let baris = tawaran_by_id(db, id).await?.ok_or("Tawaran tidak ditemukan.")?;
+    match (&baris.signature_name, &baris.signature_hash, &baris.signed_at) {
+        (Some(n), Some(h), Some(t)) => Ok(sha256_hex(&format!("{}|{}|{}|{}", baris.id, baris.candidate_id, n, t)) == *h),
+        _ => Err("Tawaran belum ditandatangani.".to_string()),
+    }
+}
+
+fn now_str()->String{ chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string() }
+
+fn sha256_hex(teks:&str)->String{
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(teks.as_bytes());
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+async fn tawaran_by_id(db: &sea_orm::DatabaseConnection, id:i32)->Result<Option<OfferLetter>,String>{
+    use super::sea_raw::{q_one, Value};
+    let row = q_one(db, format!("{TAWARAN_SELECT} WHERE id = ?1"), vec![Value::Int(id as i64)], 11, "offer.get").await?;
+    Ok(row.as_ref().map(tawaran_row))
+}
+
+const TAWARAN_SELECT:&str = "SELECT id, candidate_id, title, message, status, recipient_name, signature_name, signature_hash, sent_at, signed_at, created_at FROM offer_letters";
+
+fn tawaran_row(r:&Vec<super::sea_raw::Value>)->OfferLetter{
+    use super::sea_raw::{value_i64, value_to_string};
+    OfferLetter {
+        id: to_dto_int(value_i64(&r[0]).unwrap_or_default(), "id tawaran"),
+        candidate_id: to_dto_int(value_i64(&r[1]).unwrap_or_default(), "id kandidat"),
+        title: value_to_string(&r[2]),
+        message: value_to_string(&r[3]),
+        status: value_to_string(&r[4]),
+        recipient_name: value_to_string(&r[5]),
+        signature_name: ropt_text(&r[6]),
+        signature_hash: ropt_text(&r[7]),
+        sent_at: ropt_text(&r[8]),
+        signed_at: ropt_text(&r[9]),
+        created_at: value_to_string(&r[10]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1837,5 +1969,68 @@ mod tests {
         .await
         .expect_err("email tanpa @");
         assert!(e.contains("Email tidak valid"));
+    }
+
+    #[tokio::test]
+    async fn tawaran_digital_ditandatangani_dan_diverifikasi() {
+        let dir = tempfile::tempdir().expect("dir");
+        let files = tempfile::tempdir().expect("files");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = admin(db).await;
+        let vid = vacancy(db, actor).await;
+        let cid = kandidat(db, files.path(), actor, vid, "Rina Kartika").await;
+        let input = OfferInput {
+            candidate_id: cid,
+            title: "Tawaran Kerja Staff IT".to_string(),
+            message: "Selamat, kami menawarkan posisi Staff IT.".to_string(),
+            recipient_name: "Rina Kartika".to_string(),
+        };
+        let oid = offer_save_sea(db, actor, None, &input).await.expect("simpan");
+        let draf = offer_get_sea(db, oid).await.expect("get").expect("ada");
+        assert_eq!(draf.status, "draft");
+        assert!(draf.signature_hash.is_none());
+        let e = offer_sign_sea(db, oid, "Rina").await.expect_err("ttd sebelum kirim");
+        assert!(e.contains("terkirim"));
+        offer_send_sea(db, actor, oid).await.expect("kirim");
+        let terkirim = offer_get_sea(db, oid).await.expect("get2").expect("ada2");
+        assert_eq!(terkirim.status, "sent");
+        assert!(terkirim.sent_at.is_some());
+        let e = offer_save_sea(db, actor, Some(oid), &input).await.expect_err("ubah terkirim");
+        assert!(e.contains("draf"));
+        offer_sign_sea(db, oid, "Rina Kartika").await.expect("ttd");
+        let bertanda = offer_get_sea(db, oid).await.expect("get3").expect("ada3");
+        assert_eq!(bertanda.status, "signed");
+        let hash = bertanda.signature_hash.clone().expect("hash");
+        assert_eq!(hash.len(), 64);
+        assert!(offer_verify_sea(db, oid).await.expect("verifikasi"));
+        let e = offer_sign_sea(db, oid, "Rina").await.expect_err("ttd dua kali");
+        assert!(e.contains("terkirim"));
+        let e = offer_save_sea(db, actor, Some(oid), &input).await.expect_err("ubah bertanda");
+        assert!(e.contains("draf"));
+        super::super::sea_raw::exec(
+            db,
+            format!("UPDATE offer_letters SET signature_name = 'Palsu' WHERE id = {oid}"),
+            vec![],
+            "test.paksa",
+        )
+        .await
+        .expect("ubah paksa");
+        assert!(!offer_verify_sea(db, oid).await.expect("verifikasi palsu"));
+        assert_eq!(offer_list_sea(db, cid).await.expect("list").len(), 1);
+        let cid2 = kandidat(db, files.path(), actor, vid, "Dodi Pratama").await;
+        let oid2 = offer_save_sea(db, actor, None, &OfferInput { candidate_id: cid2, ..input.clone() })
+            .await
+            .expect("draf2");
+        offer_send_sea(db, actor, oid2).await.expect("kirim2");
+        offer_decline_sea(db, actor, oid2).await.expect("tolak");
+        let ditolak = offer_get_sea(db, oid2).await.expect("get4").expect("ada4");
+        assert_eq!(ditolak.status, "declined");
+        let e = offer_verify_sea(db, oid2).await.expect_err("belum ttd");
+        assert!(e.contains("belum"));
+        let e = offer_save_sea(db, actor, None, &OfferInput { candidate_id: 999999, ..input.clone() })
+            .await
+            .expect_err("kandidat asing");
+        assert!(e.contains("Kandidat tidak ditemukan"));
     }
 }
