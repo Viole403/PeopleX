@@ -1,15 +1,19 @@
 //! Koneksi SeaORM + migrasi versioned untuk PeopleX.
 //!
 //! Satu-satunya jalan akses database: `DatabaseConnection` ini, dipakai lewat `AppState`.
-//! Setiap pool ditegakkan pengaturan berikut:
+//! Pool SQLite ditegakkan pengaturan berikut:
 //! - `foreign_keys = ON` (SQLite default OFF; FK schema harus aktif)
 //! - `journal_mode = WAL` (baca konkuren + tulis serial untuk desktop single-user)
 //! - `busy_timeout = 5000` (tunggu 5 dtk saat file terkunci, bukan gagal langsung)
+//!
+//! Driver PostgreSQL dan MySQL dipakai lewat URL dari config tanpa pragma khusus.
 
+use crate::config::AppConfig;
 use crate::services::sea_raw::{q_all, Value};
 use sea_orm::DatabaseConnection;
 use sea_orm::sqlx::{AssertSqlSafe, Row};
 use std::path::Path;
+use std::str::FromStr;
 use std::time::Duration;
 
 /// Migrasi versioned. M01 = skema awal (87 tabel). M02 = jenjang pendidikan. M03 = MFA. M04 = skor exit. M05 = band gaji. M06 = materi training. M07 = nilai kuis.
@@ -23,29 +27,63 @@ static MIGRATIONS: &[&str] = &[
     include_str!("migrations/m07_quiz_score.sql"),
 ];
 
-/// Bangun koneksi SeaORM untuk file SQLite di `db_path`.
-/// Direktori parent dibuat otomatis bila belum ada.
-pub async fn connect_sea(db_path: &Path) -> Result<DatabaseConnection, String> {
-    if let Some(parent) = db_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("gagal membuat direktori database: {e}"))?;
+/// Bangun koneksi SeaORM sesuai driver pada config (`sqlite`/`postgres`/`mysql`).
+/// Untuk SQLite, direktori parent file dibuat otomatis bila belum ada.
+pub async fn connect_sea(cfg: &AppConfig, data_dir: &Path) -> Result<DatabaseConnection, String> {
+    match cfg.database.driver.as_str() {
+        "sqlite" => {
+            let db_path = match cfg.database.path.as_deref() {
+                Some(p) => data_dir.join(p),
+                None => data_dir.join("peoplex.db"),
+            };
+            if let Some(parent) = db_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("gagal membuat direktori database: {e}"))?;
+                }
+            }
+            let options = sea_orm::sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true)
+                .foreign_keys(true)
+                .journal_mode(sea_orm::sqlx::sqlite::SqliteJournalMode::Wal)
+                .busy_timeout(Duration::from_secs(5));
+            // Satu koneksi: perubahan tulis langsung terlihat baca berikutnya (WAL lokal).
+            let pool = sea_orm::sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await
+                .map_err(|e| format!("gagal membuat connection pool: {e}"))?;
+            Ok(sea_orm::SqlxSqliteConnector::from_sqlx_sqlite_pool(
+                pool,
+            ))
         }
+        "postgres" | "postgresql" => {
+            let url = cfg.sea_url(data_dir)?;
+            let options = sea_orm::sqlx::postgres::PgConnectOptions::from_str(&url)
+                .map_err(|e| format!("gagal membaca konfigurasi PostgreSQL: {e}"))?;
+            let pool = sea_orm::sqlx::postgres::PgPoolOptions::new()
+                .max_connections(10)
+                .connect_with(options)
+                .await
+                .map_err(|e| format!("gagal membuat connection pool: {e}"))?;
+            Ok(sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(
+                pool,
+            ))
+        }
+        "mysql" => {
+            let url = cfg.sea_url(data_dir)?;
+            let options = sea_orm::sqlx::mysql::MySqlConnectOptions::from_str(&url)
+                .map_err(|e| format!("gagal membaca konfigurasi MySQL: {e}"))?;
+            let pool = sea_orm::sqlx::mysql::MySqlPoolOptions::new()
+                .max_connections(10)
+                .connect_with(options)
+                .await
+                .map_err(|e| format!("gagal membuat connection pool: {e}"))?;
+            Ok(sea_orm::SqlxMySqlConnector::from_sqlx_mysql_pool(pool))
+        }
+        other => Err(format!("driver database tidak dikenal: {other}")),
     }
-    let options = sea_orm::sqlx::sqlite::SqliteConnectOptions::new()
-        .filename(db_path)
-        .create_if_missing(true)
-        .foreign_keys(true)
-        .journal_mode(sea_orm::sqlx::sqlite::SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(5));
-    let pool = sea_orm::sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .map_err(|e| format!("gagal membuat connection pool: {e}"))?;
-    Ok(sea_orm::SqlxSqliteConnector::from_sqlx_sqlite_pool(
-        pool,
-    ))
 }
 
 async fn exec_one(
@@ -134,7 +172,7 @@ mod tests {
 
     async fn migrated_db() -> (tempfile::TempDir, DatabaseConnection) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let db = connect_sea(&dir.path().join("migrated.db"))
+        let db = connect_sea(&AppConfig::default(), dir.path())
             .await
             .expect("connect");
         migrate_sea(&db).await.expect("migrate");

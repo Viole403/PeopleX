@@ -2689,8 +2689,7 @@ async fn report_export(
 
 fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("gagal membuat direktori data: {e}"))?;
-    config::load(&data_dir)?;
-    let db_path = data_dir.join("peoplex.db");
+    let cfg = config::load(&data_dir)?;
     // Konek + migrasi + seed di thread terpisah agar aman dipanggil dari dalam runtime async (mis. test).
     let sea = std::thread::scope(|s| {
         s.spawn(|| {
@@ -2699,7 +2698,7 @@ fn init_state(data_dir: PathBuf) -> Result<AppState, String> {
                 .build()
                 .map_err(|e| format!("gagal membuat runtime async: {e}"))?;
             rt.block_on(async {
-                let sea = db::connect_sea(&db_path).await?;
+                let sea = db::connect_sea(&cfg, &data_dir).await?;
                 db::migrate_sea(&sea).await?;
                 seed::seed(&sea).await?;
                 services::backup::ensure_scheduled_sea(
