@@ -174,7 +174,7 @@ pub async fn scheme_save_sea(
                 None,
                 None,
             )
-            .await;
+            .await?;
             to_dto_int(rid, "id")
         }
         None => {
@@ -205,7 +205,7 @@ pub async fn scheme_save_sea(
                 None,
                 None,
             )
-            .await;
+            .await?;
             to_dto_int(rid, "id")
         }
     }
@@ -334,7 +334,7 @@ pub async fn bonus_run_sea(
         None,
         None,
     )
-    .await;
+    .await?;
     to_dto_int(dibuat, "bonus")
 }
 
@@ -428,7 +428,7 @@ pub async fn bonus_decide_sea(
         None,
         None,
     )
-    .await;
+    .await?;
     Ok(())
 }
 
@@ -514,7 +514,7 @@ pub async fn benefit_save_sea(
                 None,
                 None,
             )
-            .await;
+            .await?;
             to_dto_int(rid, "id")
         }
         None => {
@@ -544,7 +544,7 @@ pub async fn benefit_save_sea(
                 None,
                 None,
             )
-            .await;
+            .await?;
             to_dto_int(rid, "id")
         }
     }
@@ -647,7 +647,7 @@ pub async fn benefit_enroll_sea(
         None,
         None,
     )
-    .await;
+    .await?;
     to_dto_int(rid, "id")
 }
 

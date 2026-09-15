@@ -316,7 +316,7 @@ pub async fn delegate_sea(
         None,
         None,
     )
-    .await;
+    .await?;
     crate::to_dto_int(rid, "approval.delegation")
 }
 
@@ -397,6 +397,6 @@ pub async fn delegation_revoke_sea(
         None,
         None,
     )
-    .await;
+    .await?;
     Ok(())
 }

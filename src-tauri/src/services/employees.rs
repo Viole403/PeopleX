@@ -2559,7 +2559,7 @@ pub async fn contract_sign_sea(
         None,
         None,
     )
-    .await;
+    .await?;
     Ok(())
 }
 

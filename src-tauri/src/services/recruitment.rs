@@ -1310,7 +1310,7 @@ pub async fn hire_sea(
 }
 
 pub async fn offer_save_sea(db: &sea_orm::DatabaseConnection, actor:i64, id:Option<i32>, input:&OfferInput)->Result<i32,String>{
-    use super::sea_raw::{exec, exec_insert, q_one, value_i64, Value};
+    use super::sea_raw::{exec, exec_insert, q_one, Value};
     let judul = input.title.trim();
     if judul.is_empty() || judul.chars().count() > 200 { return Err("Judul tawaran wajib diisi sampai 200 karakter.".to_string()); }
     let penerima = input.recipient_name.trim();
@@ -1337,7 +1337,7 @@ pub async fn offer_save_sea(db: &sea_orm::DatabaseConnection, actor:i64, id:Opti
 }
 
 pub async fn offer_send_sea(db: &sea_orm::DatabaseConnection, actor:i64, id:i32)->Result<(),String>{
-    use super::sea_raw::{exec, q_one, Value};
+    use super::sea_raw::{exec, Value};
     let baris = tawaran_by_id(db, id).await?.ok_or("Tawaran tidak ditemukan.")?;
     if baris.status != "draft" { return Err("Hanya tawaran berstatus draf dapat dikirim.".to_string()); }
     exec(db, "UPDATE offer_letters SET status = 'sent', sent_at = ?1, updated_at = ?1 WHERE id = ?2".to_string(), vec![Value::Text(now_str()), Value::Int(id as i64)], "offer.send").await?;
@@ -1528,7 +1528,7 @@ pub async fn bg_save_sea(
             None,
             None,
         )
-        .await;
+        .await?;
         return to_dto_int(rid, "bg.id");
     }
     let rid = exec_insert(
@@ -1557,7 +1557,7 @@ pub async fn bg_save_sea(
         None,
         None,
     )
-    .await;
+    .await?;
     to_dto_int(rid, "bg.id")
 }
 

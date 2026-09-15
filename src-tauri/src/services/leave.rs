@@ -947,7 +947,7 @@ pub async fn carryover_run_sea(
         None,
         None,
     )
-    .await;
+    .await?;
     to_dto_int(diproses, "leave.carryover")
 }
 

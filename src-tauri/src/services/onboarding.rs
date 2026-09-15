@@ -323,7 +323,7 @@ pub async fn preboarding_status_sea(
     db: &sea_orm::DatabaseConnection,
     employee_id: i64,
 ) -> Result<PreboardingStatus, String> {
-    use chrono::{Datelike, Local, NaiveDate};
+    use chrono::{Local, NaiveDate};
     let row = q_one(
         db,
         "SELECT join_date FROM employees WHERE id = ?1 AND deleted_at IS NULL".to_string(),
