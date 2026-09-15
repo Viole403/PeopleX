@@ -1,7 +1,10 @@
 //! Absensi: shift, jadwal, libur, clock in/out, koreksi, rekap.
 
 use chrono::{Datelike, Local, NaiveDate, NaiveDateTime};
+use rand::RngCore;
+use std::path::Path;
 
+use super::employees::FileUpload;
 use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 use crate::to_dto_int;
 
@@ -744,6 +747,94 @@ async fn cek_geofence(
     Ok(())
 }
 
+const LIVENESS_MIMES: &[&str] = &["image/jpeg", "image/png"];
+const LIVENESS_MAX_BYTES: usize = 3 * 1024 * 1024;
+const CHALLENGE_TTL_SECS: i64 = 300;
+const LIVENESS_INSTRUCTIONS: &[&str] = &[
+    "Kedipkan mata dua kali",
+    "Tengok ke kiri",
+    "Tengok ke kanan",
+    "Tersenyum ke kamera",
+];
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct LivenessChallenge {
+    pub nonce: String,
+    pub instruction: String,
+}
+
+pub async fn liveness_challenge_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+) -> Result<LivenessChallenge, String> {
+    active_employee_sea(db, employee_id).await?;
+    let mut raw = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut raw);
+    let nonce: String = raw.iter().map(|b| format!("{b:02x}")).collect();
+    let instruction = LIVENESS_INSTRUCTIONS[(raw[0] as usize) % LIVENESS_INSTRUCTIONS.len()].to_string();
+    exec(db, "INSERT INTO liveness_challenges (nonce, employee_id, instruction, issued_at, used) VALUES (?1, ?2, ?3, ?4, 0)".to_string(), vec![Value::Text(nonce.clone()), Value::Int(employee_id), sea_text_val(&instruction), sea_text_val(&now_str())], "attendance.challenge").await.map_err(|e| format!("gagal membuat tantangan verifikasi: {e}"))?;
+    Ok(LivenessChallenge { nonce, instruction })
+}
+
+fn nama_aman(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("foto");
+    let clean: String = base
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if clean.is_empty() {
+        "foto".to_string()
+    } else {
+        clean
+    }
+}
+
+async fn periksa_liveness(
+    db: &sea_orm::DatabaseConnection,
+    files: &Path,
+    employee_id: i64,
+    photo: Option<&FileUpload>,
+    nonce: Option<&str>,
+) -> Result<String, String> {
+    let code = nonce.ok_or_else(|| "Verifikasi wajah wajib dilakukan sebelum clock in.".to_string())?;
+    let row = q_one(db, "SELECT employee_id, issued_at, used FROM liveness_challenges WHERE nonce = ?1".to_string(), vec![Value::Text(code.to_string())], 3, "attendance.challenge.read").await.map_err(|e| format!("gagal memeriksa verifikasi: {e}"))?.ok_or_else(|| "Kode verifikasi tidak valid.".to_string())?;
+    if sea_int(&row, 0) != employee_id {
+        return Err("Kode verifikasi tidak valid.".to_string());
+    }
+    if sea_int(&row, 2) != 0 {
+        return Err("Kode verifikasi sudah dipakai, minta yang baru.".to_string());
+    }
+    let issued = NaiveDateTime::parse_from_str(&sea_text(&row, 1), "%Y-%m-%d %H:%M:%S")
+        .map_err(|_| "Data verifikasi rusak.".to_string())?;
+    if (Local::now().naive_local() - issued).num_seconds() > CHALLENGE_TTL_SECS {
+        return Err("Kode verifikasi kedaluwarsa, minta yang baru.".to_string());
+    }
+    let file = photo.ok_or_else(|| "Swafoto wajib diambil saat clock in.".to_string())?;
+    if !LIVENESS_MIMES.contains(&file.mime.as_str()) {
+        return Err("Swafoto harus berformat JPG atau PNG.".to_string());
+    }
+    if file.bytes.is_empty() {
+        return Err("Swafoto kosong.".to_string());
+    }
+    if file.bytes.len() > LIVENESS_MAX_BYTES {
+        return Err("Ukuran swafoto maksimal 3MB.".to_string());
+    }
+    let dir = files.join("attendance");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("gagal membuat folder swafoto: {e}"))?;
+    let stamp = Local::now().format("%Y%m%d%H%M%S%f").to_string();
+    let rel = format!("attendance/{stamp}_{employee_id}_{}", nama_aman(&file.name));
+    std::fs::write(files.join(&rel), &file.bytes)
+        .map_err(|e| format!("gagal menyimpan swafoto: {e}"))?;
+    exec(db, "UPDATE liveness_challenges SET used = 1 WHERE nonce = ?1".to_string(), vec![Value::Text(code.to_string())], "attendance.challenge.pakai").await.map_err(|e| format!("gagal menandai verifikasi: {e}"))?;
+    Ok(rel)
+}
+
 async fn read_attendance_sea(db: &sea_orm::DatabaseConnection, id: i64) -> Result<Attendance, String> {
     let row = q_one(db, "SELECT id, employee_id, date, clock_in, clock_out, status, late_minutes, early_minutes, work_minutes, notes, shift_id FROM attendances WHERE id = ?1".to_string(), vec![Value::Int(id)], 11, "attendance.read").await.map_err(|e| format!("gagal memuat absensi: {e}"))?.ok_or_else(|| "Absensi tidak ditemukan.".to_string())?;
     Ok(Attendance {
@@ -776,6 +867,9 @@ pub async fn clock_in_sea(
     lat: Option<f64>,
     lng: Option<f64>,
     device: Option<&str>,
+    files: &Path,
+    photo: Option<&FileUpload>,
+    nonce: Option<&str>,
 ) -> Result<ClockResult, String> {
     active_employee_sea(db, employee_id).await?;
     let today = today_str();
@@ -787,6 +881,7 @@ pub async fn clock_in_sea(
         return Err("Hari ini libur.".to_string());
     }
     cek_geofence(db, employee_id, lat, lng).await?;
+    let foto = periksa_liveness(db, files, employee_id, photo, nonce).await?;
     let now = Local::now().naive_local();
     let shift = resolve_shift_sea(db, employee_id, &today).await?;
     let (status, late) = match &shift {
@@ -801,7 +896,7 @@ pub async fn clock_in_sea(
         }
         None => ("present".to_string(), 0),
     };
-    let id = exec_insert(db, "INSERT INTO attendances (employee_id, date, clock_in, clock_in_lat, clock_in_lng, clock_in_device, shift_id, status, late_minutes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)".to_string(), vec![Value::Int(employee_id), sea_text_val(&today), sea_text_val(&now.format("%Y-%m-%d %H:%M:%S").to_string()), sea_opt_float(lat), sea_opt_float(lng), sea_opt_str(device), match shift.as_ref().map(|s| s.id) { Some(x) => Value::Int(x), None => Value::Null }, sea_text_val(&status), Value::Int(late)], "attendance.clockin").await.map_err(|e| format!("gagal clock in: {e}"))?;
+    let id = exec_insert(db, "INSERT INTO attendances (employee_id, date, clock_in, clock_in_lat, clock_in_lng, clock_in_device, shift_id, status, late_minutes, clock_in_photo) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)".to_string(), vec![Value::Int(employee_id), sea_text_val(&today), sea_text_val(&now.format("%Y-%m-%d %H:%M:%S").to_string()), sea_opt_float(lat), sea_opt_float(lng), sea_opt_str(device), match shift.as_ref().map(|s| s.id) { Some(x) => Value::Int(x), None => Value::Null }, sea_text_val(&status), Value::Int(late), sea_text_val(&foto)], "attendance.clockin").await.map_err(|e| format!("gagal clock in: {e}"))?;
 
     super::audit::log_sea(db, Some(actor_id), "CLOCK_IN", "attendance", Some(&id.to_string()), None, None, None).await?;
     Ok(ClockResult {
@@ -1186,6 +1281,25 @@ mod tests {
         .expect("assign");
     }
 
+    async fn clock_ok(
+        db: &sea_orm::DatabaseConnection,
+        files: &Path,
+        actor: i64,
+        emp: i64,
+        lat: Option<f64>,
+        lng: Option<f64>,
+    ) -> ClockResult {
+        let ch = liveness_challenge_sea(db, emp).await.expect("challenge");
+        let photo = FileUpload {
+            name: "wajah.png".to_string(),
+            mime: "image/png".to_string(),
+            bytes: vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 1, 2, 3],
+        };
+        clock_in_sea(db, actor, emp, lat, lng, None, files, Some(&photo), Some(&ch.nonce))
+            .await
+            .expect("in")
+    }
+
     #[tokio::test]
     async fn shift_crud_dan_guard_sea() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1292,7 +1406,7 @@ mod tests {
         let actor = one(db, "SELECT id FROM users WHERE username = 'admin'", "test.admin").await;
         let emp = mkemp(db, "EMP-T2", None).await;
         // tanpa shift: present
-        let r = clock_in_sea(db, actor, emp, None, None, None).await.expect("in");
+        let r = clock_ok(db, dir.path(), actor, emp, None, None).await;
         assert_eq!(r.status, "present");
         assert!(clock_in_sea(db, actor, emp, None, None, None).await.is_err());
         let r = clock_out_sea(db, actor, emp, None, None, None).await.expect("out");
@@ -1326,9 +1440,7 @@ mod tests {
         .await
         .expect("shift") as i64;
         assign_week(db, emp2, shift).await;
-        let r = clock_in_sea(db, actor, emp2, Some(-6.2), Some(106.8), None)
-            .await
-            .expect("in2");
+        let r = clock_ok(db, dir.path(), actor, emp2, Some(-6.2), Some(106.8)).await;
         assert_eq!(r.status, "late");
         let att = today_sea(db, emp2).await.expect("today").expect("ada");
         assert!(att.late_minutes >= 1);
@@ -1375,7 +1487,7 @@ mod tests {
         .await
         .expect("shift") as i64;
         assign_week(db, emp3, sh).await;
-        let r = clock_in_sea(db, actor, emp3, None, None, None).await.expect("in3");
+        let r = clock_ok(db, dir.path(), actor, emp3, None, None).await;
         assert_eq!(r.status, "present");
         let r = clock_out_sea(db, actor, emp3, None, None, None)
             .await
@@ -1553,9 +1665,7 @@ mod tests {
         // A terikat lokasi, clock tepat di titik kantor
         let a = mkemp(db, "EMP-GFA", None).await;
         ikat(db, a).await;
-        let r = clock_in_sea(db, actor, a, Some(-6.224), Some(106.809), None)
-            .await
-            .expect("in a");
+        let r = clock_ok(db, dir.path(), actor, a, Some(-6.224), Some(106.809)).await;
         assert_eq!(r.message, "Clock in berhasil.");
         // B terikat lokasi, clock 2.8 km dari kantor ditolak
         let b = mkemp(db, "EMP-GFB", None).await;
@@ -1573,9 +1683,7 @@ mod tests {
         assert!(e.contains("wajib"), "pesan: {e}");
         // D tanpa lokasi, clock tanpa koordinat lolos
         let d = mkemp(db, "EMP-GFD", None).await;
-        clock_in_sea(db, actor, d, None, None, None)
-            .await
-            .expect("in d");
+        clock_ok(db, dir.path(), actor, d, None, None).await;
         // clock out A dari jauh ditolak, lalu dari titik kantor lolos
         let e = clock_out_sea(db, actor, a, Some(-6.2), Some(106.8), None)
             .await
@@ -1585,5 +1693,59 @@ mod tests {
             .await
             .expect("out a");
         assert_eq!(r.message, "Clock out berhasil.");
+    }
+
+    #[tokio::test]
+    async fn liveness_menolak_foto_daur_ulang() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("init");
+        let db = &state.sea;
+        let files = dir.path().join("files");
+        let actor = one(db, "SELECT id FROM users WHERE username = 'admin'", "test.admin").await;
+        let emp = mkemp(db, "EMP-LV", None).await;
+        let foto = FileUpload {
+            name: "wajah.png".to_string(),
+            mime: "image/png".to_string(),
+            bytes: vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 1, 2, 3],
+        };
+        let ch = liveness_challenge_sea(db, emp).await.expect("challenge");
+        assert!(!ch.nonce.is_empty() && !ch.instruction.is_empty());
+        let r = clock_in_sea(db, actor, emp, None, None, None, &files, Some(&foto), Some(&ch.nonce))
+            .await
+            .expect("in");
+        assert_eq!(r.message, "Clock in berhasil.");
+        let rel = opt_text(db, &format!("SELECT clock_in_photo FROM attendances WHERE employee_id = {emp} AND date = date('now','localtime')"), "test.foto").await;
+        assert!(rel.map(|p| p.starts_with("attendance/")).unwrap_or(false));
+        let e = clock_in_sea(db, actor, emp, None, None, None, &files, Some(&foto), Some(&ch.nonce))
+            .await
+            .expect_err("duplikat");
+        assert!(e.contains("Sudah clock in"), "pesan: {e}");
+        let emp2 = mkemp(db, "EMP-LV2", None).await;
+        let e = clock_in_sea(db, actor, emp2, None, None, None, &files, Some(&foto), Some(&ch.nonce))
+            .await
+            .expect_err("pakai ulang");
+        assert!(e.contains("sudah dipakai"), "pesan: {e}");
+        let ch2 = liveness_challenge_sea(db, emp2).await.expect("challenge2");
+        exec(db, "UPDATE liveness_challenges SET issued_at = '2000-01-01 00:00:00' WHERE nonce = ?1".to_string(), vec![Value::Text(ch2.nonce.clone())], "test.expire")
+            .await
+            .expect("upd");
+        let e = clock_in_sea(db, actor, emp2, None, None, None, &files, Some(&foto), Some(&ch2.nonce))
+            .await
+            .expect_err("kedaluwarsa");
+        assert!(e.contains("kedaluwarsa"), "pesan: {e}");
+        let ch3 = liveness_challenge_sea(db, emp2).await.expect("challenge3");
+        let pdf = FileUpload {
+            name: "wajah.pdf".to_string(),
+            mime: "application/pdf".to_string(),
+            bytes: vec![1, 2, 3],
+        };
+        let e = clock_in_sea(db, actor, emp2, None, None, None, &files, Some(&pdf), Some(&ch3.nonce))
+            .await
+            .expect_err("mime");
+        assert!(e.contains("JPG atau PNG"), "pesan: {e}");
+        let e = clock_in_sea(db, actor, emp2, None, None, None, &files, None, Some(&ch3.nonce))
+            .await
+            .expect_err("tanpa foto");
+        assert!(e.contains("Swafoto wajib"), "pesan: {e}");
     }
 }

@@ -26,6 +26,7 @@ static MIGRATIONS: &[&str] = &[
     include_str!("migrations/m06_training_materials.sql"),
     include_str!("migrations/m07_quiz_score.sql"),
     include_str!("migrations/m08_pulse_survey.sql"),
+    include_str!("migrations/m09_liveness.sql"),
 ];
 
 /// Bangun koneksi SeaORM sesuai driver pada config (`sqlite`/`postgres`/`mysql`).

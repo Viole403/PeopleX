@@ -1063,8 +1063,11 @@ async fn attendance_clock_in(
     state: tauri::State<'_, AppState>,
     lat: Option<f64>,
     lng: Option<f64>,
+    photo: Option<services::employees::FileUpload>,
+    nonce: Option<String>,
 ) -> Result<services::attendance::ClockResult, String> {
     let (uid, _) = current_actor(&state).await?;
+    let dir = files_dir(&state);
     services::attendance::clock_in_sea(
         &state.sea,
         uid,
@@ -1072,6 +1075,22 @@ async fn attendance_clock_in(
         lat,
         lng,
         Some("desktop"),
+        &dir,
+        photo.as_ref(),
+        nonce.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn attendance_liveness_challenge(
+    state: tauri::State<'_, AppState>,
+) -> Result<services::attendance::LivenessChallenge, String> {
+    let (uid, _) = current_actor(&state).await?;
+    services::attendance::liveness_challenge_sea(
+        &state.sea,
+        my_employee_sea(&state.sea, uid).await?,
     )
     .await
 }
@@ -2936,6 +2955,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         holiday_delete,
         attendance_today,
         attendance_clock_in,
+        attendance_liveness_challenge,
         attendance_clock_out,
         attendance_history,
         attendance_recap,
