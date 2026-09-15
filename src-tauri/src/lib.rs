@@ -1200,6 +1200,64 @@ async fn attendance_decide_correction(
 
 #[tauri::command]
 #[specta::specta]
+async fn attendance_swap_request(
+    state: tauri::State<'_, AppState>,
+    input: services::attendance::SwapInput,
+) -> Result<i32, String> {
+    let (uid, _) = current_actor(&state).await?;
+    services::attendance::swap_request_sea(&state.sea, uid, my_employee_sea(&state.sea, uid).await?, &input).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn attendance_my_swaps(state: tauri::State<'_, AppState>) -> Result<Vec<services::attendance::Swap>, String> {
+    let (uid, _) = current_actor(&state).await?;
+    services::attendance::my_swaps_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn attendance_pending_swaps(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::attendance::Swap>, String> {
+    require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::attendance::pending_swaps_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn attendance_all_swaps(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::attendance::Swap>, String> {
+    require(&state, &["attendance.view", "system.manage"]).await?;
+    services::attendance::all_swaps_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn attendance_decide_swap(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+    decision: String,
+    notes: Option<String>,
+) -> Result<(), String> {
+    let (uid, user) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    let actor_emp = my_employee_sea(&state.sea, uid).await.ok();
+    let privileged = privileged(&user, "attendance.approve");
+    services::attendance::decide_swap_sea(
+        &state.sea,
+        uid,
+        actor_emp,
+        privileged,
+        id as i64,
+        &decision,
+        notes.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn leave_balances(
     state: tauri::State<'_, AppState>,
     year: i32,
@@ -2964,6 +3022,11 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         attendance_pending_corrections,
         attendance_request_correction,
         attendance_decide_correction,
+        attendance_swap_request,
+        attendance_my_swaps,
+        attendance_pending_swaps,
+        attendance_all_swaps,
+        attendance_decide_swap,
         leave_balances,
         leave_types,
         leave_type_save,
@@ -3178,7 +3241,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &92);
+                assert_eq!(t, &93);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),

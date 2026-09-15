@@ -156,6 +156,30 @@ pub struct CorrectionInput {
     pub reason: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct Swap {
+    pub id: i32,
+    pub employee_id: i32,
+    pub employee_name: String,
+    pub target_employee_id: i32,
+    pub target_name: String,
+    pub shift_date: String,
+    pub from_shift_name: Option<String>,
+    pub to_shift_name: Option<String>,
+    pub reason: String,
+    pub status: String,
+    pub requested_at: String,
+    pub decided_at: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug, Default)]
+pub struct SwapInput {
+    pub target_employee_id: i32,
+    pub shift_date: String,
+    pub reason: String,
+}
+
 const DAY_NAMES: [&str; 7] = [
     "Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu",
 ];
@@ -1196,6 +1220,265 @@ pub async fn decide_correction_sea(
     Ok(())
 }
 
+async fn swap_shift_id_of(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+    date: &str,
+) -> Result<Option<i64>, String> {
+    let rows = q_all(
+        db,
+        "SELECT shift_id FROM shift_assignments WHERE employee_id = ?1 AND date = ?2 AND shift_id IS NOT NULL".to_string(),
+        vec![Value::Int(employee_id), sea_text_val(date)],
+        1,
+        "attendance.swap.assign",
+    )
+    .await
+    .map_err(|e| format!("gagal memuat penugasan: {e}"))?;
+    Ok(rows.first().and_then(|r| sea_opt_int(r, 0)))
+}
+
+fn swap_row(r: &[Value]) -> Result<Swap, String> {
+    Ok(Swap {
+        id: to_dto_int(sea_int(r, 0), "swap.id")?,
+        employee_id: to_dto_int(sea_int(r, 1), "swap.emp")?,
+        employee_name: sea_text(r, 2),
+        target_employee_id: to_dto_int(sea_int(r, 3), "swap.target")?,
+        target_name: sea_text(r, 4),
+        shift_date: sea_text(r, 5),
+        from_shift_name: sea_opt_text(r, 6),
+        to_shift_name: sea_opt_text(r, 7),
+        reason: sea_text(r, 8),
+        status: sea_text(r, 9),
+        requested_at: sea_text(r, 10),
+        decided_at: sea_opt_text(r, 11),
+        notes: sea_opt_text(r, 12),
+    })
+}
+
+const SWAP_SELECT: &str = "SELECT ss.id, ss.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), ss.target_employee_id, t.first_name || ' ' || COALESCE(t.last_name, ''), ss.shift_date, fs.name, ts.name, ss.reason, ss.status, ss.requested_at, ss.decided_at, ss.notes FROM shift_swaps ss JOIN employees e ON e.id = ss.employee_id JOIN employees t ON t.id = ss.target_employee_id LEFT JOIN shifts fs ON fs.id = ss.from_shift_id LEFT JOIN shifts ts ON ts.id = ss.to_shift_id";
+
+pub async fn swap_request_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    employee_id: i64,
+    input: &SwapInput,
+) -> Result<i32, String> {
+    active_employee_sea(db, employee_id).await?;
+    let target = input.target_employee_id as i64;
+    if target == employee_id {
+        return Err("Pilih rekan lain untuk bertukar shift.".to_string());
+    }
+    active_employee_sea(db, target).await?;
+    let date = input.shift_date.trim();
+    NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|_| "Tanggal harus valid (YYYY-MM-DD).".to_string())?;
+    if input.reason.trim().is_empty() {
+        return Err("Alasan wajib diisi.".to_string());
+    }
+    if input.reason.len() > 255 {
+        return Err("Alasan maksimal 255 karakter.".to_string());
+    }
+    let dup = q_all(
+        db,
+        "SELECT id FROM shift_swaps WHERE employee_id = ?1 AND target_employee_id = ?2 AND shift_date = ?3 AND status = 'pending'".to_string(),
+        vec![Value::Int(employee_id), Value::Int(target), sea_text_val(date)],
+        1,
+        "attendance.swap.dup",
+    )
+    .await
+    .map_err(|e| format!("gagal memeriksa pengajuan: {e}"))?;
+    if !dup.is_empty() {
+        return Err("Pengajuan tukar shift pada tanggal itu sudah ada.".to_string());
+    }
+    let mine = swap_shift_id_of(db, employee_id, date).await?;
+    if mine.is_none() {
+        return Err("Anda tidak memiliki penugasan shift pada tanggal itu.".to_string());
+    }
+    let theirs = swap_shift_id_of(db, target, date).await?;
+    if theirs.is_none() {
+        return Err("Rekan tersebut tidak memiliki penugasan shift pada tanggal itu.".to_string());
+    }
+    let rid = exec_insert(
+        db,
+        "INSERT INTO shift_swaps (employee_id, target_employee_id, shift_date, from_shift_id, to_shift_id, reason, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending')".to_string(),
+        vec![Value::Int(employee_id), Value::Int(target), sea_text_val(date), Value::Int(mine.unwrap()), Value::Int(theirs.unwrap()), sea_text_val(input.reason.trim())],
+        "attendance.swap.insert",
+    )
+    .await
+    .map_err(|e| format!("gagal mengajukan tukar shift: {e}"))?;
+
+    if let Some(uid) = user_of_employee_sea(db, target).await? {
+        notify_sea(
+            db,
+            uid,
+            "attendance_swap",
+            "Pengajuan Tukar Shift",
+            "Ada rekan yang mengajukan tukar shift dengan Anda.",
+            "/attendance",
+        )
+        .await?;
+    }
+    let sup = q_all(
+        db,
+        "SELECT supervisor_id FROM employees WHERE id = ?1".to_string(),
+        vec![Value::Int(employee_id)],
+        1,
+        "attendance.swap.sup",
+    )
+    .await
+    .map_err(|e| format!("gagal memuat supervisor: {e}"))?
+    .into_iter()
+    .next()
+    .and_then(|r| sea_opt_int(&r, 0));
+    if let Some(sid) = sup {
+        if let Some(uid) = user_of_employee_sea(db, sid).await? {
+            notify_sea(
+                db,
+                uid,
+                "attendance_swap",
+                "Persetujuan Tukar Shift",
+                "Ada pengajuan tukar shift yang menunggu persetujuan Anda.",
+                "/attendance",
+            )
+            .await?;
+        }
+    }
+    super::audit::log_sea(db, Some(actor_id), "CREATE", "attendance.swap", Some(&rid.to_string()), None, None, None).await?;
+    to_dto_int(rid, "swap.id")
+}
+
+pub async fn my_swaps_sea(db: &sea_orm::DatabaseConnection, employee_id: i64) -> Result<Vec<Swap>, String> {
+    let rows = q_all(
+        db,
+        &format!("{SWAP_SELECT} WHERE (ss.employee_id = ?1 OR ss.target_employee_id = ?1) ORDER BY ss.id DESC"),
+        vec![Value::Int(employee_id)],
+        13,
+        "attendance.swap.mine",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca pengajuan: {e}"))?;
+    rows.iter().map(swap_row).collect()
+}
+
+pub async fn pending_swaps_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Swap>, String> {
+    let rows = q_all(
+        db,
+        &format!("{SWAP_SELECT} WHERE ss.status = 'pending' ORDER BY ss.id DESC"),
+        vec![],
+        13,
+        "attendance.swap.pending",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca antrean: {e}"))?;
+    rows.iter().map(swap_row).collect()
+}
+
+pub async fn all_swaps_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Swap>, String> {
+    let rows = q_all(
+        db,
+        &format!("{SWAP_SELECT} ORDER BY ss.id DESC"),
+        vec![],
+        13,
+        "attendance.swap.all",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca riwayat: {e}"))?;
+    rows.iter().map(swap_row).collect()
+}
+
+pub async fn decide_swap_sea(
+    db: &sea_orm::DatabaseConnection,
+    approver_user_id: i64,
+    approver_employee_id: Option<i64>,
+    is_privileged: bool,
+    swap_id: i64,
+    decision: &str,
+    notes: Option<&str>,
+) -> Result<(), String> {
+    if decision != "approved" && decision != "rejected" {
+        return Err("Keputusan tidak valid.".to_string());
+    }
+    let rows = q_all(
+        db,
+        "SELECT employee_id, target_employee_id, shift_date, from_shift_id, to_shift_id, status FROM shift_swaps WHERE id = ?1".to_string(),
+        vec![Value::Int(swap_id)],
+        6,
+        "attendance.swap.decide.read",
+    )
+    .await
+    .map_err(|e| format!("gagal memuat pengajuan: {e}"))?;
+    let r = rows.into_iter().next().ok_or_else(|| "Pengajuan tukar shift tidak ditemukan.".to_string())?;
+    let (emp_id, target_id, date, from_shift, to_shift, status) = (
+        sea_int(&r, 0), sea_int(&r, 1), sea_text(&r, 2),
+        sea_opt_int(&r, 3), sea_opt_int(&r, 4), sea_text(&r, 5),
+    );
+    if status != "pending" {
+        return Err("Pengajuan sudah diproses.".to_string());
+    }
+    let supervisor = q_all(
+        db,
+        "SELECT supervisor_id FROM employees WHERE id = ?1".to_string(),
+        vec![Value::Int(emp_id)],
+        1,
+        "attendance.swap.decide.sup",
+    )
+    .await
+    .map_err(|e| format!("gagal memuat supervisor: {e}"))?
+    .into_iter()
+    .next()
+    .and_then(|x| sea_opt_int(&x, 0));
+    if approver_employee_id != supervisor && !is_privileged {
+        return Err("Hanya supervisor atau HR yang boleh memutuskan.".to_string());
+    }
+    if decision == "approved" {
+        let a = swap_shift_id_of(db, emp_id, &date).await?;
+        let b = swap_shift_id_of(db, target_id, &date).await?;
+        if a != from_shift || b != to_shift {
+            return Err("Penugasan pada tanggal itu sudah berubah.".to_string());
+        }
+        exec(
+            db,
+            "UPDATE shift_assignments SET shift_id = ?1 WHERE employee_id = ?2 AND date = ?3 AND shift_id = ?4".to_string(),
+            vec![Value::Int(to_shift.unwrap()), Value::Int(emp_id), sea_text_val(&date), Value::Int(from_shift.unwrap())],
+            "attendance.swap.apply.a",
+        )
+        .await
+        .map_err(|e| format!("gagal menerapkan tukar: {e}"))?;
+        exec(
+            db,
+            "UPDATE shift_assignments SET shift_id = ?1 WHERE employee_id = ?2 AND date = ?3 AND shift_id = ?4".to_string(),
+            vec![Value::Int(from_shift.unwrap()), Value::Int(target_id), sea_text_val(&date), Value::Int(to_shift.unwrap())],
+            "attendance.swap.apply.b",
+        )
+        .await
+        .map_err(|e| format!("gagal menerapkan tukar: {e}"))?;
+    }
+    let now = now_str();
+    exec(
+        db,
+        "UPDATE shift_swaps SET status = ?1, decided_by = ?2, decided_at = ?3, notes = ?4 WHERE id = ?5".to_string(),
+        vec![sea_text_val(decision), Value::Int(approver_user_id), sea_text_val(&now), sea_opt_str(notes), Value::Int(swap_id)],
+        "attendance.swap.decide",
+    )
+    .await
+    .map_err(|e| format!("gagal menyimpan keputusan: {e}"))?;
+    for emp in [emp_id, target_id] {
+        if let Some(uid) = user_of_employee_sea(db, emp).await? {
+            notify_sea(
+                db,
+                uid,
+                "attendance_swap",
+                if decision == "approved" { "Tukar Shift Disetujui" } else { "Tukar Shift Ditolak" },
+                &format!("Pengajuan tukar shift tanggal {date} telah {decision}."),
+                "/attendance",
+            )
+            .await?;
+        }
+    }
+    super::audit::log_sea(db, Some(approver_user_id), decision.to_uppercase().as_str(), "attendance.swap", Some(&swap_id.to_string()), None, None, None).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1408,7 +1691,7 @@ mod tests {
         // tanpa shift: present
         let r = clock_ok(db, dir.path(), actor, emp, None, None).await;
         assert_eq!(r.status, "present");
-        assert!(clock_in_sea(db, actor, emp, None, None, None).await.is_err());
+        assert!(clock_in_sea(db, actor, emp, None, None, None, dir.path(), None, None).await.is_err());
         let r = clock_out_sea(db, actor, emp, None, None, None).await.expect("out");
         assert_eq!(r.status, "present");
         assert!(clock_out_sea(db, actor, emp, None, None, None).await.is_err());
@@ -1512,7 +1795,7 @@ mod tests {
         )
         .await
         .expect("libur");
-        let e = clock_in_sea(db, actor, emp, None, None, None)
+        let e = clock_in_sea(db, actor, emp, None, None, None, dir.path(), None, None)
             .await
             .expect_err("libur");
         assert!(e.contains("libur"));
@@ -1527,7 +1810,7 @@ mod tests {
         )
         .await
         .expect("upd");
-        let e = clock_in_sea(db, actor, emp, None, None, None)
+        let e = clock_in_sea(db, actor, emp, None, None, None, dir.path(), None, None)
             .await
             .expect_err("nonaktif");
         assert!(e.contains("tidak aktif"));
@@ -1670,14 +1953,14 @@ mod tests {
         // B terikat lokasi, clock 2.8 km dari kantor ditolak
         let b = mkemp(db, "EMP-GFB", None).await;
         ikat(db, b).await;
-        let e = clock_in_sea(db, actor, b, Some(-6.2), Some(106.8), None)
+        let e = clock_in_sea(db, actor, b, Some(-6.2), Some(106.8), None, dir.path(), None, None)
             .await
             .expect_err("jauh");
         assert!(e.contains("jangkauan"), "pesan: {e}");
         // C terikat lokasi, clock tanpa koordinat ditolak
         let c = mkemp(db, "EMP-GFC", None).await;
         ikat(db, c).await;
-        let e = clock_in_sea(db, actor, c, None, None, None)
+        let e = clock_in_sea(db, actor, c, None, None, None, dir.path(), None, None)
             .await
             .expect_err("wajib");
         assert!(e.contains("wajib"), "pesan: {e}");
@@ -1747,5 +2030,63 @@ mod tests {
             .await
             .expect_err("tanpa foto");
         assert!(e.contains("Swafoto wajib"), "pesan: {e}");
+    }
+
+    #[tokio::test]
+    async fn alur_tukar_shift_dan_persetujuan() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("init");
+        let db = &state.sea;
+        let actor = one(db, "SELECT id FROM users WHERE username = 'admin'", "test.admin").await;
+        let sup = mkemp(db, "SW-SUP", None).await;
+        let a = mkemp(db, "SW-A", Some(sup)).await;
+        let b = mkemp(db, "SW-B", Some(sup)).await;
+        let c = mkemp(db, "SW-C", Some(sup)).await;
+        let x = mkemp(db, "SW-X", None).await;
+        let s1 = shift_now(db, "SW-Siang", 1, 3).await;
+        let s2 = shift_now(db, "SW-Malam", 3, 6).await;
+        let date = "2026-04-15";
+        for (e, s) in [(a, s1), (b, s2)] {
+            exec(
+                db,
+                "INSERT INTO shift_assignments (employee_id, shift_id, date, start_date) VALUES (?1, ?2, ?3, ?3)".to_string(),
+                vec![Value::Int(e), Value::Int(s), Value::Text(date.to_string())],
+                "test.swapassign",
+            )
+            .await
+            .expect("assign");
+        }
+        let inp = |t: i64, d: &str, r: &str| SwapInput {
+            target_employee_id: t as i32,
+            shift_date: d.to_string(),
+            reason: r.to_string(),
+        };
+        assert!(swap_request_sea(db, actor, a, &inp(a, date, "uji")).await.is_err(), "diri sendiri");
+        let e = swap_request_sea(db, actor, a, &inp(b, "2026-13-99", "uji")).await.expect_err("tanggal");
+        assert!(e.contains("Tanggal harus valid"), "pesan: {e}");
+        let e = swap_request_sea(db, actor, c, &inp(b, date, "uji")).await.expect_err("tanpa penugasan");
+        assert!(e.contains("penugasan"), "pesan: {e}");
+        let sid = swap_request_sea(db, actor, a, &inp(b, date, "Acara keluarga")).await.expect("ajukan") as i64;
+        assert!(pending_swaps_sea(db).await.expect("antrean").iter().any(|s| s.id as i64 == sid && s.status == "pending"));
+        let e = swap_request_sea(db, actor, a, &inp(b, date, "lagi")).await.expect_err("ganda");
+        assert!(e.contains("sudah ada"), "pesan: {e}");
+        assert_eq!(my_swaps_sea(db, a).await.expect("punya saya").len(), 1);
+        let e = decide_swap_sea(db, actor, Some(x), false, sid, "approved", None).await.expect_err("bukan berwenang");
+        assert!(e.contains("supervisor"), "pesan: {e}");
+        let e = decide_swap_sea(db, actor, Some(sup), false, sid, "mungkin", None).await.expect_err("keputusan");
+        assert!(e.contains("Keputusan tidak valid"), "pesan: {e}");
+        decide_swap_sea(db, actor, Some(sup), false, sid, "rejected", Some("tidak bisa")).await.expect("tolak");
+        assert_eq!(opt_text(db, &format!("SELECT status FROM shift_swaps WHERE id = {sid}"), "st").await.as_deref(), Some("rejected"));
+        assert_eq!(one(db, &format!("SELECT shift_id FROM shift_assignments WHERE employee_id = {a} AND date = '{date}'"), "g1").await, s1);
+        let sid2 = swap_request_sea(db, actor, a, &inp(b, date, "Ronde dua")).await.expect("ajukan lagi") as i64;
+        decide_swap_sea(db, actor, Some(sup), false, sid2, "approved", Some("ok")).await.expect("setuju");
+        assert_eq!(one(db, &format!("SELECT shift_id FROM shift_assignments WHERE employee_id = {a} AND date = '{date}'"), "g2").await, s2);
+        assert_eq!(one(db, &format!("SELECT shift_id FROM shift_assignments WHERE employee_id = {b} AND date = '{date}'"), "g3").await, s1);
+        let e = decide_swap_sea(db, actor, Some(sup), false, sid2, "rejected", None).await.expect_err("proses ulang");
+        assert!(e.contains("sudah diproses"), "pesan: {e}");
+        assert_eq!(all_swaps_sea(db).await.expect("riwayat").len(), 2);
+        let row = my_swaps_sea(db, b).await.expect("punya rekan")[0].clone();
+        assert_eq!(row.status, "approved");
+        assert_eq!(row.notes.as_deref(), Some("ok"));
     }
 }
