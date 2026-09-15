@@ -310,6 +310,7 @@ mod tests {
                 start_date: "2026-03-01".to_string(),
                 end_date: "2026-03-31".to_string(),
                 payment_date: None,
+                company_id: None,
             },
         )
         .await
@@ -380,6 +381,7 @@ mod tests {
                 start_date: "2026-04-01".to_string(),
                 end_date: "2026-04-30".to_string(),
                 payment_date: None,
+                company_id: None,
             },
         )
         .await

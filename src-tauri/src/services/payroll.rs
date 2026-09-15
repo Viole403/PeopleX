@@ -82,6 +82,8 @@ pub struct Period {
     pub end_date: String,
     pub payment_date: Option<String>,
     pub status: String,
+    pub company_id: Option<i32>,
+    pub company_name: Option<String>,
     pub employee_count: i32,
     pub total_net: f64,
 }
@@ -92,6 +94,7 @@ pub struct PeriodInput {
     pub start_date: String,
     pub end_date: String,
     pub payment_date: Option<String>,
+    pub company_id: Option<i32>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
@@ -407,14 +410,23 @@ async fn generate_one_tx(
     let (salary_id, basic) = (value_i64(&salary[0]).unwrap_or(0), pf64(&salary[1]));
     let ptkp_row = tx_q_one(
         tx,
-        "SELECT ptkp_status FROM employees WHERE id = ?1".to_string(),
+        "SELECT ptkp_status, company_id FROM employees WHERE id = ?1".to_string(),
         vec![Value::Int(employee_id)],
-        1,
+        2,
         "payroll.ptkp",
     )
     .await
     .map_err(|e| format!("gagal memuat PTKP: {e}"))?;
-    let ptkp = ptkp_row.as_ref().and_then(|r| popt_text(&r[0]));
+    let (ptkp, emp_company) = match ptkp_row.as_ref() {
+        Some(r) => (
+            popt_text(&r[0]),
+            match &r[1] {
+                Value::Null => Value::Null,
+                v => Value::Int(value_i64(v).unwrap_or(0)),
+            },
+        ),
+        None => (None, Value::Null),
+    };
     let join_row = tx_q_one(
         tx,
         "SELECT join_date FROM employees WHERE id = ?1".to_string(),
@@ -595,7 +607,7 @@ async fn generate_one_tx(
             let pid = value_i64(&e[0]).unwrap_or(0);
             tx_exec(
                 tx,
-                "UPDATE payrolls SET basic_salary = ?1, total_income = ?2, gross_salary = ?3, total_deduction = ?4, net_salary = ?5, total_overtime_amount = ?6, status = 'review' WHERE id = ?7".to_string(),
+                "UPDATE payrolls SET basic_salary = ?1, total_income = ?2, gross_salary = ?3, total_deduction = ?4, net_salary = ?5, total_overtime_amount = ?6, status = 'review', company_id = ?7 WHERE id = ?8".to_string(),
                 vec![
                     Value::Float(basic),
                     Value::Float(total_income),
@@ -603,6 +615,7 @@ async fn generate_one_tx(
                     Value::Float(total_deduction),
                     Value::Float(total_income - total_deduction),
                     Value::Float(ot),
+                    emp_company.clone(),
                     Value::Int(pid),
                 ],
                 "payroll.upd",
@@ -622,7 +635,7 @@ async fn generate_one_tx(
         None => {
             exec_insert(
                 tx,
-                "INSERT INTO payrolls (payroll_period_id, employee_id, basic_salary, total_income, gross_salary, total_deduction, net_salary, total_overtime_amount, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'review')".to_string(),
+                "INSERT INTO payrolls (payroll_period_id, employee_id, basic_salary, total_income, gross_salary, total_deduction, net_salary, total_overtime_amount, status, company_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'review', ?9)".to_string(),
                 vec![
                     Value::Int(period_id),
                     Value::Int(employee_id),
@@ -632,6 +645,7 @@ async fn generate_one_tx(
                     Value::Float(total_deduction),
                     Value::Float(total_income - total_deduction),
                     Value::Float(ot),
+                    emp_company,
                 ],
                 "payroll.add",
             )
@@ -655,9 +669,9 @@ pub async fn generate_sea(
     }
     let prow = q_one(
         db,
-        "SELECT name, start_date, end_date FROM payroll_periods WHERE id = ?1".to_string(),
+        "SELECT name, start_date, end_date, company_id FROM payroll_periods WHERE id = ?1".to_string(),
         vec![Value::Int(period_id)],
-        3,
+        4,
         "payroll.period",
     )
     .await
@@ -670,6 +684,10 @@ pub async fn generate_sea(
         value_to_string(&prow[1]),
         value_to_string(&prow[2]),
     );
+    let period_company = match &prow[3] {
+        Value::Null => None,
+        v => Some(value_i64(v).unwrap_or(0)),
+    };
     let health_pct = setting_pct_sea(db, "bpjs_health_employee_percent", 1.0).await / 100.0;
     let emp_pct = setting_pct_sea(db, "bpjs_employment_employee_percent", 2.0).await / 100.0;
     let jp_pct = setting_pct_sea(db, "bpjs_jp_employee_percent", 1.0).await / 100.0;
@@ -677,10 +695,20 @@ pub async fn generate_sea(
         .begin()
         .await
         .map_err(|e| format!("gagal memulai transaksi: {e}"))?;
+    let (ids_sql, ids_vals) = match period_company {
+        Some(cid) => (
+            "SELECT id FROM employees WHERE deleted_at IS NULL AND employment_status IN ('active','probation') AND company_id = ?1".to_string(),
+            vec![Value::Int(cid)],
+        ),
+        None => (
+            "SELECT id FROM employees WHERE deleted_at IS NULL AND employment_status IN ('active','probation')".to_string(),
+            vec![],
+        ),
+    };
     let ids = tx_q_all(
         &tx,
-        "SELECT id FROM employees WHERE deleted_at IS NULL AND employment_status IN ('active','probation')".to_string(),
-        vec![],
+        ids_sql,
+        ids_vals,
         1,
         "payroll.emps",
     )
@@ -911,13 +939,13 @@ pub async fn component_delete_sea(
 pub async fn period_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Period>, String> {
     let rows = q_all(
         db,
-        "SELECT pp.id, pp.name, pp.start_date, pp.end_date, pp.payment_date, pp.status,
+        "SELECT pp.id, pp.name, pp.start_date, pp.end_date, pp.payment_date, pp.status, pp.company_id, c.name,
                        (SELECT COUNT(*) FROM payrolls p WHERE p.payroll_period_id = pp.id),
                        COALESCE((SELECT SUM(p.net_salary) FROM payrolls p WHERE p.payroll_period_id = pp.id), 0)
-                FROM payroll_periods pp ORDER BY pp.start_date DESC"
+                FROM payroll_periods pp LEFT JOIN companies c ON c.id = pp.company_id ORDER BY pp.start_date DESC"
             .to_string(),
         vec![],
-        8,
+        10,
         "payroll.periods",
     )
     .await
@@ -926,7 +954,7 @@ pub async fn period_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Per
     for r in &rows {
         let (id, count) = (
             value_i64(&r[0]).unwrap_or(0),
-            value_i64(&r[6]).unwrap_or(0),
+            value_i64(&r[8]).unwrap_or(0),
         );
         out.push(Period {
             id: to_dto_int(id, "period.id")?,
@@ -935,8 +963,16 @@ pub async fn period_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Per
             end_date: value_to_string(&r[3]),
             payment_date: popt_text(&r[4]),
             status: value_to_string(&r[5]),
+            company_id: match &r[6] {
+                Value::Null => None,
+                v => Some(to_dto_int(value_i64(v).unwrap_or(0), "period.company")?),
+            },
+            company_name: match &r[7] {
+                Value::Null => None,
+                v => Some(value_to_string(v)),
+            },
             employee_count: to_dto_int(count, "period.count")?,
-            total_net: pf64(&r[7]),
+            total_net: pf64(&r[9]),
         });
     }
     Ok(out)
@@ -987,7 +1023,7 @@ pub async fn period_create_sea(
     }
     let rid = exec_insert(
         db,
-        "INSERT INTO payroll_periods (name, start_date, end_date, payment_date, status, created_by) VALUES (?1, ?2, ?3, ?4, 'draft', ?5)".to_string(),
+        "INSERT INTO payroll_periods (name, start_date, end_date, payment_date, status, created_by, company_id) VALUES (?1, ?2, ?3, ?4, 'draft', ?5, ?6)".to_string(),
         vec![
             Value::Text(input.name.trim().to_string()),
             Value::Text(input.start_date.trim().to_string()),
@@ -997,6 +1033,7 @@ pub async fn period_create_sea(
                 None => Value::Null,
             },
             Value::Int(created_by),
+            input.company_id.map(|v| Value::Int(v as i64)).unwrap_or(Value::Null),
         ],
         "payroll.periodadd",
     )
@@ -2250,6 +2287,7 @@ mod tests {
             start_date: start.to_string(),
             end_date: end.to_string(),
             payment_date: None,
+            company_id: None,
         }
     }
 
@@ -2301,6 +2339,7 @@ mod tests {
                 start_date: "2026-02-01".to_string(),
                 end_date: "2026-02-28".to_string(),
                 payment_date: Some("2026-03-05".to_string()),
+                company_id: None,
             },
         )
         .await
@@ -2737,5 +2776,43 @@ mod tests {
         assert_eq!(total, 3);
         let src = text(db, "SELECT DISTINCT source FROM gl_entries", "gl.source").await;
         assert_eq!(src, format!("payroll:{}", pid));
+    }
+
+    #[tokio::test]
+    async fn generate_lintas_entitas_memisahkan_karyawan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = admin(db).await;
+        mkemp(db, "EMP-E1", 5_000_000.0, "TK/0").await;
+        exec(
+            db,
+            "INSERT INTO companies (code, name) VALUES ('CAB', 'Cabang')".to_string(),
+            vec![],
+            "t.comp",
+        )
+        .await
+        .expect("company");
+        let cabang = one(db, "SELECT id FROM companies WHERE code = 'CAB'", "t.cid").await;
+        let pid = period_create_sea(
+            db,
+            actor,
+            actor,
+            &PeriodInput {
+                name: "Entitas 2026".to_string(),
+                start_date: "2026-04-01".to_string(),
+                end_date: "2026-04-30".to_string(),
+                payment_date: None,
+                company_id: Some(1),
+            },
+        )
+        .await
+        .expect("periode");
+        generate_sea(db, actor, pid as i64).await.expect("generate");
+        let n = one(db, "SELECT COUNT(*) FROM payrolls", "t.n").await;
+        assert!(n >= 1);
+        let comp = one(db, "SELECT company_id FROM payroll_periods", "t.comp").await;
+        assert_eq!(comp, 1);
+        let _ = cabang;
     }
 }

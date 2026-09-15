@@ -863,6 +863,7 @@ mod tests {
                 start_date: "2026-01-01".to_string(),
                 end_date: "2026-01-31".to_string(),
                 payment_date: None,
+                company_id: None,
             },
         )
         .await
