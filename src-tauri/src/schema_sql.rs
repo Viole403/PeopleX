@@ -207,14 +207,32 @@ fn ident_after(lower_all: &str, at: usize) -> String {
     rest[..end].to_string()
 }
 
+/// Isi kurung pertama yang seimbang (abaikan kurung dalam literal '...').
 fn between_parens(s: &str) -> Option<&str> {
     let open = s.find('(')?;
-    let close = s.rfind(')')?;
-    if close > open {
-        Some(&s[open + 1..close])
-    } else {
-        None
+    let b = s.as_bytes();
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut i = open;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'\'' {
+            if in_str && i + 1 < b.len() && b[i + 1] == b'\'' {
+                i += 2;
+                continue;
+            }
+            in_str = !in_str;
+        } else if !in_str && c == b'(' {
+            depth += 1;
+        } else if !in_str && c == b')' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(&s[open + 1..i]);
+            }
+        }
+        i += 1;
     }
+    None
 }
 
 fn is_constraint_kw(t: &str) -> bool {
@@ -278,8 +296,9 @@ fn transpile_pg(stmt: &str) -> String {
 
 fn transpile_mysql(stmt: &str, indexed_text: &HashSet<(String, String)>) -> String {
     let mut out = stmt.to_string();
-    if is_create_table(&out) {
-        let tname = table_name_of(&out);
+    let kepala = kepala_pernyataan(&out).to_string();
+    if is_create_table(&kepala) {
+        let tname = table_name_of(&kepala);
         let cols: Vec<String> = indexed_text
             .iter()
             .filter(|(t, _)| t == &tname)
@@ -314,12 +333,24 @@ fn transpile_mysql(stmt: &str, indexed_text: &HashSet<(String, String)>) -> Stri
     out = replace_word_ci(&out, "numeric", "DECIMAL(20,6)");
     out = replace_ci(&out, "CREATE INDEX IF NOT EXISTS", "CREATE INDEX");
     out = quote_mysql_reserved(&out);
-    if is_create_table(&out) {
+    if is_create_table(&kepala) {
         if let Some(pos) = out.rfind(')') {
             out.insert_str(pos + 1, " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         }
     }
     out
+}
+
+/// Awal pernyataan tanpa baris kosong/komentar, untuk pemeriksaan jenis.
+fn kepala_pernyataan(stmt: &str) -> &str {
+    let mut rest = stmt.trim_start();
+    while rest.starts_with("--") {
+        match rest.find('\n') {
+            Some(p) => rest = rest[p + 1..].trim_start(),
+            None => return "",
+        }
+    }
+    rest
 }
 
 /// Ubah baris yang memuat TEXT + DEFAULT CURRENT_TIMESTAMP (baris definisi kolom).
