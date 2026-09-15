@@ -2767,6 +2767,47 @@ async fn payroll_bpjs_dependent_delete(
 
 #[tauri::command]
 #[specta::specta]
+async fn leave_accrual_run(
+    state: tauri::State<'_, AppState>,
+    year: i32,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["leave.approve", "system.manage"]).await?;
+    services::leave::leave_accrual_run_sea(&state.sea, uid, year as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn compensation_review_list(
+    state: tauri::State<'_, AppState>,
+    year: i32,
+) -> Result<Vec<services::compensation::CompReviewRow>, String> {
+    require(&state, &["compensation.view", "system.manage"]).await?;
+    services::compensation::compensation_review_list_sea(&state.sea, year as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn salary_benchmark_save(
+    state: tauri::State<'_, AppState>,
+    id: Option<i32>,
+    input: services::compensation::BenchmarkInput,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["compensation.update", "system.manage"]).await?;
+    services::compensation::benchmark_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn salary_benchmark_compare(
+    state: tauri::State<'_, AppState>,
+    period: String,
+) -> Result<Vec<services::compensation::BenchmarkGapRow>, String> {
+    require(&state, &["compensation.view", "system.manage"]).await?;
+    services::compensation::benchmark_compare_sea(&state.sea, &period).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn trip_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::travel::Trip>, String> {
     let (uid, _) = current_actor(&state).await?;
     services::travel::my_trips_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
@@ -3998,6 +4039,10 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         payroll_bpjs_dependent_save,
         payroll_bpjs_dependent_list,
         payroll_bpjs_dependent_delete,
+        leave_accrual_run,
+        compensation_review_list,
+        salary_benchmark_save,
+        salary_benchmark_compare,
         leave_carryover_run,
         approval_delegate,
         approval_delegations,
@@ -4192,7 +4237,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &115);
+                assert_eq!(t, &116);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),

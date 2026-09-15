@@ -710,6 +710,267 @@ pub async fn merit_model_sea(
         .collect())
 }
 
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct CompReviewRow {
+    pub employee_id: i32,
+    pub employee_name: String,
+    pub basic_salary: f64,
+    pub score: f64,
+    pub recommendation_percent: f64,
+}
+
+pub async fn compensation_review_list_sea(
+    db: &sea_orm::DatabaseConnection,
+    year: i64,
+) -> Result<Vec<CompReviewRow>, String> {
+    let y = year.to_string();
+    let rows = q_all(
+        db,
+        "SELECT e.id, TRIM(e.first_name || ' ' || COALESCE(e.last_name, '')) FROM employees e WHERE e.deleted_at IS NULL AND e.employment_status = 'active' ORDER BY e.id".to_string(),
+        vec![],
+        2,
+        "comp.review.emp",
+    )
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let emp = value_i64(&r[0]).unwrap_or(0);
+        let g = q_one(
+            db,
+            "SELECT s.basic_salary FROM employee_salaries s WHERE s.employee_id = ?1 AND s.is_active = 1 ORDER BY s.effective_date DESC LIMIT 1".to_string(),
+            vec![Value::Int(emp)],
+            1,
+            "comp.review.sal",
+        )
+        .await?;
+        let basic = g.map(|r_| match &r_[0] {
+            Value::Float(v) => *v,
+            Value::Int(v) => *v as f64,
+            _ => 0.0,
+        }).unwrap_or(0.0);
+        let kpis = q_all(
+            db,
+            "SELECT ek.actual, ek.target FROM employee_kpis ek INNER JOIN performance_periods pp ON pp.id = ek.performance_period_id WHERE ek.employee_id = ?1 AND substr(pp.start_date, 1, 4) = ?2 AND ek.actual IS NOT NULL AND ek.target IS NOT NULL".to_string(),
+            vec![Value::Int(emp), Value::Text(y.clone())],
+            2,
+            "comp.review.kpi",
+        )
+        .await?;
+        let mut tot = 0.0;
+        let mut cnt = 0i64;
+        for k in kpis {
+            let actual = match &k[0] {
+                Value::Float(v) => *v,
+                Value::Int(v) => *v as f64,
+                _ => continue,
+            };
+            let target = match &k[1] {
+                Value::Float(v) => *v,
+                Value::Int(v) => *v as f64,
+                _ => continue,
+            };
+            if target <= 0.0 {
+                continue;
+            }
+            tot += (actual / target * 100.0).min(120.0);
+            cnt += 1;
+        }
+        let score = if cnt > 0 { tot / cnt as f64 } else { 0.0 };
+        let rec = if score >= 90.0 {
+            7.0
+        } else if score >= 75.0 {
+            5.0
+        } else if score >= 60.0 {
+            3.0
+        } else if score >= 40.0 {
+            1.0
+        } else {
+            0.0
+        };
+        out.push(CompReviewRow {
+            employee_id: to_dto_int(emp, "comp.review.emp")?,
+            employee_name: value_to_string(&r[1]),
+            basic_salary: basic,
+            score: (score * 100.0).round() / 100.0,
+            recommendation_percent: rec,
+        });
+    }
+    Ok(out)
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug, Default)]
+pub struct BenchmarkInput {
+    pub position_id: Option<i32>,
+    pub department_id: Option<i32>,
+    pub p25: f64,
+    pub p50: f64,
+    pub p75: f64,
+    pub source: String,
+    pub period: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct BenchmarkGapRow {
+    pub employee_id: i32,
+    pub employee_name: String,
+    pub salary: f64,
+    pub p50: f64,
+    pub ratio: f64,
+}
+
+fn bench_period_ok(period: &str) -> bool {
+    let b = period.as_bytes();
+    b.len() == 7 && b[4] == b'-' && b[..4].iter().all(|c| c.is_ascii_digit()) && b[5..].iter().all(|c| c.is_ascii_digit())
+}
+
+pub async fn benchmark_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: Option<i64>,
+    input: &BenchmarkInput,
+) -> Result<i32, String> {
+    if !(input.p25 > 0.0 && input.p25 <= input.p50 && input.p50 <= input.p75) {
+        return Err("Rentang benchmark tidak valid.".to_string());
+    }
+    if !bench_period_ok(&input.period) {
+        return Err("Format periode tidak valid.".to_string());
+    }
+    let mm: i32 = input.period[5..7].parse().map_err(|_| "Format periode tidak valid.".to_string())?;
+    if mm < 1 || mm > 12 {
+        return Err("Format periode tidak valid.".to_string());
+    }
+    let pos = match input.position_id {
+        Some(v) => Value::Int(v as i64),
+        None => Value::Null,
+    };
+    let dep = match input.department_id {
+        Some(v) => Value::Int(v as i64),
+        None => Value::Null,
+    };
+    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let new_id = match id {
+        Some(x) => {
+            let n = exec(
+                db,
+                "UPDATE salary_benchmarks SET position_id = ?1, department_id = ?2, p25 = ?3, p50 = ?4, p75 = ?5, source = ?6, period = ?7, updated_at = ?8 WHERE id = ?9".to_string(),
+                vec![
+                    pos, dep,
+                    Value::Float(input.p25),
+                    Value::Float(input.p50),
+                    Value::Float(input.p75),
+                    Value::Text(input.source.trim().to_string()),
+                    Value::Text(input.period.trim().to_string()),
+                    Value::Text(now),
+                    Value::Int(x),
+                ],
+                "cmp.bench.upd",
+            )
+            .await?;
+            if n == 0 {
+                return Err("Benchmark tidak ditemukan.".to_string());
+            }
+            x
+        }
+        None => {
+            exec_insert(
+                db,
+                "INSERT INTO salary_benchmarks (position_id, department_id, p25, p50, p75, source, period, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)".to_string(),
+                vec![
+                    pos, dep,
+                    Value::Float(input.p25),
+                    Value::Float(input.p50),
+                    Value::Float(input.p75),
+                    Value::Text(input.source.trim().to_string()),
+                    Value::Text(input.period.trim().to_string()),
+                    Value::Text(now.clone()),
+                    Value::Text(now),
+                ],
+                "cmp.bench.ins",
+            )
+            .await?
+        }
+    };
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        if id.is_some() { "UPDATE" } else { "CREATE" },
+        "compensation.benchmark",
+        Some(&new_id.to_string()),
+        None,
+        None,
+        Some(&format!("Benchmark {} periode {}", input.position_id.map_or("-".to_string(), |v| v.to_string()), input.period.trim())),
+    )
+    .await?;
+    to_dto_int(new_id, "cmp.bench.id")
+}
+
+pub async fn benchmark_compare_sea(
+    db: &sea_orm::DatabaseConnection,
+    period: &str,
+) -> Result<Vec<BenchmarkGapRow>, String> {
+    if !bench_period_ok(period) {
+        return Err("Format periode tidak valid.".to_string());
+    }
+    let rows = q_all(
+        db,
+        "SELECT e.id, TRIM(e.first_name || ' ' || COALESCE(e.last_name, '')) FROM employees e WHERE e.deleted_at IS NULL AND e.employment_status = 'active' ORDER BY e.id".to_string(),
+        vec![],
+        2,
+        "cmp.gap.emp",
+    )
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let emp = value_i64(&r[0]).unwrap_or(0);
+        let g = q_one(
+            db,
+            "SELECT s.basic_salary, s.position_id, s.department_id FROM employee_salaries s WHERE s.employee_id = ?1 AND s.is_active = 1 ORDER BY s.effective_date DESC LIMIT 1".to_string(),
+            vec![Value::Int(emp)],
+            3,
+            "cmp.gap.sal",
+        )
+        .await?;
+        let (sal, pos, dep) = match &g {
+            Some(g_) => (
+                match &g_[0] {
+                    Value::Float(v) => *v,
+                    Value::Int(v) => *v as f64,
+                    _ => 0.0,
+                },
+                g_[1].clone(),
+                g_[2].clone(),
+            ),
+            None => (0.0, Value::Null, Value::Null),
+        };
+        let b = q_one(
+            db,
+            "SELECT p50 FROM salary_benchmarks WHERE period = ?1 AND COALESCE(position_id, -1) = COALESCE(?2, -1) AND COALESCE(department_id, -1) = COALESCE(?3, -1)".to_string(),
+            vec![Value::Text(period.to_string()), pos, dep],
+            1,
+            "cmp.gap.bench",
+        )
+        .await?;
+        if let Some(b_) = b {
+            let p50 = match &b_[0] {
+                Value::Float(v) => *v,
+                Value::Int(v) => *v as f64,
+                _ => 0.0,
+            };
+            if p50 > 0.0 {
+                out.push(BenchmarkGapRow {
+                    employee_id: to_dto_int(emp, "cmp.gap.emp")?,
+                    employee_name: value_to_string(&r[1]),
+                    salary: sal,
+                    p50,
+                    ratio: (sal / p50 * 10000.0).round() / 100.0,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -877,4 +1138,116 @@ mod tests {
         let err = merit_model_sea(db, 150.0).await.expect_err("batas");
         assert!(err.contains("tidak valid"));
     }
+
+    #[tokio::test]
+    async fn compensation_review_tautkan_goal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = admin_id(db).await;
+        let emp = mkemp(db, "EMP-REV", 5_000_000.0).await;
+        let kid = exec_insert(
+            db,
+            "INSERT INTO kpis (name, description) VALUES ('Produksi', NULL)".to_string(),
+            vec![],
+            "t.kpi",
+        )
+        .await
+        .expect("kpi");
+        let pidf = exec_insert(
+            db,
+            "INSERT INTO performance_periods (name, type, start_date, end_date, status) VALUES ('2026', 'annual', '2026-01-01', '2026-12-31', 'open')".to_string(),
+            vec![],
+            "t.per",
+        )
+        .await
+        .expect("periode");
+        exec_insert(
+            db,
+            "INSERT INTO employee_kpis (performance_period_id, employee_id, kpi_id, target, weight, actual, score) VALUES (?1, ?2, ?3, 100, 100, 95, 95)".to_string(),
+            vec![Value::Int(pidf), Value::Int(emp), Value::Int(kid)],
+            "t.ek",
+        )
+        .await
+        .expect("ek");
+        let rows = compensation_review_list_sea(db, 2026).await.expect("review");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].employee_name.trim(), "Boni");
+        assert_eq!(rows[0].basic_salary, 5_000_000.0);
+        assert!((rows[0].score - 95.0).abs() < 1e-6);
+        assert_eq!(rows[0].recommendation_percent, 7.0);
+        let pos_bench = exec_insert(
+            db,
+            "INSERT INTO positions (code, name) VALUES ('BENCH', 'Penguji')".to_string(),
+            vec![],
+            "t.pos",
+        )
+        .await
+        .expect("posisi");
+        let bid = benchmark_save_sea(
+            db,
+            actor,
+            None,
+            &BenchmarkInput {
+                position_id: Some(pos_bench as i32),
+                department_id: None,
+                p25: 4_000_000.0,
+                p50: 6_000_000.0,
+                p75: 9_000_000.0,
+                source: "Survei 2026".to_string(),
+                period: "2026-06".to_string(),
+            },
+        )
+        .await
+        .expect("benchmark");
+        assert!(bid > 0);
+        let err = benchmark_save_sea(
+            db,
+            actor,
+            None,
+            &BenchmarkInput {
+                position_id: None,
+                department_id: None,
+                p25: 9_000_000.0,
+                p50: 6_000_000.0,
+                p75: 9_000_000.0,
+                source: "X".to_string(),
+                period: "2026-06".to_string(),
+            },
+        )
+        .await
+        .expect_err("rentang");
+        assert!(err.contains("Rentang benchmark tidak valid."));
+        let err = benchmark_save_sea(
+            db,
+            actor,
+            None,
+            &BenchmarkInput {
+                position_id: None,
+                department_id: None,
+                p25: 4_000_000.0,
+                p50: 6_000_000.0,
+                p75: 9_000_000.0,
+                source: "X".to_string(),
+                period: "2026-13".to_string(),
+            },
+        )
+        .await
+        .expect_err("periode");
+        assert!(err.contains("Format periode tidak valid."));
+        let gap = benchmark_compare_sea(db, "2026-06").await.expect("banding");
+        assert!(gap.is_empty());
+        exec(
+            db,
+            "UPDATE employees SET position_id = ?1 WHERE id = ?2".to_string(),
+            vec![Value::Int(pos_bench), Value::Int(emp)],
+            "t.pos2",
+        )
+        .await
+        .expect("posisi");
+        let gap2 = benchmark_compare_sea(db, "2026-06").await.expect("banding2");
+        assert_eq!(gap2.len(), 1);
+        assert!((gap2[0].ratio - 5_000_000.0 / 6_000_000.0 * 100.0).abs() < 1.0);
+    }
 }
+
