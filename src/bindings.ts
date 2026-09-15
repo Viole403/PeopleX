@@ -5,7 +5,7 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	dbStatus: () => typedError<DbStatus, string>(__TAURI_INVOKE("db_status")),
-	login: (username: string, password: string) => typedError<LoginOk, string>(__TAURI_INVOKE("login", { username, password })),
+	login: (username: string, password: string, ip: string | null) => typedError<LoginOk, string>(__TAURI_INVOKE("login", { username, password, ip })),
 	logout: () => typedError<null, string>(__TAURI_INVOKE("logout")),
 	sessionState: () => typedError<{
 	id: number,
@@ -37,7 +37,7 @@ export const commands = {
 	auditList: (module: string | null, limit: number | null) => typedError<AuditEntry[], string>(__TAURI_INVOKE("audit_list", { module, limit })),
 	backupNow: () => typedError<string, string>(__TAURI_INVOKE("backup_now")),
 	backupList: () => typedError<BackupFile[], string>(__TAURI_INVOKE("backup_list")),
-	backupRestore: (name: string) => typedError<null, string>(__TAURI_INVOKE("backup_restore", { name })),
+	backupRestore: (name: string) => typedError<string, string>(__TAURI_INVOKE("backup_restore", { name })),
 	getSettings: () => typedError<Setting[], string>(__TAURI_INVOKE("get_settings")),
 	saveSettings: (items: ([string, string])[]) => typedError<null, string>(__TAURI_INVOKE("save_settings", { items })),
 	getCompany: () => typedError<{
@@ -137,6 +137,8 @@ export const commands = {
 	employeeAddresses: (employeeId: number) => typedError<Addresses, string>(__TAURI_INVOKE("employee_addresses", { employeeId })),
 	employeeAddressSave: (employeeId: number, addressType: string, values: { [key in string]: string }) => typedError<null, string>(__TAURI_INVOKE("employee_address_save", { employeeId, addressType, values })),
 	employeeDocuments: (employeeId: number) => typedError<Document[], string>(__TAURI_INVOKE("employee_documents", { employeeId })),
+	employeeExpiryAlerts: (days: number | null) => typedError<ExpiryAlert[], string>(__TAURI_INVOKE("employee_expiry_alerts", { days })),
+	employeeExpiryNotify: (days: number | null) => typedError<number, string>(__TAURI_INVOKE("employee_expiry_notify", { days })),
 	employeeDocumentUpload: (employeeId: number, category: string, name: string, expiryDate: string | null, file: FileUpload) => typedError<number, string>(__TAURI_INVOKE("employee_document_upload", { employeeId, category, name, expiryDate, file })),
 	employeeDocumentBytes: (employeeId: number, id: number) => typedError<DocumentBytes, string>(__TAURI_INVOKE("employee_document_bytes", { employeeId, id })),
 	employeeDocumentDelete: (employeeId: number, id: number) => typedError<null, string>(__TAURI_INVOKE("employee_document_delete", { employeeId, id })),
@@ -163,6 +165,7 @@ export const commands = {
 	holidayList: () => typedError<Holiday[], string>(__TAURI_INVOKE("holiday_list")),
 	holidaySave: (id: number | null, input: HolidayInput) => typedError<number, string>(__TAURI_INVOKE("holiday_save", { id, input })),
 	holidayDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("holiday_delete", { id })),
+	holidayAutofill: (year: number) => typedError<number, string>(__TAURI_INVOKE("holiday_autofill", { year })),
 	attendanceToday: () => typedError<{
 	id: number,
 	employee_id: number,
@@ -176,7 +179,12 @@ export const commands = {
 	notes: string | null,
 	shift_id: number | null,
 } | null, string>(__TAURI_INVOKE("attendance_today")),
-	attendanceClockIn: (lat: number | null, lng: number | null) => typedError<ClockResult, string>(__TAURI_INVOKE("attendance_clock_in", { lat, lng })),
+	attendanceClockIn: (lat: number | null, lng: number | null, photo: {
+	name: string,
+	mime: string,
+	bytes: number[],
+} | null, nonce: string | null) => typedError<ClockResult, string>(__TAURI_INVOKE("attendance_clock_in", { lat, lng, photo, nonce })),
+	attendanceLivenessChallenge: () => typedError<LivenessChallenge, string>(__TAURI_INVOKE("attendance_liveness_challenge")),
 	attendanceClockOut: (lat: number | null, lng: number | null) => typedError<ClockResult, string>(__TAURI_INVOKE("attendance_clock_out", { lat, lng })),
 	attendanceHistory: (month: string) => typedError<Attendance[], string>(__TAURI_INVOKE("attendance_history", { month })),
 	attendanceRecap: (date: string, search: string) => typedError<RecapRow[], string>(__TAURI_INVOKE("attendance_recap", { date, search })),
@@ -185,6 +193,11 @@ export const commands = {
 	attendancePendingCorrections: () => typedError<Correction[], string>(__TAURI_INVOKE("attendance_pending_corrections")),
 	attendanceRequestCorrection: (input: CorrectionInput) => typedError<number, string>(__TAURI_INVOKE("attendance_request_correction", { input })),
 	attendanceDecideCorrection: (id: number, decision: string, notes: string | null) => typedError<null, string>(__TAURI_INVOKE("attendance_decide_correction", { id, decision, notes })),
+	attendanceSwapRequest: (input: SwapInput) => typedError<number, string>(__TAURI_INVOKE("attendance_swap_request", { input })),
+	attendanceMySwaps: () => typedError<Swap[], string>(__TAURI_INVOKE("attendance_my_swaps")),
+	attendancePendingSwaps: () => typedError<Swap[], string>(__TAURI_INVOKE("attendance_pending_swaps")),
+	attendanceAllSwaps: () => typedError<Swap[], string>(__TAURI_INVOKE("attendance_all_swaps")),
+	attendanceDecideSwap: (id: number, decision: string, notes: string | null) => typedError<null, string>(__TAURI_INVOKE("attendance_decide_swap", { id, decision, notes })),
 	leaveBalances: (year: number) => typedError<Balance[], string>(__TAURI_INVOKE("leave_balances", { year })),
 	leaveTypes: () => typedError<LeaveType[], string>(__TAURI_INVOKE("leave_types")),
 	leaveTypeSave: (id: number | null, input: LeaveTypeInput) => typedError<number, string>(__TAURI_INVOKE("leave_type_save", { id, input })),
@@ -240,6 +253,82 @@ export const commands = {
 	payrollDeductions: (pendingOnly: boolean) => typedError<Deduction[], string>(__TAURI_INVOKE("payroll_deductions", { pendingOnly })),
 	payrollDeductionSave: (id: number | null, input: DeductionInput) => typedError<number, string>(__TAURI_INVOKE("payroll_deduction_save", { id, input })),
 	payrollDeductionDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("payroll_deduction_delete", { id })),
+	payrollBankFile: (periodId: number) => typedError<string, string>(__TAURI_INVOKE("payroll_bank_file", { periodId })),
+	payrollWhatif: (basic: number | null, ptkpStatus: string) => typedError<WhatIfResult, string>(__TAURI_INVOKE("payroll_whatif", { basic, ptkpStatus })),
+	compensationSchemeSave: (id: number | null, input: BonusInput) => typedError<number, string>(__TAURI_INVOKE("compensation_scheme_save", { id, input })),
+	compensationSchemeList: () => typedError<BonusScheme[], string>(__TAURI_INVOKE("compensation_scheme_list")),
+	compensationBonusRun: (schemeId: number, period: string) => typedError<number, string>(__TAURI_INVOKE("compensation_bonus_run", { schemeId, period })),
+	compensationBonusList: (period: string | null) => typedError<BonusRow[], string>(__TAURI_INVOKE("compensation_bonus_list", { period })),
+	compensationBonusDecide: (id: number, decision: string) => typedError<null, string>(__TAURI_INVOKE("compensation_bonus_decide", { id, decision })),
+	compensationBenefitSave: (id: number | null, input: BenefitInput) => typedError<number, string>(__TAURI_INVOKE("compensation_benefit_save", { id, input })),
+	compensationBenefitList: (activeOnly: boolean) => typedError<Benefit[], string>(__TAURI_INVOKE("compensation_benefit_list", { activeOnly })),
+	compensationBenefitEnroll: (employeeId: number, benefitId: number, year: number) => typedError<number, string>(__TAURI_INVOKE("compensation_benefit_enroll", { employeeId, benefitId, year })),
+	compensationBenefitMine: (year: number) => typedError<EnrolledBenefit[], string>(__TAURI_INVOKE("compensation_benefit_mine", { year })),
+	compensationMeritModel: (percent: number | null) => typedError<MeritRow[], string>(__TAURI_INVOKE("compensation_merit_model", { percent })),
+	employeeContractSign: (id: number, signatureName: string) => typedError<null, string>(__TAURI_INVOKE("employee_contract_sign", { id, signatureName })),
+	employeeContractVerify: (id: number) => typedError<boolean, string>(__TAURI_INVOKE("employee_contract_verify", { id })),
+	recruitmentBackgroundSave: (candidateId: number, id: number | null, input: BgInput) => typedError<number, string>(__TAURI_INVOKE("recruitment_background_save", { candidateId, id, input })),
+	recruitmentBackgroundList: (candidateId: number) => typedError<BackgroundCheck[], string>(__TAURI_INVOKE("recruitment_background_list", { candidateId })),
+	onboardingPreboardingStatus: (employeeId: number) => typedError<PreboardingStatus, string>(__TAURI_INVOKE("onboarding_preboarding_status", { employeeId })),
+	trainingSkillGap: () => typedError<SkillGapRow[], string>(__TAURI_INVOKE("training_skill_gap")),
+	recruitmentPipeline: () => typedError<PipelineRow[], string>(__TAURI_INVOKE("recruitment_pipeline")),
+	engagementKudosSend: (toEmployeeId: number, message: string, badge: string | null) => typedError<number, string>(__TAURI_INVOKE("engagement_kudos_send", { toEmployeeId, message, badge })),
+	engagementKudosList: (employeeId: number | null) => typedError<Kudos[], string>(__TAURI_INVOKE("engagement_kudos_list", { employeeId })),
+	engagementPollSave: (id: number | null, question: string, options: string[]) => typedError<number, string>(__TAURI_INVOKE("engagement_poll_save", { id, question, options })),
+	engagementPollList: () => typedError<Poll[], string>(__TAURI_INVOKE("engagement_poll_list")),
+	engagementPollResults: (pollId: number) => typedError<Poll, string>(__TAURI_INVOKE("engagement_poll_results", { pollId })),
+	engagementPollVote: (pollId: number, optionId: number) => typedError<number, string>(__TAURI_INVOKE("engagement_poll_vote", { pollId, optionId })),
+	engagementPollClose: (pollId: number) => typedError<null, string>(__TAURI_INVOKE("engagement_poll_close", { pollId })),
+	whistleblowReport: (topic: string, message: string) => typedError<string, string>(__TAURI_INVOKE("whistleblow_report", { topic, message })),
+	whistleblowStatus: (token: string) => typedError<{
+	id: number,
+	topic: string,
+	status: string,
+	response: string | null,
+	created_at: string,
+	closed_at: string | null,
+} | null, string>(__TAURI_INVOKE("whistleblow_status", { token })),
+	whistleblowList: () => typedError<Whistleblow[], string>(__TAURI_INVOKE("whistleblow_list")),
+	whistleblowDecide: (id: number, status: string, response: string | null) => typedError<null, string>(__TAURI_INVOKE("whistleblow_decide", { id, status, response })),
+	policySave: (id: number | null, title: string, version: string, content: string | null) => typedError<number, string>(__TAURI_INVOKE("policy_save", { id, title, version, content })),
+	policyPublish: (id: number) => typedError<null, string>(__TAURI_INVOKE("policy_publish", { id })),
+	policyList: () => typedError<Policy[], string>(__TAURI_INVOKE("policy_list")),
+	policyAck: (policyId: number) => typedError<number, string>(__TAURI_INVOKE("policy_ack", { policyId })),
+	policyAcks: (policyId: number) => typedError<PolicyAck[], string>(__TAURI_INVOKE("policy_acks", { policyId })),
+	consentSet: (purpose: string, granted: boolean) => typedError<number, string>(__TAURI_INVOKE("consent_set", { purpose, granted })),
+	consentList: () => typedError<Consent[], string>(__TAURI_INVOKE("consent_list")),
+	payrollJournalPost: (periodId: number) => typedError<number, string>(__TAURI_INVOKE("payroll_journal_post", { periodId })),
+	payrollJournalList: (period: string | null) => typedError<JournalRow[], string>(__TAURI_INVOKE("payroll_journal_list", { period })),
+	assetQr: (assetId: number) => typedError<QrPayload, string>(__TAURI_INVOKE("asset_qr", { assetId })),
+	assetDepreciationRun: (period: string) => typedError<number, string>(__TAURI_INVOKE("asset_depreciation_run", { period })),
+	assetBookList: () => typedError<BookRow[], string>(__TAURI_INVOKE("asset_book_list")),
+	recruitmentRequisitionSave: (id: number | null, input: RequisitionInput) => typedError<number, string>(__TAURI_INVOKE("recruitment_requisition_save", { id, input })),
+	recruitmentRequisitionList: () => typedError<Requisition[], string>(__TAURI_INVOKE("recruitment_requisition_list")),
+	recruitmentRequisitionDecide: (id: number, approve: boolean) => typedError<null, string>(__TAURI_INVOKE("recruitment_requisition_decide", { id, approve })),
+	securityLoginActivityList: () => typedError<LoginActivityRow[], string>(__TAURI_INVOKE("security_login_activity_list")),
+	securitySettingsSet: (ipWhitelist: string | null, piiKey: string | null) => typedError<null, string>(__TAURI_INVOKE("security_settings_set", { ipWhitelist, piiKey })),
+	securityStatusGet: () => typedError<SecurityStatus, string>(__TAURI_INVOKE("security_status_get")),
+	payrollBpjsDependentSave: (id: number | null, employeeId: number, name: string, relation: string, birthDate: string | null) => typedError<number, string>(__TAURI_INVOKE("payroll_bpjs_dependent_save", { id, employeeId, name, relation, birthDate })),
+	payrollBpjsDependentList: (employeeId: number) => typedError<Dependent[], string>(__TAURI_INVOKE("payroll_bpjs_dependent_list", { employeeId })),
+	payrollBpjsDependentDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("payroll_bpjs_dependent_delete", { id })),
+	leaveAccrualRun: (year: number) => typedError<number, string>(__TAURI_INVOKE("leave_accrual_run", { year })),
+	compensationReviewList: (year: number) => typedError<CompReviewRow[], string>(__TAURI_INVOKE("compensation_review_list", { year })),
+	salaryBenchmarkSave: (id: number | null, input: BenchmarkInput) => typedError<number, string>(__TAURI_INVOKE("salary_benchmark_save", { id, input })),
+	salaryBenchmarkCompare: (period: string) => typedError<BenchmarkGapRow[], string>(__TAURI_INVOKE("salary_benchmark_compare", { period })),
+	organizationComplianceSave: (id: number | null, workLocationId: number | null, item: string, status: string, notes: string | null) => typedError<number, string>(__TAURI_INVOKE("organization_compliance_save", { id, workLocationId, item, status, notes })),
+	organizationComplianceStatus: () => typedError<RegionComplianceRow[], string>(__TAURI_INVOKE("organization_compliance_status")),
+	privacyDataExport: (employeeId: number) => typedError<string, string>(__TAURI_INVOKE("privacy_data_export", { employeeId })),
+	privacyDataErase: (employeeId: number, reason: string) => typedError<null, string>(__TAURI_INVOKE("privacy_data_erase", { employeeId, reason })),
+	leaveCarryoverRun: (year: number) => typedError<number, string>(__TAURI_INVOKE("leave_carryover_run", { year })),
+	approvalDelegate: (toUser: number, module: string, startDate: string, endDate: string, reason: string | null) => typedError<number, string>(__TAURI_INVOKE("approval_delegate", { toUser, module, startDate, endDate, reason })),
+	approvalDelegations: () => typedError<Delegation[], string>(__TAURI_INVOKE("approval_delegations")),
+	approvalRevoke: (id: number) => typedError<null, string>(__TAURI_INVOKE("approval_revoke", { id })),
+	payrollEwaLimit: () => typedError<number | null, string>(__TAURI_INVOKE("payroll_ewa_limit")),
+	payrollEwaRequest: (amount: number | null) => typedError<number, string>(__TAURI_INVOKE("payroll_ewa_request", { amount })),
+	payrollEwaMy: () => typedError<EwaWithdrawal[], string>(__TAURI_INVOKE("payroll_ewa_my")),
+	payrollEwaList: (status: string | null) => typedError<EwaWithdrawal[], string>(__TAURI_INVOKE("payroll_ewa_list", { status })),
+	payrollEwaDecide: (id: number, decision: string, notes: string | null) => typedError<null, string>(__TAURI_INVOKE("payroll_ewa_decide", { id, decision, notes })),
+	payrollEwaTrail: (id: number) => typedError<EwaEvent[], string>(__TAURI_INVOKE("payroll_ewa_trail", { id })),
 	vacancyList: () => typedError<Vacancy[], string>(__TAURI_INVOKE("vacancy_list")),
 	vacancyGet: (id: number) => typedError<{
 	id: number,
@@ -293,6 +382,31 @@ export const commands = {
 	assessmentAdd: (candidateId: number, input: AssessmentInput) => typedError<number, string>(__TAURI_INVOKE("assessment_add", { candidateId, input })),
 	candidateHire: (id: number, joinDate: string | null) => typedError<number, string>(__TAURI_INVOKE("candidate_hire", { id, joinDate })),
 	candidateCv: (candidateId: number, id: number) => typedError<DocumentBytes, string>(__TAURI_INVOKE("candidate_cv", { candidateId, id })),
+	careerList: () => typedError<CareerVacancy[], string>(__TAURI_INVOKE("career_list")),
+	careerApply: (vacancyId: number, input: CareerApplyInput, cv: {
+	name: string,
+	mime: string,
+	bytes: number[],
+} | null) => typedError<number, string>(__TAURI_INVOKE("career_apply", { vacancyId, input, cv })),
+	offerSave: (id: number | null, input: OfferInput) => typedError<number, string>(__TAURI_INVOKE("offer_save", { id, input })),
+	offerList: (candidateId: number) => typedError<OfferLetter[], string>(__TAURI_INVOKE("offer_list", { candidateId })),
+	offerGet: (id: number) => typedError<{
+	id: number,
+	candidate_id: number,
+	title: string,
+	message: string,
+	status: string,
+	recipient_name: string,
+	signature_name: string | null,
+	signature_hash: string | null,
+	sent_at: string | null,
+	signed_at: string | null,
+	created_at: string,
+} | null, string>(__TAURI_INVOKE("offer_get", { id })),
+	offerSend: (id: number) => typedError<null, string>(__TAURI_INVOKE("offer_send", { id })),
+	offerSign: (id: number, signatureName: string) => typedError<null, string>(__TAURI_INVOKE("offer_sign", { id, signatureName })),
+	offerDecline: (id: number) => typedError<null, string>(__TAURI_INVOKE("offer_decline", { id })),
+	offerVerify: (id: number) => typedError<boolean, string>(__TAURI_INVOKE("offer_verify", { id })),
 	onboardingList: () => typedError<Onboarding[], string>(__TAURI_INVOKE("onboarding_list")),
 	onboardingGet: (id: number) => typedError<{
 	id: number,
@@ -428,6 +542,14 @@ export const commands = {
 	announcementGet: (id: number) => typedError<Announcement, string>(__TAURI_INVOKE("announcement_get", { id })),
 	announcementCreate: (input: AnnouncementInput) => typedError<number, string>(__TAURI_INVOKE("announcement_create", { input })),
 	announcementDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("announcement_delete", { id })),
+	pulseList: () => typedError<PulseSurvey[], string>(__TAURI_INVOKE("pulse_list")),
+	pulseGet: (id: number) => typedError<PulseDetail, string>(__TAURI_INVOKE("pulse_get", { id })),
+	pulseCreate: (input: PulseInput) => typedError<number, string>(__TAURI_INVOKE("pulse_create", { input })),
+	pulsePublish: (id: number) => typedError<null, string>(__TAURI_INVOKE("pulse_publish", { id })),
+	pulseAnswer: (surveyId: number, items: AnswerInput[]) => typedError<null, string>(__TAURI_INVOKE("pulse_answer", { surveyId, items })),
+	pulseResults: (id: number) => typedError<PulseResults, string>(__TAURI_INVOKE("pulse_results", { id })),
+	pulseClose: (id: number) => typedError<number | null, string>(__TAURI_INVOKE("pulse_close", { id })),
+	pulseEnps: (id: number) => typedError<EnpsRow[], string>(__TAURI_INVOKE("pulse_enps", { id })),
 	reportEmployees: (search: string | null, departmentId: number | null, status: string | null) => typedError<ReportTable, string>(__TAURI_INVOKE("report_employees", { search, departmentId, status })),
 	reportHeadcount: () => typedError<ReportTable, string>(__TAURI_INVOKE("report_headcount")),
 	reportAttendance: (month: string, departmentId: number | null) => typedError<ReportTable, string>(__TAURI_INVOKE("report_attendance", { month, departmentId })),
@@ -483,6 +605,12 @@ export type AnnouncementInput = {
 	publish_at: string | null,
 	expire_at: string | null,
 	targets: TargetInput[],
+};
+
+export type AnswerInput = {
+	question_id: number,
+	score: number | null,
+	answer: string | null,
 };
 
 export type Assessment = {
@@ -596,6 +724,17 @@ export type AuditEntry = {
 	created_at: string,
 };
 
+export type BackgroundCheck = {
+	id: number,
+	candidate_id: number,
+	kind: string,
+	status: string,
+	result: string | null,
+	checked_by: number | null,
+	checked_at: string | null,
+	created_at: string,
+};
+
 /**  Satu berkas cadangan. */
 export type BackupFile = {
 	name: string,
@@ -615,10 +754,90 @@ export type Balance = {
 	remaining: number | null,
 };
 
+export type BenchmarkGapRow = {
+	employee_id: number,
+	employee_name: string,
+	salary: number | null,
+	p50: number | null,
+	ratio: number | null,
+};
+
+export type BenchmarkInput = {
+	position_id: number | null,
+	department_id: number | null,
+	p25: number | null,
+	p50: number | null,
+	p75: number | null,
+	source: string,
+	period: string,
+};
+
+export type Benefit = {
+	id: number,
+	name: string,
+	description: string | null,
+	cost: number | null,
+	category: string | null,
+	status: string,
+};
+
+export type BenefitInput = {
+	name: string,
+	description: string | null,
+	category: string | null,
+	cost: number | null,
+	status: string,
+};
+
+export type BgInput = {
+	kind: string,
+	status: string,
+	result: string | null,
+};
+
 export type Birthday = {
 	name: string,
 	employee_number: string,
 	birth_date: string | null,
+};
+
+export type BonusInput = {
+	name: string,
+	kind: string,
+	amount: number | null,
+	percent: number | null,
+	threshold: number | null,
+	status: string,
+};
+
+export type BonusRow = {
+	id: number,
+	scheme_id: number,
+	scheme_name: string,
+	employee_id: number,
+	employee_name: string,
+	period: string,
+	amount: number | null,
+	status: string,
+};
+
+export type BonusScheme = {
+	id: number,
+	name: string,
+	kind: string,
+	amount: number | null,
+	percent: number | null,
+	threshold: number | null,
+	status: string,
+};
+
+export type BookRow = {
+	asset_id: number,
+	code: string,
+	name: string,
+	cost: number | null,
+	accumulated: number | null,
+	book_value: number | null,
 };
 
 export type BranchNode = {
@@ -682,6 +901,25 @@ export type CandidateRow = {
 	created_at: string,
 };
 
+export type CareerApplyInput = {
+	full_name: string,
+	email: string,
+	phone: string | null,
+	address: string | null,
+};
+
+export type CareerVacancy = {
+	id: number,
+	title: string,
+	department_name: string | null,
+	position_name: string | null,
+	employment_type: string,
+	description: string | null,
+	requirements: string | null,
+	quota: number,
+	closing_date: string | null,
+};
+
 export type Category = {
 	id: number,
 	code: string,
@@ -735,6 +973,14 @@ export type ClearanceItem = {
 export type ClockResult = {
 	status: string,
 	message: string,
+};
+
+export type CompReviewRow = {
+	employee_id: number,
+	employee_name: string,
+	basic_salary: number | null,
+	score: number | null,
+	recommendation_percent: number | null,
 };
 
 /**  Profil perusahaan (baris pertama). */
@@ -791,6 +1037,13 @@ export type ComponentInput = {
 	calculation_type: string,
 	is_taxable: boolean,
 	is_active: boolean,
+};
+
+export type Consent = {
+	id: number,
+	purpose: string,
+	granted: boolean,
+	updated_at: string,
 };
 
 /**
@@ -857,12 +1110,32 @@ export type DeductionInput = {
 	total_installments: number | null,
 };
 
+export type Delegation = {
+	id: number,
+	from_user: number,
+	to_user: number,
+	to_user_name: string,
+	module: string,
+	start_date: string,
+	end_date: string,
+	status: string,
+	reason: string | null,
+};
+
 export type DepartmentNode = {
 	id: number,
 	name: string,
 	head_name: string | null,
 	employee_count: number,
 	divisions: DivisionNode[],
+};
+
+export type Dependent = {
+	id: number,
+	employee_id: number,
+	name: string,
+	relation: string,
+	birth_date: string | null,
 };
 
 export type DeptStat = {
@@ -1031,12 +1304,48 @@ export type EmployeeRow = {
 	position_name: string | null,
 };
 
+export type EnpsRow = {
+	department_id: number,
+	department: string,
+	promoters: number,
+	passives: number,
+	detractors: number,
+	total: number,
+	score: number | null,
+};
+
+export type EnrolledBenefit = {
+	id: number,
+	benefit_id: number,
+	benefit_name: string,
+	year: number,
+	amount: number | null,
+};
+
 /**  Metadata entitas untuk tab dan tabel. */
 export type EntityMeta = {
 	slug: string,
 	title: string,
 	columns: string[],
 	fields: FieldMeta[],
+};
+
+export type EwaEvent = {
+	action: string,
+	user_id: number | null,
+	created_at: string,
+};
+
+export type EwaWithdrawal = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	amount: number | null,
+	status: string,
+	requested_at: string,
+	decided_by: number | null,
+	decided_at: string | null,
+	notes: string | null,
 };
 
 export type ExitInterview = {
@@ -1051,6 +1360,16 @@ export type ExitInterviewInput = {
 	reason_category: string | null,
 	would_recommend: boolean | null,
 	satisfaction_score: number | null,
+};
+
+export type ExpiryAlert = {
+	employee_id: number,
+	employee_name: string,
+	document_id: number,
+	name: string,
+	category: string,
+	expiry_date: string,
+	days_left: number,
 };
 
 export type ExportFile = {
@@ -1133,6 +1452,16 @@ export type InterviewInput = {
 	notes: string | null,
 };
 
+export type JournalRow = {
+	id: number,
+	period: string,
+	account: string,
+	debit: number | null,
+	credit: number | null,
+	description: string | null,
+	source: string | null,
+};
+
 export type Kpi = {
 	id: number,
 	name: string,
@@ -1145,6 +1474,17 @@ export type KpiInput = {
 	name: string,
 	description: string | null,
 	department_id: number | null,
+};
+
+export type Kudos = {
+	id: number,
+	from_employee_id: number,
+	from_name: string,
+	to_employee_id: number,
+	to_name: string,
+	message: string,
+	badge: string | null,
+	created_at: string,
 };
 
 export type LeaveBalanceLite = {
@@ -1198,6 +1538,19 @@ export type LeaveTypeInput = {
 	requires_attachment: boolean,
 };
 
+export type LivenessChallenge = {
+	nonce: string,
+	instruction: string,
+};
+
+export type LoginActivityRow = {
+	username_attempt: string,
+	ip_address: string,
+	user_agent: string,
+	status: string,
+	created_at: string,
+};
+
 /**  Hasil login berhasil. */
 export type LoginOk = {
 	user: SessionUser,
@@ -1236,6 +1589,15 @@ export type Material = {
 	title: string,
 	kind: string,
 	url: string | null,
+};
+
+export type MeritRow = {
+	department_id: number,
+	department_name: string,
+	employees: number,
+	total_current: number | null,
+	total_next: number | null,
+	increase: number | null,
 };
 
 /**  Data enroll MFA untuk dipindai/diketik ke aplikasi authenticator. */
@@ -1319,6 +1681,27 @@ export type OffboardingRow = {
 	last_working_date: string,
 	status: string,
 	current_step: number,
+};
+
+export type OfferInput = {
+	candidate_id: number,
+	title: string,
+	message: string,
+	recipient_name: string,
+};
+
+export type OfferLetter = {
+	id: number,
+	candidate_id: number,
+	title: string,
+	message: string,
+	status: string,
+	recipient_name: string,
+	signature_name: string | null,
+	signature_hash: string | null,
+	sent_at: string | null,
+	signed_at: string | null,
+	created_at: string,
 };
 
 export type Onboarding = {
@@ -1507,6 +1890,109 @@ export type PermissionType = {
 	name: string,
 };
 
+export type PipelineRow = {
+	stage: string,
+	count: number,
+};
+
+export type Policy = {
+	id: number,
+	title: string,
+	version: string,
+	content: string | null,
+	status: string,
+	published_at: string | null,
+};
+
+export type PolicyAck = {
+	employee_id: number,
+	employee_name: string,
+	acked_at: string,
+};
+
+export type Poll = {
+	id: number,
+	question: string,
+	status: string,
+	total_votes: number,
+	options: PollOption[],
+};
+
+export type PollOption = {
+	id: number,
+	label: string,
+	votes: number,
+};
+
+export type PreboardingStatus = {
+	employee_id: number,
+	join_date: string,
+	days_left: number,
+	tasks_total: number,
+	tasks_done: number,
+	contracts: number,
+	documents: number,
+	assets: number,
+	ready: boolean,
+};
+
+export type PulseDetail = {
+	survey: PulseSurvey,
+	questions: PulseQuestion[],
+};
+
+export type PulseInput = {
+	title: string,
+	description: string | null,
+	recurrence: string,
+	questions: QuestionInput[],
+};
+
+export type PulseQuestion = {
+	id: number,
+	question: string,
+	kind: string,
+	position: number,
+};
+
+export type PulseResults = {
+	respondents: number,
+	items: QuestionResult[],
+};
+
+export type PulseSurvey = {
+	id: number,
+	title: string,
+	description: string | null,
+	status: string,
+	recurrence: string,
+	period_start: string | null,
+	period_end: string | null,
+	question_count: number,
+	respondents: number,
+	created_at: string,
+};
+
+export type QrPayload = {
+	asset_id: number,
+	code: string,
+	payload: string,
+	hmac: string,
+};
+
+export type QuestionInput = {
+	question: string,
+	kind: string,
+};
+
+export type QuestionResult = {
+	question_id: number,
+	question: string,
+	kind: string,
+	respondents: number,
+	avg_score: number | null,
+};
+
 export type RecapRow = {
 	employee_id: number,
 	employee_number: string,
@@ -1517,6 +2003,15 @@ export type RecapRow = {
 	status: string | null,
 	late_minutes: number | null,
 	work_minutes: number | null,
+};
+
+export type RegionComplianceRow = {
+	work_location_id: number | null,
+	location_name: string,
+	total: number,
+	ok_count: number,
+	violation_count: number,
+	verdict: string,
 };
 
 export type Reimburse = {
@@ -1553,6 +2048,27 @@ export type ReportTable = {
 	title: string,
 	headers: string[],
 	rows: string[][],
+};
+
+export type Requisition = {
+	id: number,
+	requested_by: number,
+	requester_name: string,
+	position_id: number | null,
+	department_id: number | null,
+	headcount: number,
+	reason: string,
+	status: string,
+	vacancy_id: number | null,
+	notes: string | null,
+	created_at: string,
+};
+
+export type RequisitionInput = {
+	position_id: number | null,
+	department_id: number | null,
+	headcount: number,
+	reason: string,
 };
 
 export type ReturnInput = {
@@ -1651,6 +2167,12 @@ export type ScheduleInput = {
 	description: string | null,
 };
 
+export type SecurityStatus = {
+	pii_enabled: boolean,
+	ip_whitelist: string,
+	session_ttl_secs: number,
+};
+
 /**  Pengguna yang sedang login. */
 export type SessionUser = {
 	id: number,
@@ -1696,6 +2218,13 @@ export type SkillCell = {
 	level: number,
 };
 
+export type SkillGapRow = {
+	skill_name: string,
+	employees: number,
+	avg_level: number | null,
+	below_target: number,
+};
+
 export type StageEvent = {
 	stage: string,
 	notes: string | null,
@@ -1706,6 +2235,28 @@ export type StageEvent = {
 export type StaticOpt = {
 	value: string,
 	label: string,
+};
+
+export type Swap = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	target_employee_id: number,
+	target_name: string,
+	shift_date: string,
+	from_shift_name: string | null,
+	to_shift_name: string | null,
+	reason: string,
+	status: string,
+	requested_at: string,
+	decided_at: string | null,
+	notes: string | null,
+};
+
+export type SwapInput = {
+	target_employee_id: number,
+	shift_date: string,
+	reason: string,
 };
 
 export type Target = {
@@ -1825,6 +2376,24 @@ export type VacancyInput = {
 	status: string,
 	posted_date: string | null,
 	closing_date: string | null,
+};
+
+export type WhatIfResult = {
+	basic_salary: number | null,
+	pph21: number | null,
+	bpjs_kesehatan: number | null,
+	bpjs_jht: number | null,
+	bpjs_jp: number | null,
+	net: number | null,
+};
+
+export type Whistleblow = {
+	id: number,
+	topic: string,
+	status: string,
+	response: string | null,
+	created_at: string,
+	closed_at: string | null,
 };
 
 /**  Alur beserta tahap-tahapnya. */

@@ -23,7 +23,7 @@ export function useLogin() {
   const router = useRouter();
   return useMutation({
     mutationFn: (v: { username: string; password: string }) =>
-      unwrap(commands.login(v.username, v.password)),
+      unwrap(commands.login(v.username, v.password, null)),
     onSuccess: (data) => {
       if (data.mfa_required) return;
       queryClient.setQueryData(["session"], data.user);

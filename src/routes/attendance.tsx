@@ -89,7 +89,7 @@ function SelfTab() {
   };
 
   const clockIn = useMutation({
-    mutationFn: () => unwrap(commands.attendanceClockIn(null, null)),
+    mutationFn: () => unwrap(commands.attendanceClockIn(null, null, null, null)),
     onSuccess: (r) => {
       toast.success(r.message);
       refresh();
