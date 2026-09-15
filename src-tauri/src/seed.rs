@@ -3,7 +3,8 @@
 //! Idempoten: aman dijalankan berulang, tidak membuat duplikat.
 
 use chrono::Local;
-use crate::services::sea_raw::{exec, exec_insert, q_all, q_one, Value};
+use sea_orm::TransactionTrait;
+use crate::services::sea_raw::{exec, exec_insert, q_all, Value};
 
 /// Ringkasan hasil seeding untuk logging.
 #[derive(Debug, Default)]

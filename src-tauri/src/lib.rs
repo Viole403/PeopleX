@@ -44,7 +44,6 @@ fn to_dto_int(v: i64, field: &str) -> Result<i32, String> {
 #[tauri::command]
 #[specta::specta]
 async fn db_status(state: tauri::State<'_, AppState>) -> Result<DbStatus, String> {
-    use sea_orm::ConnectionTrait;
     let tables_sql = schema_sql::count_tables_sql(state.sea.get_database_backend());
     let tables_row = services::sea_raw::q_one(
         &state.sea,

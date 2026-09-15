@@ -177,7 +177,7 @@ fn pola_cocok(bytes: &[char], i: usize, pola: &str) -> bool {
     bytes[i..i + p.len()]
         .iter()
         .zip(p.iter())
-        .all(|(a, b)| a.to_ascii_uppercase() == *b)
+        .all(|(a, b)| a.to_ascii_uppercase() == b.to_ascii_uppercase())
 }
 
 /// Terjemahkan placeholder `?N` ke dialek backend.

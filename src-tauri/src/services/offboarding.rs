@@ -318,7 +318,7 @@ pub async fn find_sea(
     let Some(r) = row else {
         return Ok(None);
     };
-    let (oid, emp, sup, step) = (
+    let (oid, emp, _sup, step) = (
         value_i64(&r[0]).unwrap_or(0),
         value_i64(&r[1]).unwrap_or(0),
         value_i64(&r[4]),

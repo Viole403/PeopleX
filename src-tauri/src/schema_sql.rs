@@ -371,7 +371,7 @@ fn text_col_to_varchar(s: &str, col: &str) -> String {
                 && &cl[j..j + 4] == ['t', 'e', 'x', 't'].as_slice()
                 && is_word_end(&cl, j + 4)
             {
-                out.push_str(&cs[i..j]);
+                out.extend(cs[i..j].iter());
                 out.push_str("VARCHAR(255)");
                 i = j + 4;
                 continue;

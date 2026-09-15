@@ -10,8 +10,8 @@
 
 use crate::config::AppConfig;
 use crate::schema_sql;
-use crate::services::sea_raw::{exec, q_all, q_one, Value};
-use sea_orm::{ConnectionTrait, DatabaseConnection};
+use crate::services::sea_raw::{exec, q_all, Value};
+use sea_orm::DatabaseConnection;
 use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;

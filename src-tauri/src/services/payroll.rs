@@ -1,6 +1,7 @@
 //! Penggajian: komponen, periode, generate, alur status, kasbon, slip.
 
 use chrono::{Datelike, Local, NaiveDate};
+use sea_orm::TransactionTrait;
 
 use super::approval;
 use super::audit;

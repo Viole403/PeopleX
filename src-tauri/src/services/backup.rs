@@ -61,7 +61,6 @@ fn week_ago() -> String {
 // ---------------- Varian SeaORM ----------------
 
 use super::sea_raw::{exec, q_one, value_to_string, Value};
-use sea_orm::ConnectionTrait;
 
 /// Salin isi database hidup ke berkas cadangan baru. Kembalikan nama berkas.
 pub async fn backup_now_sea(

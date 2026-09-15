@@ -106,12 +106,6 @@ fn topt_f64(v: &Value) -> Option<f64> {
     }
 }
 
-fn topt_i(v: &Value, f: &str) -> Result<Option<i32>, String> {
-    match value_i64(v) {
-        Some(x) => Ok(Some(to_dto_int(x, f)?)),
-        None => Ok(None),
-    }
-}
 
 pub async fn list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Training>, String> {
     let rows = q_all(

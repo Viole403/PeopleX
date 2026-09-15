@@ -147,12 +147,6 @@ fn tropt_f64(v: &Value) -> Option<f64> {
     }
 }
 
-fn tropt_i(v: &Value, f: &str) -> Result<Option<i32>, String> {
-    match value_i64(v) {
-        Some(x) => Ok(Some(to_dto_int(x, f)?)),
-        None => Ok(None),
-    }
-}
 
 fn map_trip_row(r: &[Value]) -> Result<Trip, String> {
     Ok(Trip {
