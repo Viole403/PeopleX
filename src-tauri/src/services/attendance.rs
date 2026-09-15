@@ -679,7 +679,7 @@ pub async fn holidays_autofill_sea(
             "attendance.holiday.autofill",
         )
         .await
-        .map_err(|e| format!("gagal menambah libur: {e}"))?;
+        .map_err(|e| format!("gagal menambah libur: {e}"))? as i64;
     }
     super::audit::log_sea(db, Some(actor_id), "CREATE", "schedule.holiday.autofill", Some(&year.to_string()), None, None, None).await?;
     to_dto_int(added, "jumlah libur")
@@ -1381,40 +1381,40 @@ pub async fn swap_request_sea(
 pub async fn my_swaps_sea(db: &sea_orm::DatabaseConnection, employee_id: i64) -> Result<Vec<Swap>, String> {
     let rows = q_all(
         db,
-        &format!("{SWAP_SELECT} WHERE (ss.employee_id = ?1 OR ss.target_employee_id = ?1) ORDER BY ss.id DESC"),
+        format!("{SWAP_SELECT} WHERE (ss.employee_id = ?1 OR ss.target_employee_id = ?1) ORDER BY ss.id DESC"),
         vec![Value::Int(employee_id)],
         13,
         "attendance.swap.mine",
     )
     .await
     .map_err(|e| format!("gagal membaca pengajuan: {e}"))?;
-    rows.iter().map(swap_row).collect()
+    rows.iter().map(|r| swap_row(r)).collect()
 }
 
 pub async fn pending_swaps_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Swap>, String> {
     let rows = q_all(
         db,
-        &format!("{SWAP_SELECT} WHERE ss.status = 'pending' ORDER BY ss.id DESC"),
+        format!("{SWAP_SELECT} WHERE ss.status = 'pending' ORDER BY ss.id DESC"),
         vec![],
         13,
         "attendance.swap.pending",
     )
     .await
     .map_err(|e| format!("gagal membaca antrean: {e}"))?;
-    rows.iter().map(swap_row).collect()
+    rows.iter().map(|r| swap_row(r)).collect()
 }
 
 pub async fn all_swaps_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Swap>, String> {
     let rows = q_all(
         db,
-        &format!("{SWAP_SELECT} ORDER BY ss.id DESC"),
+        format!("{SWAP_SELECT} ORDER BY ss.id DESC"),
         vec![],
         13,
         "attendance.swap.all",
     )
     .await
     .map_err(|e| format!("gagal membaca riwayat: {e}"))?;
-    rows.iter().map(swap_row).collect()
+    rows.iter().map(|r| swap_row(r)).collect()
 }
 
 pub async fn decide_swap_sea(
