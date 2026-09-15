@@ -120,6 +120,7 @@ export const commands = {
 	supervisor_name: string | null,
 	manager_name: string | null,
 } | null, string>(__TAURI_INVOKE("employee_detail", { id })),
+	employeeAttrition: () => typedError<AttritionScore[], string>(__TAURI_INVOKE("employee_attrition")),
 	employeeDropdowns: () => typedError<Dropdowns, string>(__TAURI_INVOKE("employee_dropdowns")),
 	employeeCreate: (input: EmployeeInput, photo: {
 	name: string,
@@ -248,7 +249,7 @@ export const commands = {
 	payrollPay: (periodId: number) => typedError<null, string>(__TAURI_INVOKE("payroll_pay", { periodId })),
 	payrollLock: (periodId: number) => typedError<null, string>(__TAURI_INVOKE("payroll_lock", { periodId })),
 	payrollMySlips: () => typedError<PayslipInfo[], string>(__TAURI_INVOKE("payroll_my_slips")),
-	payrollPayslipRender: (payrollId: number) => typedError<string, string>(__TAURI_INVOKE("payroll_payslip_render", { payrollId })),
+	payrollPayslipRender: (payrollId: number, currency: string | null) => typedError<string, string>(__TAURI_INVOKE("payroll_payslip_render", { payrollId, currency })),
 	payrollPayslipFile: (payrollId: number) => typedError<PayslipFile, string>(__TAURI_INVOKE("payroll_payslip_file", { payrollId })),
 	payrollComponents: () => typedError<Component[], string>(__TAURI_INVOKE("payroll_components")),
 	payrollComponentSave: (id: number | null, input: ComponentInput) => typedError<number, string>(__TAURI_INVOKE("payroll_component_save", { id, input })),
@@ -258,11 +259,21 @@ export const commands = {
 	payrollDeductionDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("payroll_deduction_delete", { id })),
 	payrollBankFile: (periodId: number) => typedError<string, string>(__TAURI_INVOKE("payroll_bank_file", { periodId })),
 	payrollWhatif: (basic: number | null, ptkpStatus: string) => typedError<WhatIfResult, string>(__TAURI_INVOKE("payroll_whatif", { basic, ptkpStatus })),
+	payrollCurrencySave: (code: string, rateToIdr: number | null, asOf: string) => typedError<null, string>(__TAURI_INVOKE("payroll_currency_save", { code, rateToIdr, asOf })),
+	payrollCurrencyList: () => typedError<CurrencyRate[], string>(__TAURI_INVOKE("payroll_currency_list")),
+	contractorSave: (id: number | null, input: ContractorInput) => typedError<number, string>(__TAURI_INVOKE("contractor_save", { id, input })),
+	contractorList: () => typedError<Contractor[], string>(__TAURI_INVOKE("contractor_list")),
+	contractorPay: (contractorId: number, period: string, amount: number | null) => typedError<number, string>(__TAURI_INVOKE("contractor_pay", { contractorId, period, amount })),
+	contractorPayments: (contractorId: number | null) => typedError<ContractorPayment[], string>(__TAURI_INVOKE("contractor_payments", { contractorId })),
+	complianceAsk: (q: string) => typedError<string, string>(__TAURI_INVOKE("compliance_ask", { q })),
 	compensationSchemeSave: (id: number | null, input: BonusInput) => typedError<number, string>(__TAURI_INVOKE("compensation_scheme_save", { id, input })),
 	compensationSchemeList: () => typedError<BonusScheme[], string>(__TAURI_INVOKE("compensation_scheme_list")),
 	compensationBonusRun: (schemeId: number, period: string) => typedError<number, string>(__TAURI_INVOKE("compensation_bonus_run", { schemeId, period })),
 	compensationBonusList: (period: string | null) => typedError<BonusRow[], string>(__TAURI_INVOKE("compensation_bonus_list", { period })),
 	compensationBonusDecide: (id: number, decision: string) => typedError<null, string>(__TAURI_INVOKE("compensation_bonus_decide", { id, decision })),
+	compensationEsopGrant: (input: EsopGrantInput) => typedError<number, string>(__TAURI_INVOKE("compensation_esop_grant", { input })),
+	compensationEsopVest: (asOf: string) => typedError<number, string>(__TAURI_INVOKE("compensation_esop_vest", { asOf })),
+	compensationEsopList: () => typedError<EsopGrant[], string>(__TAURI_INVOKE("compensation_esop_list")),
 	compensationBenefitSave: (id: number | null, input: BenefitInput) => typedError<number, string>(__TAURI_INVOKE("compensation_benefit_save", { id, input })),
 	compensationBenefitList: (activeOnly: boolean) => typedError<Benefit[], string>(__TAURI_INVOKE("compensation_benefit_list", { activeOnly })),
 	compensationBenefitEnroll: (employeeId: number, benefitId: number, year: number) => typedError<number, string>(__TAURI_INVOKE("compensation_benefit_enroll", { employeeId, benefitId, year })),
@@ -322,6 +333,7 @@ export const commands = {
 	organizationComplianceStatus: () => typedError<RegionComplianceRow[], string>(__TAURI_INVOKE("organization_compliance_status")),
 	privacyDataExport: (employeeId: number) => typedError<string, string>(__TAURI_INVOKE("privacy_data_export", { employeeId })),
 	privacyDataErase: (employeeId: number, reason: string) => typedError<null, string>(__TAURI_INVOKE("privacy_data_erase", { employeeId, reason })),
+	employeeTransferEntity: (employeeId: number, toCompanyId: number, effectiveDate: string, notes: string | null) => typedError<null, string>(__TAURI_INVOKE("employee_transfer_entity", { employeeId, toCompanyId, effectiveDate, notes })),
 	leaveCarryoverRun: (year: number) => typedError<number, string>(__TAURI_INVOKE("leave_carryover_run", { year })),
 	approvalDelegate: (toUser: number, module: string, startDate: string, endDate: string, reason: string | null) => typedError<number, string>(__TAURI_INVOKE("approval_delegate", { toUser, module, startDate, endDate, reason })),
 	approvalDelegations: () => typedError<Delegation[], string>(__TAURI_INVOKE("approval_delegations")),
@@ -518,6 +530,10 @@ export const commands = {
 	assetReturn: (assignmentId: number, input: ReturnInput) => typedError<null, string>(__TAURI_INVOKE("asset_return", { assignmentId, input })),
 	assetMaintenanceAdd: (assetId: number, input: MaintenanceInput) => typedError<number, string>(__TAURI_INVOKE("asset_maintenance_add", { assetId, input })),
 	assetMarkAvailable: (assetId: number) => typedError<null, string>(__TAURI_INVOKE("asset_mark_available", { assetId })),
+	licenseList: () => typedError<License[], string>(__TAURI_INVOKE("license_list")),
+	licenseSave: (id: number | null, input: LicenseInput) => typedError<number, string>(__TAURI_INVOKE("license_save", { id, input })),
+	licenseAssign: (licenseId: number, employeeId: number) => typedError<null, string>(__TAURI_INVOKE("license_assign", { licenseId, employeeId })),
+	licenseRevoke: (licenseId: number, employeeId: number) => typedError<null, string>(__TAURI_INVOKE("license_revoke", { licenseId, employeeId })),
 	tripMy: () => typedError<Trip[], string>(__TAURI_INVOKE("trip_my")),
 	tripAll: () => typedError<Trip[], string>(__TAURI_INVOKE("trip_all")),
 	tripPending: () => typedError<Trip[], string>(__TAURI_INVOKE("trip_pending")),
@@ -728,6 +744,15 @@ export type Attendance = {
 	work_minutes: number,
 	notes: string | null,
 	shift_id: number | null,
+};
+
+export type AttritionScore = {
+	employee_id: number,
+	employee_name: string,
+	department_name: string | null,
+	score: number | null,
+	level: string,
+	signals: string[],
 };
 
 /**  Baris audit untuk daftar. */
@@ -1078,6 +1103,35 @@ export type ContractAlert = {
 	days_left: number,
 };
 
+export type Contractor = {
+	id: number,
+	name: string,
+	country: string,
+	currency: string,
+	email: string | null,
+	phone: string | null,
+};
+
+export type ContractorInput = {
+	name: string,
+	country: string,
+	currency: string,
+	email: string | null,
+	phone: string | null,
+};
+
+export type ContractorPayment = {
+	id: number,
+	contractor_id: number,
+	contractor_name: string,
+	period: string,
+	amount: number | null,
+	currency: string,
+	amount_idr: number | null,
+	status: string,
+	paid_at: string | null,
+};
+
 export type Correction = {
 	id: number,
 	employee_id: number,
@@ -1096,6 +1150,12 @@ export type CorrectionInput = {
 	requested_clock_in: string | null,
 	requested_clock_out: string | null,
 	reason: string,
+};
+
+export type CurrencyRate = {
+	code: string,
+	rate_to_idr: number | null,
+	as_of: string,
 };
 
 /**  Status database untuk layar diagnosa. */
@@ -1364,6 +1424,26 @@ export type EntityMeta = {
 	fields: FieldMeta[],
 };
 
+export type EsopGrant = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	total_shares: number,
+	grant_date: string,
+	vest_months: number,
+	cliff_months: number,
+	vested_shares: number,
+	scheduled_shares: number,
+};
+
+export type EsopGrantInput = {
+	employee_id: number,
+	total_shares: number,
+	grant_date: string,
+	vest_months: number,
+	cliff_months: number,
+};
+
 export type EwaEvent = {
 	action: string,
 	user_id: number | null,
@@ -1602,6 +1682,24 @@ export type LeaveTypeInput = {
 	carry_forward: boolean,
 	carry_forward_max_days: number | null,
 	requires_attachment: boolean,
+};
+
+export type License = {
+	id: number,
+	name: string,
+	vendor: string | null,
+	total_seats: number,
+	used_seats: number,
+	cost: number | null,
+	expires_at: string | null,
+};
+
+export type LicenseInput = {
+	name: string,
+	vendor: string | null,
+	total_seats: number,
+	cost: number | null,
+	expires_at: string | null,
 };
 
 export type LivenessChallenge = {
@@ -1908,6 +2006,8 @@ export type Period = {
 	end_date: string,
 	payment_date: string | null,
 	status: string,
+	company_id: number | null,
+	company_name: string | null,
 	employee_count: number,
 	total_net: number | null,
 };
@@ -1917,6 +2017,7 @@ export type PeriodInput = {
 	start_date: string,
 	end_date: string,
 	payment_date: string | null,
+	company_id: number | null,
 };
 
 /**  Izin tunggal. */

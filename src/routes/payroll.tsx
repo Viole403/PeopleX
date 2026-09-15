@@ -87,7 +87,7 @@ function PayrollPage() {
               <p className="text-sm font-semibold">{p.name}</p>
               <p className="text-xs text-text-tertiary">
                 {formatDate(p.start_date)} – {formatDate(p.end_date)} • {p.status} •{" "}
-                {p.employee_count} orang
+                {p.employee_count} orang{p.company_name ? ` • ${p.company_name}` : ""}
               </p>
             </button>
           ))}
@@ -223,6 +223,7 @@ function PeriodForm({ onClose }: { onClose: () => void }) {
           start_date: start,
           end_date: end,
           payment_date: payment || null,
+          company_id: null,
         }),
       ),
     onSuccess: () => {
@@ -269,12 +270,13 @@ function PeriodForm({ onClose }: { onClose: () => void }) {
 }
 
 function DetailDialog({ id, onClose }: { id: number; onClose: () => void }) {
+  const [currency, setCurrency] = useState("IDR");
   const detail = useQuery({
     queryKey: ["payrollDetail", id],
     queryFn: () => unwrap(commands.payrollDetail(id)),
   });
   const render = useMutation({
-    mutationFn: () => unwrap(commands.payrollPayslipRender(id)),
+    mutationFn: () => unwrap(commands.payrollPayslipRender(id, currency === "IDR" ? null : currency)),
     onSuccess: () => toast.success("PDF slip dibuat."),
     onError: (e: Error) => toast.error(e.message),
   });
@@ -303,6 +305,14 @@ function DetailDialog({ id, onClose }: { id: number; onClose: () => void }) {
                 Buat PDF
               </button>
             </div>
+            <label className="mt-3 flex items-center gap-2 text-sm">
+              Mata uang slip
+              <input
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value.toUpperCase())}
+                className="w-24 rounded-lg border border-border-primary bg-bg-primary px-3 py-1.5 text-sm"
+              />
+            </label>
             <div className="mt-4">
               <p className="text-xs font-semibold uppercase text-text-tertiary">Pendapatan</p>
               {d.lines.filter((l) => l.line_type === "income").map((l, i) => (

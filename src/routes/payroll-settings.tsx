@@ -16,7 +16,7 @@ function PayrollSettingsPage() {
     <div className="space-y-4">
       <h1 className="text-display-sm font-semibold">Pengaturan Gaji</h1>
       <div className="flex gap-1 rounded-xl border border-border-secondary bg-bg-primary p-1">
-        {["Komponen", "Kasbon"].map((t) => (
+        {["Komponen", "Kasbon", "Kurs"].map((t) => (
           <button
             key={t}
             type="button"
@@ -31,7 +31,7 @@ function PayrollSettingsPage() {
           </button>
         ))}
       </div>
-      {tab === "Komponen" ? <ComponentTab /> : <DeductionTab />}
+      {tab === "Komponen" ? <ComponentTab /> : tab === "Kasbon" ? <DeductionTab /> : <FxTab />}
     </div>
   );
 }
@@ -357,6 +357,38 @@ function DeductionForm({
           <button type="submit" disabled={save.isPending} className="rounded-lg bg-bg-brand-solid px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">Simpan</button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function FxTab() {
+  const queryClient = useQueryClient();
+  const [code, setCode] = useState("USD");
+  const [rate, setRate] = useState("");
+  const [asOf, setAsOf] = useState(new Date().toISOString().slice(0, 10));
+  const list = useQuery({
+    queryKey: ["fxRates"],
+    queryFn: () => unwrap(commands.payrollCurrencyList()),
+  });
+  const save = useMutation({
+    mutationFn: () => unwrap(commands.payrollCurrencySave(code, Number(rate), asOf)),
+    onSuccess: () => {
+      toast.success("Kurs disimpan.");
+      void queryClient.invalidateQueries({ queryKey: ["fxRates"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+  return (
+    <div className="space-y-3 rounded-xl border border-border-secondary bg-bg-primary p-4">
+      {(list.data ?? []).map((r) => (
+        <p key={`${r.code}-${r.as_of}`} className="text-sm">{r.code} = {(r.rate_to_idr ?? 0).toLocaleString("id-ID")} ({r.as_of})</p>
+      ))}
+      <div className="flex flex-wrap gap-2">
+        <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} className="w-24 rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm" />
+        <input value={rate} onChange={(e) => setRate(e.target.value)} placeholder="Kurs ke IDR" className="w-44 rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm" />
+        <input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} className="rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm" />
+        <button type="button" onClick={() => save.mutate()} disabled={save.isPending} className="rounded-lg bg-bg-brand-solid px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">Simpan kurs</button>
+      </div>
     </div>
   );
 }

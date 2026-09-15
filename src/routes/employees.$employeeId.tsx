@@ -16,6 +16,7 @@ export const Route = createFileRoute("/employees/$employeeId")({
 const TABS = [
   "Ringkasan",
   "Ubah Data",
+  "Transfer",
   "Keluarga",
   "Pendidikan",
   "Pengalaman",
@@ -126,6 +127,7 @@ function EmployeeDetailPage() {
       {tab === "Alamat" && <AddressTab employeeId={id} />}
       {tab === "Dokumen" && <DocumentTab employeeId={id} />}
       {tab === "Gaji" && <SalaryTab employeeId={id} />}
+      {tab === "Transfer" && <TransferTab employeeId={id} canEdit={can(session, "employee.update")} />}
     </div>
   );
 }
@@ -287,5 +289,32 @@ function EditTab({
         </button>
       </div>
     </form>
+  );
+}
+
+function TransferTab({ employeeId, canEdit }: { employeeId: number; canEdit: boolean }) {
+  const queryClient = useQueryClient();
+  const [toCompany, setToCompany] = useState("");
+  const [date, setDate] = useState("");
+  const [notes, setNotes] = useState("");
+  const transfer = useMutation({
+    mutationFn: () => unwrap(commands.employeeTransferEntity(employeeId, Number(toCompany), date, notes || null)),
+    onSuccess: () => {
+      toast.success("Transfer antar-entitas berhasil.");
+      void queryClient.invalidateQueries({ queryKey: ["employee", employeeId] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+  if (!canEdit) return <p className="text-sm text-text-tertiary">Akses ditolak.</p>;
+  return (
+    <div className="space-y-3 rounded-xl border border-border-secondary bg-bg-primary p-4">
+      <p className="text-sm text-text-tertiary">Pindah perusahaan: unit organisasi dikosongkan dan riwayat karier dicatat.</p>
+      <div className="flex flex-wrap gap-2">
+        <input value={toCompany} onChange={(e) => setToCompany(e.target.value)} placeholder="ID perusahaan tujuan" className="w-44 rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm" />
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm" />
+        <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Catatan (opsional)" className="w-full max-w-xs rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm" />
+        <button type="button" onClick={() => transfer.mutate()} disabled={transfer.isPending} className="rounded-lg bg-bg-brand-solid px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">Transfer</button>
+      </div>
+    </div>
   );
 }
