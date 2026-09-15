@@ -1649,6 +1649,7 @@ mod tests {
             db,
             "SELECT carried_days FROM leave_balances WHERE employee_id = ?1 AND leave_type_id = ?2 AND year = 2026".to_string(),
             vec![Value::Int(eid), Value::Int(tid)],
+            1,
             "t.b26",
         )
         .await
@@ -1739,7 +1740,8 @@ mod tests {
                 db,
                 &format!("SELECT status FROM leave_requests WHERE id = {rid}"),
                 "t.st",
-            ),
+            )
+            .await,
             "approved"
         );
         assert!((used_days(db, eid, tid, year).await - 2.0).abs() < 1e-9);
