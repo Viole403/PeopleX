@@ -582,6 +582,44 @@ pub async fn skill_matrix_sea(
     Ok(out)
 }
 
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct SkillGapRow {
+    pub skill_name: String,
+    pub employees: i32,
+    pub avg_level: f64,
+    pub below_target: i32,
+}
+
+pub async fn gap_report_sea(
+    db: &sea_orm::DatabaseConnection,
+) -> Result<Vec<SkillGapRow>, String> {
+    let rows = q_all(
+        db,
+        "SELECT es.skill_name, COUNT(*), AVG(es.level), SUM(CASE WHEN es.level < 3 THEN 1 ELSE 0 END) FROM employee_skills es INNER JOIN employees e ON e.id = es.employee_id WHERE e.deleted_at IS NULL GROUP BY es.skill_name ORDER BY SUM(CASE WHEN es.level < 3 THEN 1 ELSE 0 END) DESC, es.skill_name".to_string(),
+        vec![],
+        4,
+        "training.gap",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca kesenjangan skill: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        let avg = match &r[2] {
+            Value::Float(f) => *f,
+            Value::Int(i) => *i as f64,
+            Value::Text(t) => t.parse().unwrap_or(0.0),
+            _ => 0.0,
+        };
+        out.push(SkillGapRow {
+            skill_name: value_to_string(&r[0]),
+            employees: value_i64(&r[1]).unwrap_or(0) as i32,
+            avg_level: (avg * 100.0).round() / 100.0,
+            below_target: value_i64(&r[3]).unwrap_or(0) as i32,
+        });
+    }
+    Ok(out)
+}
+
 pub async fn set_skill_sea(
     db: &sea_orm::DatabaseConnection,
     actor_id: i64,
@@ -1114,5 +1152,52 @@ mod tests {
             .expect("peserta");
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].status, "completed");
+    }
+
+    #[tokio::test]
+    async fn laporan_kesenjangan_skill_memperhitungkan_target() {
+        let dir = tempfile::tempdir().expect("dir");
+        let app = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &app.sea;
+        let actor = admin(db).await;
+        let e1 = emp(db).await;
+        let mk = |n: &'static str| {
+            let db2 = db.clone();
+            async move {
+                exec(
+                    &db2,
+                    format!("INSERT INTO employees (employee_number, first_name, company_id, join_date, employment_status, employment_type) VALUES ('{}', 'Gap', 1, '2026-01-05', 'active', 'permanent')", n),
+                    vec![],
+                    "t.gapemp",
+                )
+                .await
+                .expect("emp");
+                q_one(
+                    &db2,
+                    "SELECT last_insert_rowid()".to_string(),
+                    vec![],
+                    1,
+                    "t.gaprid",
+                )
+                .await
+                .expect("rid")
+                .and_then(|r| value_i64(&r[0]))
+                .expect("id")
+            }
+        };
+        let e2 = mk("EMP-GP2").await;
+        let e3 = mk("EMP-GP3").await;
+        set_skill_sea(db, actor, e1, "Excel", 2).await.expect("s1");
+        set_skill_sea(db, actor, e2, "Excel", 4).await.expect("s2");
+        set_skill_sea(db, actor, e3, "Excel", 1).await.expect("s3");
+        set_skill_sea(db, actor, e2, "Forklift", 5).await.expect("s4");
+        let rows = gap_report_sea(db).await.expect("gap");
+        let excel = rows.iter().find(|g| g.skill_name == "Excel").expect("baris excel");
+        assert_eq!(excel.employees, 3);
+        assert_eq!(excel.below_target, 2);
+        assert!((excel.avg_level - 2.33).abs() < 0.01);
+        let forklift = rows.iter().find(|g| g.skill_name == "Forklift").expect("baris forklift");
+        assert_eq!(forklift.below_target, 0);
+        assert_eq!(rows[0].skill_name, "Excel");
     }
 }

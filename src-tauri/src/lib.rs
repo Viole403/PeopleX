@@ -3175,6 +3175,26 @@ async fn onboarding_preboarding_status(
     services::onboarding::preboarding_status_sea(&state.sea, employee_id as i64).await
 }
 
+// ---------------- Analitik SDM ----------------
+
+#[tauri::command]
+#[specta::specta]
+async fn training_skill_gap(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::training::SkillGapRow>, String> {
+    require(&state, &["training.view", "system.manage"]).await?;
+    services::training::gap_report_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn recruitment_pipeline(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::recruitment::PipelineRow>, String> {
+    require(&state, &["recruitment.view", "system.manage"]).await?;
+    services::recruitment::pipeline_sea(&state.sea).await
+}
+
 // ---------------- Laporan ----------------
 
 #[tauri::command]
@@ -3515,6 +3535,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         recruitment_background_save,
         recruitment_background_list,
         onboarding_preboarding_status,
+        training_skill_gap,
+        recruitment_pipeline,
         leave_carryover_run,
         approval_delegate,
         approval_delegations,

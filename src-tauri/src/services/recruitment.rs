@@ -1576,6 +1576,37 @@ pub async fn bg_list_sea(
     Ok(rows.iter().map(|r| bg_row(r)).collect())
 }
 
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct PipelineRow {
+    pub stage: String,
+    pub count: i32,
+}
+
+pub async fn pipeline_sea(
+    db: &sea_orm::DatabaseConnection,
+) -> Result<Vec<PipelineRow>, String> {
+    let rows = q_all(
+        db,
+        "SELECT stage, COUNT(*) FROM candidates WHERE deleted_at IS NULL GROUP BY stage".to_string(),
+        vec![],
+        2,
+        "rec.pipeline",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca pipeline: {e}"))?;
+    Ok(STAGES
+        .iter()
+        .map(|st| PipelineRow {
+            stage: st.to_string(),
+            count: rows
+                .iter()
+                .find(|r| value_to_string(&r[0]) == *st)
+                .and_then(|r| value_i64(&r[1]))
+                .unwrap_or(0) as i32,
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2262,5 +2293,27 @@ mod tests {
         .await
         .expect_err("kandidat");
         assert!(err.contains("Kandidat tidak ditemukan"));
+    }
+
+    #[tokio::test]
+    async fn pipeline_menghitung_setiap_tahap() {
+        let dir = tempfile::tempdir().expect("dir");
+        let fdir = tempfile::tempdir().expect("fdir");
+        let app = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &app.sea;
+        let actor = admin(db).await;
+        let vid = vacancy(db, actor).await;
+        let c1 = kandidat(db, fdir.path(), actor, vid, "Satu") as i64;
+        let _c2 = kandidat(db, fdir.path(), actor, vid, "Dua");
+        let rows = pipeline_sea(db).await.expect("pipeline");
+        assert_eq!(rows.len(), 8);
+        assert_eq!(rows.iter().find(|r| r.stage == "applied").expect("applied").count, 2);
+        assert_eq!(rows.iter().find(|r| r.stage == "screening").expect("scr").count, 0);
+        update_stage_sea(db, actor, c1, "screening", None)
+            .await
+            .expect("tahap");
+        let rows2 = pipeline_sea(db).await.expect("pipeline2");
+        assert_eq!(rows2.iter().find(|r| r.stage == "applied").expect("a").count, 1);
+        assert_eq!(rows2.iter().find(|r| r.stage == "screening").expect("s").count, 1);
     }
 }
