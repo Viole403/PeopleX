@@ -167,7 +167,7 @@ pub struct PayslipInfo {
 
 // ---------------- Varian SeaORM ----------------
 
-use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
+use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 
 fn pf64(v: &Value) -> f64 {
     match v {
@@ -183,19 +183,6 @@ fn popt_text(v: &Value) -> Option<String> {
         Value::Null => None,
         _ => Some(value_to_string(v)),
     }
-}
-
-async fn prow_id(db: &sea_orm::DatabaseConnection, label: &str) -> Result<i64, String> {
-    let row = q_one(
-        db,
-        "SELECT last_insert_rowid()".to_string(),
-        vec![],
-        1,
-        label,
-    )
-    .await
-    .map_err(|e| format!("gagal membaca id baru: {e}"))?;
-    Ok(row.as_ref().and_then(|r| value_i64(&r[0])).unwrap_or(0))
 }
 
 // Transaksi generate memakai koneksi SeaORM agar atomic penuh.
@@ -228,16 +215,6 @@ async fn tx_exec(
     label: &str,
 ) -> Result<u64, String> {
     exec(tx, sql, vals, label).await
-}
-
-async fn tx_rowid(tx: &Tx) -> i64 {
-    tx_q_one(tx, "SELECT last_insert_rowid()".to_string(), vec![], 1, "payroll.rowid")
-        .await
-        .ok()
-        .flatten()
-        .as_ref()
-        .and_then(|r| value_i64(&r[0]))
-        .unwrap_or(0)
 }
 
 async fn overtime_amount_tx(
@@ -627,7 +604,7 @@ async fn generate_one_tx(
             pid
         }
         None => {
-            tx_exec(
+            exec_insert(
                 tx,
                 "INSERT INTO payrolls (payroll_period_id, employee_id, basic_salary, total_income, gross_salary, total_deduction, net_salary, total_overtime_amount, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'review')".to_string(),
                 vec![
@@ -643,8 +620,7 @@ async fn generate_one_tx(
                 "payroll.add",
             )
             .await
-            .map_err(|e| format!("gagal membuat payroll: {e}"))?;
-            tx_rowid(tx).await
+            .map_err(|e| format!("gagal membuat payroll: {e}"))?
         }
     };
     save_lines_tx(tx, payroll_id, period_id, &incomes, "income").await?;
@@ -838,7 +814,7 @@ pub async fn component_save_sea(
         .await?;
         to_dto_int(rid, "component.id")
     } else {
-        let res = exec(
+        let rid = exec_insert(
             db,
             "INSERT INTO salary_components (code, name, type, calculation_type, is_taxable, is_active) VALUES (?1, ?2, ?3, ?4, ?5, ?6)".to_string(),
             vec![
@@ -851,26 +827,26 @@ pub async fn component_save_sea(
             ],
             "payroll.compadd",
         )
-        .await;
-        let Err(e) = res else {
-            let rid = prow_id(db, "payroll.compadd").await?;
-            audit::log_sea(
-                db,
-                Some(actor_id),
-                "CREATE",
-                "payroll.component",
-                Some(&rid.to_string()),
-                None,
-                None,
-                None,
-            )
-            .await?;
-            return to_dto_int(rid, "component.id");
-        };
-        if e.contains("UNIQUE") {
-            return Err("Kode komponen sudah dipakai.".to_string());
-        }
-        return Err(format!("gagal menambah komponen: {e}"));
+        .await
+        .map_err(|e| {
+            if e.contains("UNIQUE") {
+                "Kode komponen sudah dipakai.".to_string()
+            } else {
+                format!("gagal menambah komponen: {e}")
+            }
+        })?;
+        audit::log_sea(
+            db,
+            Some(actor_id),
+            "CREATE",
+            "payroll.component",
+            Some(&rid.to_string()),
+            None,
+            None,
+            None,
+        )
+        .await?;
+        return to_dto_int(rid, "component.id");
     }
 }
 
@@ -993,7 +969,7 @@ pub async fn period_create_sea(
     if overlap.is_some() {
         return Err("Periode bertabrakan dengan periode yang ada.".to_string());
     }
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO payroll_periods (name, start_date, end_date, payment_date, status, created_by) VALUES (?1, ?2, ?3, ?4, 'draft', ?5)".to_string(),
         vec![
@@ -1010,7 +986,6 @@ pub async fn period_create_sea(
     )
     .await
     .map_err(|e| format!("gagal membuat periode: {e}"))?;
-    let rid = prow_id(db, "payroll.periodadd").await?;
     audit::log_sea(
         db,
         Some(actor_id),
@@ -1432,7 +1407,7 @@ pub async fn deduction_save_sea(
         .await?;
         to_dto_int(rid, "deduction.id")
     } else {
-        exec(
+        let rid = exec_insert(
             db,
             "INSERT INTO payroll_deductions (employee_id, type, description, amount, installment_no, total_installments, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending')".to_string(),
             vec![
@@ -1447,7 +1422,6 @@ pub async fn deduction_save_sea(
         )
         .await
         .map_err(|e| format!("gagal menambah kasbon: {e}"))?;
-        let rid = prow_id(db, "payroll.dedadd").await?;
         audit::log_sea(
             db,
             Some(actor_id),

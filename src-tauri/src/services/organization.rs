@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::string::String;
 
-use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
+use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 
 use crate::to_dto_int;
 
@@ -549,7 +549,7 @@ pub async fn save(
                 None => Value::Null,
             })
             .collect();
-        exec(
+        let rid = exec_insert(
             db, format!(
                 "INSERT INTO {} ({}) VALUES ({})",
                 ent.table,
@@ -567,11 +567,6 @@ pub async fn save(
                 e
             }
         })?;
-        let row = q_one(db, "SELECT last_insert_rowid()".to_string(), vec![], 1, "memuat id").await?;
-        let rid = row
-            .as_ref()
-            .and_then(|v| value_i64(&v[0]))
-            .ok_or("gagal memuat id baru.".to_string())?;
         to_dto_int(rid, "org.id")
     }
 }

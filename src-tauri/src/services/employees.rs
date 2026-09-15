@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::audit;
-use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
+use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 use crate::to_dto_int;
 
 // ---------------- DTO ----------------
@@ -1462,7 +1462,7 @@ pub async fn create_sea(
         },
     ];
     vals.extend(profile_vals_sea(input));
-    exec(
+    let id = exec_insert(
         db,
         format!("INSERT INTO employees ({cols}) VALUES ({})", holders.join(", ")),
         vals,
@@ -1476,18 +1476,6 @@ pub async fn create_sea(
             e
         }
     })?;
-    let row = q_one(
-        db,
-        "SELECT last_insert_rowid()".to_string(),
-        vec![],
-        1,
-        "memuat id",
-    )
-    .await?;
-    let id = row
-        .as_ref()
-        .and_then(|v| value_i64(&v[0]))
-        .ok_or("gagal memuat id baru.".to_string())?;
     audit::log_sea(
         db,
         Some(actor_id),
@@ -1794,7 +1782,7 @@ pub async fn child_save_sea(
             Some(s) => Value::from(s.clone()),
             None => Value::Null,
         }));
-        exec(
+        let rid = exec_insert(
             db,
             format!(
                 "INSERT INTO {} ({}) VALUES ({})",
@@ -1813,18 +1801,6 @@ pub async fn child_save_sea(
                 e
             }
         })?;
-        let row = q_one(
-            db,
-            "SELECT last_insert_rowid()".to_string(),
-            vec![],
-            1,
-            "memuat id",
-        )
-        .await?;
-        let rid = row
-            .as_ref()
-            .and_then(|v| value_i64(&v[0]))
-            .ok_or("gagal memuat id baru.".to_string())?;
         let after = serde_json::to_string(&cleaned).unwrap_or_default();
         audit::log_sea(
             db,
@@ -2077,7 +2053,7 @@ pub async fn upload_document_sea(
     let subdir = format!("documents/{employee_id}");
     let rel = store_file(files, &subdir, file, DOC_MIMES)?;
     let expiry = expiry_date.map(str::trim).filter(|s| !s.is_empty());
-    exec(
+    let id = exec_insert(
         db,
         "INSERT INTO employee_documents (employee_id, category, name, file_path, file_size, mime_type, expiry_date, uploaded_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)".to_string(),
         vec![
@@ -2096,18 +2072,6 @@ pub async fn upload_document_sea(
         "mencatat dokumen",
     )
     .await?;
-    let row = q_one(
-        db,
-        "SELECT last_insert_rowid()".to_string(),
-        vec![],
-        1,
-        "memuat id",
-    )
-    .await?;
-    let id = row
-        .as_ref()
-        .and_then(|v| value_i64(&v[0]))
-        .ok_or("gagal memuat id baru.".to_string())?;
     audit::log_sea(
         db,
         Some(actor_id),
@@ -2364,7 +2328,7 @@ pub async fn set_salary_sea(
         "menonaktifkan gaji lama",
     )
     .await?;
-    exec(
+    let salary_id = exec_insert(
         db,
         "INSERT INTO employee_salaries (employee_id, basic_salary, effective_date, is_active, created_by) VALUES (?1, ?2, ?3, 1, ?4)".to_string(),
         vec![
@@ -2376,16 +2340,6 @@ pub async fn set_salary_sea(
         "menetapkan gaji",
     )
     .await?;
-    let salary_id = q_one(
-        db,
-        "SELECT last_insert_rowid()".to_string(),
-        vec![],
-        1,
-        "memuat id gaji",
-    )
-    .await?
-    .map(|c| value_i64(&c[0]).unwrap_or(0))
-    .unwrap_or(0);
     for (comp_id, amount) in components {
         exec(
             db,
