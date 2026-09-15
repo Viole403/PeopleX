@@ -9,6 +9,7 @@ pub mod compensation;
 pub mod dashboard;
 pub mod engagement;
 pub mod employees;
+pub mod fingerprint;
 pub mod leave;
 pub mod notifications;
 pub mod offboarding;
