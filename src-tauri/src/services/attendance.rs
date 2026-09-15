@@ -693,6 +693,57 @@ async fn active_employee_sea(db: &sea_orm::DatabaseConnection, id: i64) -> Resul
     }
 }
 
+fn jarak_meter(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
+    let r = 6_371_000.0_f64;
+    let dlat = (lat2 - lat1).to_radians();
+    let dlng = (lng2 - lng1).to_radians();
+    let a = (dlat / 2.0).sin().powi(2)
+        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlng / 2.0).sin().powi(2);
+    2.0 * r * a.sqrt().asin()
+}
+
+fn angka_opt(v: &Value) -> Option<f64> {
+    match v {
+        Value::Float(f) => Some(*f),
+        Value::Int(i) => Some(*i as f64),
+        Value::Text(s) => s.parse::<f64>().ok(),
+        Value::Null => None,
+    }
+}
+
+async fn cek_geofence(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+    lat: Option<f64>,
+    lng: Option<f64>,
+) -> Result<(), String> {
+    let rows = q_all(db, "SELECT work_location_id FROM employees WHERE id = ?1".to_string(), vec![Value::Int(employee_id)], 1, "attendance.lokasi").await.map_err(|e| format!("gagal memuat lokasi kerja: {e}"))?;
+    let loc = rows.into_iter().next().and_then(|r| sea_opt_int(&r, 0));
+    let loc = match loc {
+        Some(v) => v,
+        None => return Ok(()),
+    };
+    let rows = q_all(db, "SELECT latitude, longitude, radius_meter FROM work_locations WHERE id = ?1 AND deleted_at IS NULL".to_string(), vec![Value::Int(loc)], 3, "attendance.geofence").await.map_err(|e| format!("gagal memuat geofence: {e}"))?;
+    let r = rows.into_iter().next().ok_or_else(|| "Lokasi kerja tidak ditemukan.".to_string())?;
+    let (olat, olng) = match (angka_opt(&r[0]), angka_opt(&r[1])) {
+        (Some(a), Some(b)) => (a, b),
+        _ => return Ok(()),
+    };
+    let radius = value_i64(&r[2]).unwrap_or(100).max(1) as f64;
+    let (plat, plng) = match (lat, lng) {
+        (Some(a), Some(b)) => (a, b),
+        _ => return Err("Lokasi clock wajib diisi karena karyawan terikat lokasi kerja.".to_string()),
+    };
+    let d = jarak_meter(olat, olng, plat, plng);
+    if d > radius {
+        return Err(format!(
+            "Di luar jangkauan lokasi kerja ({:.0} m dari batas {} m).",
+            d, radius as i64
+        ));
+    }
+    Ok(())
+}
+
 async fn read_attendance_sea(db: &sea_orm::DatabaseConnection, id: i64) -> Result<Attendance, String> {
     let row = q_one(db, "SELECT id, employee_id, date, clock_in, clock_out, status, late_minutes, early_minutes, work_minutes, notes, shift_id FROM attendances WHERE id = ?1".to_string(), vec![Value::Int(id)], 11, "attendance.read").await.map_err(|e| format!("gagal memuat absensi: {e}"))?.ok_or_else(|| "Absensi tidak ditemukan.".to_string())?;
     Ok(Attendance {
@@ -735,6 +786,7 @@ pub async fn clock_in_sea(
     if is_holiday_sea(db, &today).await? {
         return Err("Hari ini libur.".to_string());
     }
+    cek_geofence(db, employee_id, lat, lng).await?;
     let now = Local::now().naive_local();
     let shift = resolve_shift_sea(db, employee_id, &today).await?;
     let (status, late) = match &shift {
@@ -777,6 +829,7 @@ pub async fn clock_out_sea(
     if clock_out.is_some() {
         return Err("Sudah clock out hari ini.".to_string());
     }
+    cek_geofence(db, employee_id, lat, lng).await?;
     let now = Local::now().naive_local();
     let fmt = "%Y-%m-%d %H:%M:%S";
     let cin = NaiveDateTime::parse_from_str(&clock_in, fmt)
@@ -1479,5 +1532,58 @@ mod tests {
         assert!(request_correction_sea(db, actor, emp, &input)
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn geofence_menolak_di_luar_radius() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("init");
+        let db = &state.sea;
+        let actor = one(db, "SELECT id FROM users WHERE username = 'admin'", "test.admin").await;
+        async fn ikat(db: &sea_orm::DatabaseConnection, emp: i64) {
+            exec(
+                db,
+                "UPDATE employees SET work_location_id = 1 WHERE id = ?1".to_string(),
+                vec![Value::Int(emp)],
+                "test.ikat",
+            )
+            .await
+            .expect("ikat");
+        }
+        // A terikat lokasi, clock tepat di titik kantor
+        let a = mkemp(db, "EMP-GFA", None).await;
+        ikat(db, a).await;
+        let r = clock_in_sea(db, actor, a, Some(-6.224), Some(106.809), None)
+            .await
+            .expect("in a");
+        assert_eq!(r.message, "Clock in berhasil.");
+        // B terikat lokasi, clock 2.8 km dari kantor ditolak
+        let b = mkemp(db, "EMP-GFB", None).await;
+        ikat(db, b).await;
+        let e = clock_in_sea(db, actor, b, Some(-6.2), Some(106.8), None)
+            .await
+            .expect_err("jauh");
+        assert!(e.contains("jangkauan"), "pesan: {e}");
+        // C terikat lokasi, clock tanpa koordinat ditolak
+        let c = mkemp(db, "EMP-GFC", None).await;
+        ikat(db, c).await;
+        let e = clock_in_sea(db, actor, c, None, None, None)
+            .await
+            .expect_err("wajib");
+        assert!(e.contains("wajib"), "pesan: {e}");
+        // D tanpa lokasi, clock tanpa koordinat lolos
+        let d = mkemp(db, "EMP-GFD", None).await;
+        clock_in_sea(db, actor, d, None, None, None)
+            .await
+            .expect("in d");
+        // clock out A dari jauh ditolak, lalu dari titik kantor lolos
+        let e = clock_out_sea(db, actor, a, Some(-6.2), Some(106.8), None)
+            .await
+            .expect_err("out jauh");
+        assert!(e.contains("jangkauan"), "pesan: {e}");
+        let r = clock_out_sea(db, actor, a, Some(-6.224), Some(106.809), None)
+            .await
+            .expect("out a");
+        assert_eq!(r.message, "Clock out berhasil.");
     }
 }
