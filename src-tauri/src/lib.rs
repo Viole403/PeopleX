@@ -743,6 +743,15 @@ async fn employee_detail(
 
 #[tauri::command]
 #[specta::specta]
+async fn employee_attrition(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::employees::AttritionScore>, String> {
+    require(&state, &["employee.view", "report.view", "system.manage"]).await?;
+    services::employees::attrition_scores_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn employee_dropdowns(
     state: tauri::State<'_, AppState>,
 ) -> Result<services::employees::Dropdowns, String> {
@@ -3016,6 +3025,19 @@ async fn privacy_data_erase(
 
 #[tauri::command]
 #[specta::specta]
+async fn employee_transfer_entity(
+    state: tauri::State<'_, AppState>,
+    employee_id: i32,
+    to_company_id: i32,
+    effective_date: String,
+    notes: Option<String>,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["employee.update", "system.manage"]).await?;
+    services::employees::transfer_entity_sea(&state.sea, uid, employee_id as i64, to_company_id as i64, &effective_date, notes.as_deref()).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn trip_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::travel::Trip>, String> {
     let (uid, _) = current_actor(&state).await?;
     services::travel::my_trips_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
@@ -4171,6 +4193,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         remove_workflow_step,
         employee_list,
         employee_detail,
+        employee_attrition,
         employee_dropdowns,
         employee_create,
         employee_update,
@@ -4321,6 +4344,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         organization_compliance_status,
         privacy_data_export,
         privacy_data_erase,
+        employee_transfer_entity,
         leave_carryover_run,
         approval_delegate,
         approval_delegations,
@@ -4529,7 +4553,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &124);
+                assert_eq!(t, &125);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),

@@ -2631,6 +2631,191 @@ pub async fn privacy_erase_sea(
     Ok(())
 }
 
+pub async fn transfer_entity_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    employee_id: i64,
+    to_company_id: i64,
+    effective_date: &str,
+    notes: Option<&str>,
+) -> Result<(), String> {
+    chrono::NaiveDate::parse_from_str(effective_date.trim(), "%Y-%m-%d")
+        .map_err(|_| "Tanggal efektif tidak valid.".to_string())?;
+    let cur = q_one(
+        db,
+        "SELECT company_id FROM employees WHERE id = ?1 AND deleted_at IS NULL".to_string(),
+        vec![Value::Int(employee_id)],
+        1,
+        "transfer.cur",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca karyawan: {e}"))?;
+    let Some(cur) = cur else {
+        return Err("Karyawan tidak ditemukan.".to_string());
+    };
+    let from_company = value_i64(&cur[0]).unwrap_or(0);
+    if from_company == to_company_id {
+        return Err("Perusahaan tujuan sama dengan asal.".to_string());
+    }
+    exists_active_sea(db, "companies", to_company_id, "Perusahaan tujuan").await?;
+    let n = exec(
+        db,
+        "UPDATE employees SET company_id = ?1, branch_id = NULL, department_id = NULL, division_id = NULL, section_id = NULL, updated_at = ?2 WHERE id = ?3".to_string(),
+        vec![Value::Int(to_company_id), Value::Text(Local::now().format("%Y-%m-%d %H:%M:%S").to_string()), Value::Int(employee_id)],
+        "transfer.upd",
+    )
+    .await?;
+    if n == 0 {
+        return Err("Karyawan tidak ditemukan.".to_string());
+    }
+    let vals = BTreeMap::from([
+        ("type".to_string(), "transfer".to_string()),
+        ("effective_date".to_string(), effective_date.trim().to_string()),
+        ("notes".to_string(), format!("Antar-entitas {} -> {}. {}", from_company, to_company_id, notes.unwrap_or("").trim())),
+    ]);
+    child_save_sea(db, actor_id, "career-histories", employee_id, None, &vals).await?;
+    audit::log_sea(db, Some(actor_id), "UPDATE", "employee.transfer", Some(&employee_id.to_string()), None, None, None).await?;
+    Ok(())
+}
+
+// ---------------- Skor risiko attrition (heuristik transparan) ----------------
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct AttritionScore {
+    pub employee_id: i32,
+    pub employee_name: String,
+    pub department_name: Option<String>,
+    pub score: f64,
+    pub level: String,
+    pub signals: Vec<String>,
+}
+
+fn attr_num(v: &Value) -> f64 {
+    match v {
+        Value::Float(f) => *f,
+        Value::Int(i) => *i as f64,
+        Value::Text(s) => s.parse().unwrap_or(0.0),
+        Value::Null => 0.0,
+    }
+}
+
+pub async fn attrition_scores_sea(
+    db: &sea_orm::DatabaseConnection,
+) -> Result<Vec<AttritionScore>, String> {
+    let today = Local::now().date_naive();
+    let rows = q_all(
+        db,
+        "SELECT e.id, TRIM(e.first_name || ' ' || COALESCE(e.last_name, '')), d.name, e.join_date FROM employees e LEFT JOIN departments d ON d.id = e.department_id WHERE e.deleted_at IS NULL AND e.employment_status IN ('active','probation') ORDER BY e.id".to_string(),
+        vec![],
+        4,
+        "attr.emp",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca karyawan: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        let eid = value_i64(&r[0]).unwrap_or(0);
+        let mut score: f64 = 0.0;
+        let mut signals: Vec<String> = Vec::new();
+        if let Ok(masuk) = chrono::NaiveDate::parse_from_str(&value_to_string(&r[3]), "%Y-%m-%d") {
+            let tahun = (today - masuk).num_days() as f64 / 365.0;
+            if tahun < 1.0 {
+                score += 25.0;
+                signals.push("Masa kerja di bawah 1 tahun".to_string());
+            } else if tahun < 2.0 {
+                score += 10.0;
+                signals.push("Masa kerja di bawah 2 tahun".to_string());
+            }
+        }
+        let cuti = q_one(
+            db,
+            "SELECT COALESCE(SUM(total_days), 0) FROM leave_requests WHERE employee_id = ?1 AND status = 'approved' AND start_date >= date('now','localtime','-90 days')".to_string(),
+            vec![Value::Int(eid)],
+            1,
+            "attr.cuti",
+        )
+        .await
+        .map_err(|e| format!("gagal membaca cuti: {e}"))?;
+        if cuti.as_ref().map(|c| attr_num(&c[0])).unwrap_or(0.0) >= 5.0 {
+            score += 15.0;
+            signals.push("Cuti 5+ hari dalam 90 hari".to_string());
+        }
+        let telat = q_one(
+            db,
+            "SELECT COUNT(*) FROM attendances WHERE employee_id = ?1 AND status = 'late' AND date >= date('now','localtime','-60 days')".to_string(),
+            vec![Value::Int(eid)],
+            1,
+            "attr.telat",
+        )
+        .await
+        .map_err(|e| format!("gagal membaca keterlambatan: {e}"))?;
+        if telat.as_ref().map(|c| attr_num(&c[0])).unwrap_or(0.0) >= 4.0 {
+            score += 15.0;
+            signals.push("Terlambat 4+ kali dalam 60 hari".to_string());
+        }
+        let skor = q_one(
+            db,
+            "SELECT final_score FROM performance_reviews WHERE employee_id = ?1 ORDER BY id DESC LIMIT 1".to_string(),
+            vec![Value::Int(eid)],
+            1,
+            "attr.perf",
+        )
+        .await
+        .map_err(|e| format!("gagal membaca kinerja: {e}"))?;
+        if let Some(s) = skor {
+            let v = attr_num(&s[0]);
+            if v > 0.0 && v < 60.0 {
+                score += 20.0;
+                signals.push("Skor kinerja terakhir di bawah 60".to_string());
+            }
+        }
+        let gaji = q_one(
+            db,
+            "SELECT COUNT(*) FROM employee_salaries WHERE employee_id = ?1 AND is_active = 1 AND effective_date <= date('now','localtime','-365 days')".to_string(),
+            vec![Value::Int(eid)],
+            1,
+            "attr.gaji",
+        )
+        .await
+        .map_err(|e| format!("gagal membaca gaji: {e}"))?;
+        if gaji.as_ref().map(|c| attr_num(&c[0])).unwrap_or(0.0) >= 1.0 {
+            score += 10.0;
+            signals.push("Gaji tidak berubah 1+ tahun".to_string());
+        }
+        let kontrak = q_one(
+            db,
+            "SELECT end_date FROM employee_contracts WHERE employee_id = ?1 AND status = 'active' AND deleted_at IS NULL AND end_date IS NOT NULL ORDER BY end_date LIMIT 1".to_string(),
+            vec![Value::Int(eid)],
+            1,
+            "attr.kontrak",
+        )
+        .await
+        .map_err(|e| format!("gagal membaca kontrak: {e}"))?;
+        if let Some(k) = kontrak {
+            if let Ok(tgl) = chrono::NaiveDate::parse_from_str(&value_to_string(&k[0]), "%Y-%m-%d") {
+                if (tgl - today).num_days() <= 90 {
+                    score += 15.0;
+                    signals.push("Kontrak berakhir dalam 90 hari".to_string());
+                }
+            }
+        }
+        let score = score.min(100.0);
+        out.push(AttritionScore {
+            employee_id: to_dto_int(eid, "attr.id")?,
+            employee_name: value_to_string(&r[1]),
+            department_name: match &r[2] {
+                Value::Null => None,
+                v => Some(value_to_string(v)),
+            },
+            score,
+            level: if score >= 60.0 { "tinggi".to_string() } else if score >= 30.0 { "sedang".to_string() } else { "rendah".to_string() },
+            signals,
+        });
+    }
+    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2645,6 +2830,53 @@ mod tests {
 
     async fn admin_id(db: &sea_orm::DatabaseConnection) -> i64 {
         one(db, "SELECT id FROM users WHERE username = 'admin'", "test.admin").await
+    }
+
+    #[tokio::test]
+    async fn attrition_skor_terurut_dan_berlevel() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files = tempfile::tempdir().expect("files");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = admin_id(db).await;
+        let mut input = base_input(hq(db).await);
+        input.first_name = "Rentan".to_string();
+        input.join_date = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+        let emp = create_sea(db, files.path(), actor, &input, None).await.expect("buat") as i64;
+        let skor = attrition_scores_sea(db).await.expect("skor");
+        assert!(!skor.is_empty());
+        let baris = skor.iter().find(|s| s.employee_id as i64 == emp).expect("baris baru");
+        assert!(baris.score >= 25.0);
+        assert!(["rendah", "sedang", "tinggi"].contains(&baris.level.as_str()));
+        for w in skor.windows(2) {
+            assert!(w[0].score >= w[1].score);
+        }
+    }
+
+    #[tokio::test]
+    async fn transfer_antar_entitas_mencatat_riwayat() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files = tempfile::tempdir().expect("files");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let (actor, emp) = mkemp(db, files.path()).await;
+        exec(
+            db,
+            "INSERT INTO companies (code, name) VALUES ('CAB2', 'Cabang Dua')".to_string(),
+            vec![],
+            "t.comp",
+        )
+        .await
+        .expect("company");
+        let cabang = one(db, "SELECT id FROM companies WHERE code = 'CAB2'", "t.cid").await;
+        assert!(transfer_entity_sea(db, actor, emp, 1, "2026-05-01", None).await.is_err());
+        transfer_entity_sea(db, actor, emp, cabang, "2026-05-01", Some("Ekspansi")).await.expect("transfer");
+        let comp = one(db, &format!("SELECT company_id FROM employees WHERE id = {emp}"), "t.comp").await;
+        assert_eq!(comp, cabang);
+        let riw = child_list_sea(db, "career-histories", emp).await.expect("riwayat");
+        assert!(riw.iter().any(|r| r.get("type").map(|s| s.as_str()) == Some("transfer")));
+        assert!(transfer_entity_sea(db, actor, emp, cabang, "2026-06-01", None).await.is_err());
+        assert!(transfer_entity_sea(db, actor, emp, cabang, "bukan-tanggal", None).await.is_err());
     }
 
     async fn hq(db: &sea_orm::DatabaseConnection) -> i64 {
