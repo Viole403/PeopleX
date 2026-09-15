@@ -859,11 +859,11 @@ async fn periksa_liveness(
 ) -> Result<String, String> {
     let code = nonce.ok_or_else(|| "Verifikasi wajah wajib dilakukan sebelum clock in.".to_string())?;
     let row = q_one(db, "SELECT employee_id, issued_at, used FROM liveness_challenges WHERE nonce = ?1".to_string(), vec![Value::Text(code.to_string())], 3, "attendance.challenge.read").await.map_err(|e| format!("gagal memeriksa verifikasi: {e}"))?.ok_or_else(|| "Kode verifikasi tidak valid.".to_string())?;
-    if sea_int(&row, 0) != employee_id {
-        return Err("Kode verifikasi tidak valid.".to_string());
-    }
     if sea_int(&row, 2) != 0 {
         return Err("Kode verifikasi sudah dipakai, minta yang baru.".to_string());
+    }
+    if sea_int(&row, 0) != employee_id {
+        return Err("Kode verifikasi tidak valid.".to_string());
     }
     let issued = NaiveDateTime::parse_from_str(&sea_text(&row, 1), "%Y-%m-%d %H:%M:%S")
         .map_err(|_| "Data verifikasi rusak.".to_string())?;
