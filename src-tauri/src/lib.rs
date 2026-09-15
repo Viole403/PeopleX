@@ -2808,6 +2808,38 @@ async fn salary_benchmark_compare(
 
 #[tauri::command]
 #[specta::specta]
+async fn organization_compliance_save(
+    state: tauri::State<'_, AppState>,
+    id: Option<i32>,
+    work_location_id: Option<i32>,
+    item: String,
+    status: String,
+    notes: Option<String>,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["organization.create", "system.manage"]).await?;
+    services::organization::compliance_save_sea(
+        &state.sea,
+        uid,
+        id.map(|v| v as i64),
+        work_location_id.map(|v| v as i64),
+        &item,
+        &status,
+        notes.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn organization_compliance_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::organization::RegionComplianceRow>, String> {
+    require(&state, &["organization.view", "system.manage"]).await?;
+    services::organization::compliance_status_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn trip_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::travel::Trip>, String> {
     let (uid, _) = current_actor(&state).await?;
     services::travel::my_trips_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
@@ -4043,6 +4075,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         compensation_review_list,
         salary_benchmark_save,
         salary_benchmark_compare,
+        organization_compliance_save,
+        organization_compliance_status,
         leave_carryover_run,
         approval_delegate,
         approval_delegations,
@@ -4237,7 +4271,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &116);
+                assert_eq!(t, &117);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),

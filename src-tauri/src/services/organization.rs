@@ -778,6 +778,145 @@ pub async fn org_chart(db: &sea_orm::DatabaseConnection) -> Result<Vec<CompanyNo
     Ok(out)
 }
 
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct RegionComplianceRow {
+    pub work_location_id: Option<i32>,
+    pub location_name: String,
+    pub total: i32,
+    pub ok_count: i32,
+    pub violation_count: i32,
+    pub verdict: String,
+}
+
+pub async fn compliance_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: Option<i64>,
+    work_location_id: Option<i64>,
+    item: &str,
+    status: &str,
+    notes: Option<&str>,
+) -> Result<i32, String> {
+    if item.trim().is_empty() {
+        return Err("Item wajib diisi.".to_string());
+    }
+    if !["pending", "ok", "violation"].contains(&status) {
+        return Err("Status kepatuhan tidak valid.".to_string());
+    }
+    if let Some(w) = work_location_id {
+        let ada = q_one(
+            db,
+            "SELECT id FROM work_locations WHERE id = ?1 AND deleted_at IS NULL".to_string(),
+            vec![Value::Int(w)],
+            1,
+            "cmp.loc",
+        )
+        .await?;
+        if ada.is_none() {
+            return Err("Wilayah kerja tidak ditemukan.".to_string());
+        }
+    }
+    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let loc = match work_location_id {
+        Some(v) => Value::Int(v),
+        None => Value::Null,
+    };
+    let cat = match notes {
+        Some(v) => Value::Text(v.to_string()),
+        None => Value::Null,
+    };
+    let new_id = match id {
+        Some(x) => {
+            let n = exec(
+                db,
+                "UPDATE compliance_checks SET work_location_id = ?1, item = ?2, status = ?3, notes = ?4, checked_at = ?5, updated_at = ?6 WHERE id = ?7".to_string(),
+                vec![
+                    loc,
+                    Value::Text(item.trim().to_string()),
+                    Value::Text(status.to_string()),
+                    cat,
+                    Value::Text(now),
+                    Value::Int(x),
+                ],
+                "cmp.upd",
+            )
+            .await?;
+            if n == 0 {
+                return Err("Pemeriksaan tidak ditemukan.".to_string());
+            }
+            x
+        }
+        None => {
+            exec_insert(
+                db,
+                "INSERT INTO compliance_checks (work_location_id, item, status, notes, checked_at, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)".to_string(),
+                vec![
+                    loc,
+                    Value::Text(item.trim().to_string()),
+                    Value::Text(status.to_string()),
+                    cat,
+                    Value::Text(now.clone()),
+                    Value::Text(now.clone()),
+                    Value::Text(now),
+                ],
+                "cmp.ins",
+            )
+            .await?
+        }
+    };
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        if id.is_some() { "UPDATE" } else { "CREATE" },
+        "organization.compliance",
+        Some(&new_id.to_string()),
+        None,
+        None,
+        Some("Pemeriksaan kepatuhan disimpan."),
+    )
+    .await?;
+    to_dto_int(new_id, "cmp.id")
+}
+
+pub async fn compliance_status_sea(
+    db: &sea_orm::DatabaseConnection,
+) -> Result<Vec<RegionComplianceRow>, String> {
+    let rows = q_all(
+        db,
+        "SELECT w.id, w.name, COUNT(c.id), SUM(CASE WHEN c.status = 'ok' THEN 1 ELSE 0 END), SUM(CASE WHEN c.status = 'violation' THEN 1 ELSE 0 END), SUM(CASE WHEN c.status = 'pending' THEN 1 ELSE 0 END) FROM work_locations w LEFT JOIN compliance_checks c ON c.work_location_id = w.id WHERE w.deleted_at IS NULL GROUP BY w.id ORDER BY w.id".to_string(),
+        vec![],
+        6,
+        "cmp.status",
+    )
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let tot = value_i64(&r[2]).unwrap_or(0);
+        let vok = value_i64(&r[3]).unwrap_or(0);
+        let vio = value_i64(&r[4]).unwrap_or(0);
+        let pen = value_i64(&r[5]).unwrap_or(0);
+        out.push(RegionComplianceRow {
+            work_location_id: match &r[0] {
+                Value::Null => None,
+                v => Some(to_dto_int(value_i64(v).unwrap_or(0), "cmp.loc")?),
+            },
+            location_name: value_to_string(&r[1]),
+            total: to_dto_int(tot, "cmp.total")?,
+            ok_count: to_dto_int(vok, "cmp.ok")?,
+            violation_count: to_dto_int(vio, "cmp.vio")?,
+            verdict: if vio > 0 {
+                "bertindak".to_string()
+            } else if pen > 0 {
+                "berjalan".to_string()
+            } else {
+                "patuh".to_string()
+            },
+        });
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -872,4 +1011,70 @@ mod tests {
         assert_eq!(chart[0].branches[0].departments.len(), 3);
         assert!(chart[0].employee_count >= 1);
     }
+
+    #[tokio::test]
+    async fn kepatuhan_teragregasi_per_wilayah() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let adm = q_one(
+            db,
+            "SELECT id FROM users WHERE username = 'admin'".to_string(),
+            vec![],
+            1,
+            "t.admin",
+        )
+        .await
+        .expect("admin")
+        .expect("baris");
+        let admin = value_i64(&adm[0]).expect("uid");
+        let wjak = exec_insert(
+            db,
+            "INSERT INTO work_locations (name, address) VALUES ('Jakarta', 'Jalan Satu')".to_string(),
+            vec![],
+            "t.wj",
+        )
+        .await
+        .expect("jakarta");
+        let wbdg = exec_insert(
+            db,
+            "INSERT INTO work_locations (name, address) VALUES ('Bandung', 'Jalan Dua')".to_string(),
+            vec![],
+            "t.wb",
+        )
+        .await
+        .expect("bandung");
+        compliance_save_sea(db, admin, None, Some(wjak), "Upah minimum", "ok", None)
+            .await
+            .expect("ok");
+        compliance_save_sea(db, admin, None, Some(wjak), "BPJS", "violation", Some("tunggak"))
+            .await
+            .expect("vio");
+        compliance_save_sea(db, admin, None, Some(wbdg), "Upah minimum", "pending", None)
+            .await
+            .expect("pen");
+        let salah = compliance_save_sea(db, admin, None, Some(wjak), "X", "aneh", None)
+            .await
+            .expect_err("status");
+        assert!(salah.contains("Status kepatuhan tidak valid."));
+        let ghost = compliance_save_sea(db, admin, None, Some(999999), "X", "ok", None)
+            .await
+            .expect_err("lokasi");
+        assert!(ghost.contains("Wilayah kerja tidak ditemukan."));
+        let rows = compliance_status_sea(db).await.expect("status");
+        let j = rows
+            .iter()
+            .find(|r| r.work_location_id == Some(wjak as i32))
+            .expect("jkt");
+        assert_eq!(j.total, 2);
+        assert_eq!(j.ok_count, 1);
+        assert_eq!(j.violation_count, 1);
+        assert_eq!(j.verdict, "bertindak");
+        let b = rows
+            .iter()
+            .find(|r| r.work_location_id == Some(wbdg as i32))
+            .expect("bdg");
+        assert_eq!(b.verdict, "berjalan");
+    }
 }
+
