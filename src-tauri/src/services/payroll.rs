@@ -490,7 +490,22 @@ async fn generate_one_tx(
             loan_id: None,
         });
     }
-    let bpjs_h = (capped_base_tx(tx, basic, "bpjs_health_max_wage").await? * health_pct).round();
+    let dep_cnt = tx_q_one(
+        tx,
+        "SELECT COUNT(*) FROM bpjs_dependents WHERE employee_id = ?1".to_string(),
+        vec![Value::Int(employee_id)],
+        1,
+        "payroll.dep",
+    )
+    .await?
+    .map(|r| value_i64(&r[0]).unwrap_or(0))
+    .unwrap_or(0);
+    let fam = if dep_cnt > 0 {
+        (1 + dep_cnt.min(4)) as f64
+    } else {
+        1.0
+    };
+    let bpjs_h = (capped_base_tx(tx, basic, "bpjs_health_max_wage").await? * health_pct * fam).round();
     let bpjs_e = (capped_base_tx(tx, basic, "bpjs_jht_max_wage").await? * emp_pct).round();
     let bpjs_jp = (capped_base_tx(tx, basic, "bpjs_jp_max_wage").await? * jp_pct).round();
     if bpjs_h > 0.0 {
@@ -2011,6 +2026,178 @@ pub struct JournalRow {
     pub source: Option<String>,
 }
 
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct Dependent {
+    pub id: i32,
+    pub employee_id: i32,
+    pub name: String,
+    pub relation: String,
+    pub birth_date: Option<String>,
+}
+
+const DEPENDENT_RELATIONS: [&str; 7] =
+    ["suami", "istri", "anak", "orang tua", "mertua", "kakak", "adik"];
+
+pub async fn bpjs_dependent_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: Option<i64>,
+    employee_id: i64,
+    name: &str,
+    relation: &str,
+    birth_date: Option<&str>,
+) -> Result<i32, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Nama tanggungan wajib diisi.".to_string());
+    }
+    if !DEPENDENT_RELATIONS.contains(&relation) {
+        return Err("Hubungan tidak valid.".to_string());
+    }
+    let emp = q_one(
+        db,
+        "SELECT id FROM employees WHERE id = ?1 AND deleted_at IS NULL".to_string(),
+        vec![Value::Int(employee_id)],
+        1,
+        "dep.emp",
+    )
+    .await?;
+    if emp.is_none() {
+        return Err("Karyawan tidak ditemukan.".to_string());
+    }
+    let waktu = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let bd = match birth_date {
+        Some(v) => Value::Text(v.to_string()),
+        None => Value::Null,
+    };
+    let new_id = match id {
+        Some(existing) => {
+            let found = q_one(
+                db,
+                "SELECT id FROM bpjs_dependents WHERE id = ?1".to_string(),
+                vec![Value::Int(existing)],
+                1,
+                "dep.get",
+            )
+            .await?;
+            if found.is_none() {
+                return Err("Tanggungan tidak ditemukan.".to_string());
+            }
+            exec(
+                db,
+                "UPDATE bpjs_dependents SET name = ?1, relation = ?2, birth_date = ?3, updated_at = ?4 WHERE id = ?5".to_string(),
+                vec![
+                    Value::Text(name.to_string()),
+                    Value::Text(relation.to_string()),
+                    bd,
+                    Value::Text(waktu),
+                    Value::Int(existing),
+                ],
+                "dep.update",
+            )
+            .await?;
+            existing
+        }
+        None => {
+            let dup = q_one(
+                db,
+                "SELECT id FROM bpjs_dependents WHERE employee_id = ?1 AND name = ?2".to_string(),
+                vec![Value::Int(employee_id), Value::Text(name.to_string())],
+                1,
+                "dep.dup",
+            )
+            .await?;
+            if dup.is_some() {
+                return Err("Tanggungan sudah terdaftar.".to_string());
+            }
+            exec_insert(
+                db,
+                "INSERT INTO bpjs_dependents (employee_id, name, relation, birth_date, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)".to_string(),
+                vec![
+                    Value::Int(employee_id),
+                    Value::Text(name.to_string()),
+                    Value::Text(relation.to_string()),
+                    bd,
+                    Value::Text(waktu.clone()),
+                    Value::Text(waktu),
+                ],
+                "dep.insert",
+            )
+            .await?
+        }
+    };
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        if id.is_some() { "UPDATE" } else { "CREATE" },
+        "payroll.dependent",
+        Some(&new_id.to_string()),
+        None,
+        None,
+        Some("Tanggungan BPJS disimpan."),
+    )
+    .await?;
+    to_dto_int(new_id, "dep.id")
+}
+
+pub async fn bpjs_dependent_list_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+) -> Result<Vec<Dependent>, String> {
+    let rows = q_all(
+        db,
+        "SELECT id, employee_id, name, relation, birth_date FROM bpjs_dependents WHERE employee_id = ?1 ORDER BY id".to_string(),
+        vec![Value::Int(employee_id)],
+        5,
+        "dep.list",
+    )
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        out.push(Dependent {
+            id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "dep.list.id")?,
+            employee_id: to_dto_int(value_i64(&r[1]).unwrap_or(0), "dep.list.emp")?,
+            name: value_to_string(&r[2]),
+            relation: value_to_string(&r[3]),
+            birth_date: match &r[4] {
+                Value::Null => None,
+                v => Some(value_to_string(v)),
+            },
+        });
+    }
+    Ok(out)
+}
+
+pub async fn bpjs_dependent_delete_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: i64,
+) -> Result<(), String> {
+    let n = exec(
+        db,
+        "DELETE FROM bpjs_dependents WHERE id = ?1".to_string(),
+        vec![Value::Int(id)],
+        "dep.delete",
+    )
+    .await?;
+    if n == 0 {
+        return Err("Tanggungan tidak ditemukan.".to_string());
+    }
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "DELETE",
+        "payroll.dependent",
+        Some(&id.to_string()),
+        None,
+        None,
+        Some("Tanggungan BPJS dihapus."),
+    )
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 
 mod tests {
@@ -2198,6 +2385,81 @@ mod tests {
             .find(|l| l.component_name == "BPJS Jaminan Hari Tua")
             .expect("baris JHT ada");
         assert_eq!(jht.amount, 400_000.0);
+    }
+
+    #[tokio::test]
+    async fn bpjs_tanggungan_menaikkan_iuran_kesehatan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = admin(db).await;
+        let a = mkemp(db, "EMP-N0", 8_000_000.0, "TK/0").await;
+        let b = mkemp(db, "EMP-N2", 8_000_000.0, "TK/0").await;
+        bpjs_dependent_save_sea(db, actor, None, b, "Budi", "anak", None)
+            .await
+            .expect("tanggungan satu");
+        bpjs_dependent_save_sea(db, actor, None, b, "Sari", "istri", None)
+            .await
+            .expect("tanggungan dua");
+        let dup = bpjs_dependent_save_sea(db, actor, None, b, "Budi", "anak", None)
+            .await
+            .expect_err("dup");
+        assert!(dup.contains("Tanggungan sudah terdaftar."));
+        let salah = bpjs_dependent_save_sea(db, actor, None, b, "Anu", "sesat", None)
+            .await
+            .expect_err("relation");
+        assert!(salah.contains("Hubungan tidak valid."));
+        let ghost = bpjs_dependent_save_sea(db, actor, None, 999999, "X", "anak", None)
+            .await
+            .expect_err("karyawan");
+        assert!(ghost.contains("Karyawan tidak ditemukan."));
+        let list = bpjs_dependent_list_sea(db, b).await.expect("list");
+        assert_eq!(list.len(), 2);
+        let pid = period_create_sea(
+            db,
+            actor,
+            actor,
+            &period_input("Tanggungan", "2026-05-01", "2026-05-31"),
+        )
+        .await
+        .expect("periode");
+        generate_sea(db, actor, pid as i64).await.expect("generate");
+        let pa = one(
+            db,
+            &format!("SELECT id FROM payrolls WHERE payroll_period_id = {pid} AND employee_id = {a}"),
+            "t.pa",
+        )
+        .await;
+        let pb = one(
+            db,
+            &format!("SELECT id FROM payrolls WHERE payroll_period_id = {pid} AND employee_id = {b}"),
+            "t.pb",
+        )
+        .await;
+        let da = payroll_detail_sea(db, pa).await.expect("da").expect("ada");
+        let db2 = payroll_detail_sea(db, pb).await.expect("db").expect("ada");
+        let ha = da
+            .lines
+            .iter()
+            .find(|l| l.component_name == "BPJS Kesehatan")
+            .expect("kesa")
+            .amount;
+        let hb = db2
+            .lines
+            .iter()
+            .find(|l| l.component_name == "BPJS Kesehatan")
+            .expect("kesb")
+            .amount;
+        assert!((ha - 80_000.0).abs() < 1e-6);
+        assert!((hb - 240_000.0).abs() < 1e-6);
+        bpjs_dependent_delete_sea(db, actor, list[0].id as i64)
+            .await
+            .expect("hapus");
+        let gone = bpjs_dependent_delete_sea(db, actor, list[0].id as i64)
+            .await
+            .expect_err("hapus lagi");
+        assert!(gone.contains("Tanggungan tidak ditemukan."));
+        assert_eq!(bpjs_dependent_list_sea(db, b).await.expect("list2").len(), 1);
     }
 
     #[tokio::test]

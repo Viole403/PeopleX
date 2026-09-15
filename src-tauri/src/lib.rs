@@ -2724,6 +2724,49 @@ async fn security_login_activity_list(
 
 #[tauri::command]
 #[specta::specta]
+async fn payroll_bpjs_dependent_save(
+    state: tauri::State<'_, AppState>,
+    id: Option<i32>,
+    employee_id: i32,
+    name: String,
+    relation: String,
+    birth_date: Option<String>,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["payroll.generate", "system.manage"]).await?;
+    services::payroll::bpjs_dependent_save_sea(
+        &state.sea,
+        uid,
+        id.map(|v| v as i64),
+        employee_id as i64,
+        &name,
+        &relation,
+        birth_date.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn payroll_bpjs_dependent_list(
+    state: tauri::State<'_, AppState>,
+    employee_id: i32,
+) -> Result<Vec<services::payroll::Dependent>, String> {
+    require(&state, &["payroll.view", "system.manage"]).await?;
+    services::payroll::bpjs_dependent_list_sea(&state.sea, employee_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn payroll_bpjs_dependent_delete(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["payroll.generate", "system.manage"]).await?;
+    services::payroll::bpjs_dependent_delete_sea(&state.sea, uid, id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn trip_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::travel::Trip>, String> {
     let (uid, _) = current_actor(&state).await?;
     services::travel::my_trips_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
@@ -3952,6 +3995,9 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         security_login_activity_list,
         security_settings_set,
         security_status_get,
+        payroll_bpjs_dependent_save,
+        payroll_bpjs_dependent_list,
+        payroll_bpjs_dependent_delete,
         leave_carryover_run,
         approval_delegate,
         approval_delegations,
@@ -4146,7 +4192,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &114);
+                assert_eq!(t, &115);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),
