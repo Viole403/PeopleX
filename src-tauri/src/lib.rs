@@ -1043,9 +1043,36 @@ async fn holiday_save(
 
 #[tauri::command]
 #[specta::specta]
+async fn employee_expiry_alerts(
+    state: tauri::State<'_, AppState>,
+    days: Option<i32>,
+) -> Result<Vec<services::employees::ExpiryAlert>, String> {
+    require(&state, &["employee.view", "system.manage"]).await?;
+    services::employees::expiry_alerts_sea(&state.sea, days.unwrap_or(30)).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn employee_expiry_notify(
+    state: tauri::State<'_, AppState>,
+    days: Option<i32>,
+) -> Result<i32, String> {
+    require(&state, &["employee.update", "system.manage"]).await?;
+    services::employees::expiry_notify_sea(&state.sea, days.unwrap_or(30)).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn holiday_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
     services::attendance::holiday_delete_sea(&state.sea, uid, id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn holiday_autofill(state: tauri::State<'_, AppState>, year: i32) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["attendance.update", "system.manage"]).await?;
+    services::attendance::holidays_autofill_sea(&state.sea, uid, year).await
 }
 
 #[tauri::command]
@@ -3080,6 +3107,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         employee_addresses,
         employee_address_save,
         employee_documents,
+        employee_expiry_alerts,
+        employee_expiry_notify,
         employee_document_upload,
         employee_document_bytes,
         employee_document_delete,
@@ -3101,6 +3130,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         holiday_list,
         holiday_save,
         holiday_delete,
+        holiday_autofill,
         attendance_today,
         attendance_clock_in,
         attendance_liveness_challenge,

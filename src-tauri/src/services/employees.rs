@@ -2199,6 +2199,97 @@ fn salary_opt_f64(v: &Value) -> Option<f64> {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct ExpiryAlert {
+    pub employee_id: i32,
+    pub employee_name: String,
+    pub document_id: i32,
+    pub name: String,
+    pub category: String,
+    pub expiry_date: String,
+    pub days_left: i32,
+}
+
+pub async fn expiry_alerts_sea(db: &sea_orm::DatabaseConnection, days: i32) -> Result<Vec<ExpiryAlert>, String> {
+    if days < 1 || days > 365 {
+        return Err("Rentang peringatan harus 1 sampai 365 hari.".to_string());
+    }
+    let today = chrono::Local::now().date_naive();
+    let mulai = today.format("%Y-%m-%d").to_string();
+    let batas = (today + chrono::Duration::days(days as i64))
+        .format("%Y-%m-%d")
+        .to_string();
+    let rows = q_all(
+        db,
+        "SELECT d.id, d.name, d.category, d.expiry_date, e.id, e.first_name || ' ' || COALESCE(e.last_name, '') FROM employee_documents d INNER JOIN employees e ON e.id = d.employee_id WHERE d.deleted_at IS NULL AND d.expiry_date IS NOT NULL AND d.expiry_date >= ?1 AND d.expiry_date <= ?2 ORDER BY d.expiry_date".to_string(),
+        vec![Value::Text(mulai.clone()), Value::Text(batas)],
+        6,
+        "pengingat kedaluwarsa",
+    )
+    .await?;
+    let mut out = Vec::new();
+    for r in rows {
+        let exp = value_to_string(&r[3]);
+        let tgl = chrono::NaiveDate::parse_from_str(&exp, "%Y-%m-%d")
+            .map_err(|_| "Tanggal kedaluwarsa tidak valid.".to_string())?;
+        out.push(ExpiryAlert {
+            document_id: to_dto_int(value_i64(&r[0]).unwrap_or_default(), "id dokumen")?,
+            name: value_to_string(&r[1]),
+            category: value_to_string(&r[2]),
+            expiry_date: exp,
+            days_left: (tgl - today).num_days() as i32,
+            employee_id: to_dto_int(value_i64(&r[4]).unwrap_or_default(), "id karyawan")?,
+            employee_name: value_to_string(&r[5]),
+        });
+    }
+    Ok(out)
+}
+
+pub async fn expiry_notify_sea(db: &sea_orm::DatabaseConnection, days: i32) -> Result<i32, String> {
+    let alerts = expiry_alerts_sea(db, days).await?;
+    let mut sent = 0i64;
+    for a in &alerts {
+        let uid = q_one(
+            db,
+            "SELECT id FROM users WHERE employee_id = ?1 AND deleted_at IS NULL LIMIT 1".to_string(),
+            vec![Value::Int(a.employee_id as i64)],
+            1,
+            "akun karyawan",
+        )
+        .await?;
+        let Some(u) = uid else { continue };
+        let uid = value_i64(&u[0]).unwrap_or_default();
+        let pola = format!("%ID {}%", a.document_id);
+        let ada = q_one(
+            db,
+            "SELECT COUNT(*) AS n FROM notifications WHERE user_id = ?1 AND type = 'expiry' AND message LIKE ?2".to_string(),
+            vec![Value::Int(uid), Value::Text(pola)],
+            1,
+            "cek pengingat",
+        )
+        .await?;
+        if ada.map(|r| value_i64(&r[0]).unwrap_or_default() > 0).unwrap_or(false) {
+            continue;
+        }
+        exec(
+            db,
+            "INSERT INTO notifications (user_id, type, title, message, link) VALUES (?1, 'expiry', ?2, ?3, '/employees')".to_string(),
+            vec![
+                Value::Int(uid),
+                Value::Text("Dokumen Segera Kedaluwarsa".to_string()),
+                Value::Text(format!(
+                    "{} ({}) kedaluwarsa dalam {} hari. ID {}",
+                    a.name, a.category, a.days_left, a.document_id
+                )),
+            ],
+            "pengingat kedaluwarsa",
+        )
+        .await?;
+        sent += 1;
+    }
+    to_dto_int(sent, "jumlah pengingat")
+}
+
 fn salary_row_sea(cols: &[Value]) -> Result<SalaryRow, String> {
     Ok(SalaryRow {
         id: to_dto_int(value_i64(&cols[0]).unwrap_or(0), "salary.id")?,
@@ -2982,5 +3073,61 @@ mod tests {
         assert_eq!(cur0.id, sid0);
         assert_eq!(cur0.basic_salary, 0.0);
         assert_eq!(salary_history_sea(db, emp).await.expect("hist").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn kedaluwarsa_dokumen_memicu_pengingat() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files = tempfile::tempdir().expect("files");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = admin_id(db).await;
+        let emp = q_one(
+            db,
+            "SELECT id FROM employees WHERE employee_number = 'EMP-0001'".to_string(),
+            vec![],
+            1,
+            "emp admin",
+        )
+        .await
+        .expect("cari")
+        .expect("ada");
+        let emp = value_i64(&emp[0]).expect("id");
+        let soon = (chrono::Local::now().date_naive() + chrono::Duration::days(10))
+            .format("%Y-%m-%d")
+            .to_string();
+        let later = (chrono::Local::now().date_naive() + chrono::Duration::days(100))
+            .format("%Y-%m-%d")
+            .to_string();
+        let file = FileUpload {
+            name: "pkb.pdf".to_string(),
+            mime: "application/pdf".to_string(),
+            bytes: b"%PDF-1.4 pkb".to_vec(),
+        };
+        upload_document_sea(db, files.path(), actor, emp, "certificate", "Sertifikat Kerja", Some(&soon), &file)
+            .await
+            .expect("dok1");
+        upload_document_sea(db, files.path(), actor, emp, "certificate", "Sertifikat Aman", Some(&later), &file)
+            .await
+            .expect("dok2");
+        let alerts = expiry_alerts_sea(db, 30).await.expect("alert");
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].days_left, 10);
+        assert_eq!(alerts[0].employee_id as i64, emp);
+        let e = expiry_alerts_sea(db, 0).await.expect_err("nol");
+        assert!(e.contains("Rentang peringatan"));
+        assert_eq!(expiry_notify_sea(db, 30).await.expect("notif"), 1);
+        assert_eq!(expiry_notify_sea(db, 30).await.expect("notif2"), 0);
+        let cnt = q_one(
+            db,
+            "SELECT COUNT(*) AS n FROM notifications WHERE type = 'expiry'".to_string(),
+            vec![],
+            1,
+            "hitung",
+        )
+        .await
+        .expect("hitung")
+        .expect("ada");
+        assert_eq!(value_i64(&cnt[0]), Some(1));
     }
 }

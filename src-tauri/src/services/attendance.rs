@@ -654,6 +654,37 @@ pub async fn holiday_delete_sea(
     Ok(())
 }
 
+pub async fn holidays_autofill_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    year: i32,
+) -> Result<i32, String> {
+    if year < 1990 || year > 2100 {
+        return Err("Tahun harus antara 1990 dan 2100.".to_string());
+    }
+    let tetap: [(&str, &str); 5] = [
+        ("01-01", "Tahun Baru Masehi"),
+        ("05-01", "Hari Buruh Internasional"),
+        ("06-01", "Hari Lahir Pancasila"),
+        ("08-17", "Hari Kemerdekaan Republik Indonesia"),
+        ("12-25", "Hari Raya Natal"),
+    ];
+    let mut added = 0i64;
+    for (mmdd, name) in tetap {
+        let date = format!("{year}-{mmdd}");
+        added += exec(
+            db,
+            "INSERT OR IGNORE INTO holidays (name, date, type, description) VALUES (?1, ?2, 'national', 'Ditambahkan otomatis')".to_string(),
+            vec![Value::Text(name.to_string()), Value::Text(date)],
+            "attendance.holiday.autofill",
+        )
+        .await
+        .map_err(|e| format!("gagal menambah libur: {e}"))?;
+    }
+    super::audit::log_sea(db, Some(actor_id), "CREATE", "schedule.holiday.autofill", Some(&year.to_string()), None, None, None).await?;
+    to_dto_int(added, "jumlah libur")
+}
+
 // ---------------- Varian SeaORM (transaksi) ----------------
 
 fn sea_opt_float(v: Option<f64>) -> Value {
@@ -2088,5 +2119,28 @@ mod tests {
         let row = my_swaps_sea(db, b).await.expect("punya rekan")[0].clone();
         assert_eq!(row.status, "approved");
         assert_eq!(row.notes.as_deref(), Some("ok"));
+    }
+
+    #[tokio::test]
+    async fn libur_nasional_otomatis_idempoten() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = one(db, "SELECT id FROM users WHERE username = 'admin'", "test.admin").await;
+        assert_eq!(holidays_autofill_sea(db, actor, 2027).await.expect("isi"), 5);
+        assert_eq!(holidays_autofill_sea(db, actor, 2027).await.expect("isi ulang"), 0);
+        let rows = q_all(
+            db,
+            "SELECT name FROM holidays WHERE date = '2027-08-17'".to_string(),
+            vec![],
+            1,
+            "cek libur",
+        )
+        .await
+        .expect("q");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(value_to_string(&rows[0][0]), "Hari Kemerdekaan Republik Indonesia");
+        let e = holidays_autofill_sea(db, actor, 1900).await.expect_err("tahun");
+        assert!(e.contains("Tahun harus"));
     }
 }
