@@ -1663,6 +1663,24 @@ async fn payroll_deduction_delete(state: tauri::State<'_, AppState>, id: i32) ->
 
 #[tauri::command]
 #[specta::specta]
+async fn payroll_bank_file(state: tauri::State<'_, AppState>, period_id: i32) -> Result<String, String> {
+    require(&state, &["payroll.view", "system.manage"]).await?;
+    services::payroll::payroll_bank_file_sea(&state.sea, period_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn payroll_whatif(
+    state: tauri::State<'_, AppState>,
+    basic: f64,
+    ptkp_status: String,
+) -> Result<services::payroll::WhatIfResult, String> {
+    require(&state, &["payroll.view", "system.manage"]).await?;
+    services::payroll::payroll_whatif_sea(&state.sea, basic, &ptkp_status).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn payroll_ewa_limit(state: tauri::State<'_, AppState>) -> Result<f64, String> {
     let (uid, _) = current_actor(&state).await?;
     let emp = my_employee_sea(&state.sea, uid).await?;
@@ -3244,6 +3262,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         payroll_deductions,
         payroll_deduction_save,
         payroll_deduction_delete,
+        payroll_bank_file,
+        payroll_whatif,
         payroll_ewa_limit,
         payroll_ewa_request,
         payroll_ewa_my,

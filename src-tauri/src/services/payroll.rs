@@ -1731,6 +1731,125 @@ pub async fn ewa_audit_trail_sea(db: &sea_orm::DatabaseConnection, id: i64) -> R
         .collect())
 }
 
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct WhatIfResult {
+    pub basic_salary: f64,
+    pub pph21: f64,
+    pub bpjs_kesehatan: f64,
+    pub bpjs_jht: f64,
+    pub bpjs_jp: f64,
+    pub net: f64,
+}
+
+async fn setting_val_sea(db: &sea_orm::DatabaseConnection, key: &str) -> Option<String> {
+    q_one(
+        db,
+        "SELECT setting_value FROM system_settings WHERE setting_key = ?1".to_string(),
+        vec![Value::Text(key.to_string())],
+        1,
+        "whatif.setting",
+    )
+    .await
+    .ok()
+    .flatten()
+    .and_then(|r| match &r[0] {
+        Value::Null => None,
+        v => Some(value_to_string(v)),
+    })
+}
+
+async fn capped_base_sea(db: &sea_orm::DatabaseConnection, basic: f64, key: &str) -> f64 {
+    let cap = setting_val_sea(db, key)
+        .await
+        .and_then(|v| v.parse::<f64>().ok());
+    match cap {
+        Some(m) if m > 0.0 => basic.min(m),
+        _ => basic,
+    }
+}
+
+pub async fn payroll_whatif_sea(
+    db: &sea_orm::DatabaseConnection,
+    basic: f64,
+    ptkp_status: &str,
+) -> Result<WhatIfResult, String> {
+    if basic < 0.0 {
+        return Err("Gaji pokok tidak boleh negatif.".to_string());
+    }
+    let pph = pph21_monthly(basic, ptkp_status);
+    let kes = (capped_base_sea(db, basic, "bpjs_health_max_wage").await
+        * setting_pct_sea(db, "bpjs_health_employee_percent", 1.0).await
+        / 100.0)
+        .round();
+    let jht = (capped_base_sea(db, basic, "bpjs_jht_max_wage").await
+        * setting_pct_sea(db, "bpjs_employment_employee_percent", 2.0).await
+        / 100.0)
+        .round();
+    let jp = (capped_base_sea(db, basic, "bpjs_jp_max_wage").await
+        * setting_pct_sea(db, "bpjs_jp_employee_percent", 1.0).await
+        / 100.0)
+        .round();
+    let net = basic - pph - kes - jht - jp;
+    Ok(WhatIfResult {
+        basic_salary: basic,
+        pph21: pph,
+        bpjs_kesehatan: kes,
+        bpjs_jht: jht,
+        bpjs_jp: jp,
+        net,
+    })
+}
+
+async fn period_status_sea(db: &sea_orm::DatabaseConnection, id: i64) -> Result<String, String> {
+    let rows = q_one(
+        db,
+        "SELECT status FROM payroll_periods WHERE id = ?1".to_string(),
+        vec![Value::Int(id)],
+        1,
+        "bankfile.period",
+    )
+    .await?;
+    let st = rows
+        .map(|r| value_to_string(&r[0]))
+        .ok_or_else(|| "Periode tidak ditemukan.".to_string())?;
+    if st != "approved" && st != "paid" && st != "locked" {
+        return Err("Periode belum disetujui.".to_string());
+    }
+    Ok(st)
+}
+
+pub async fn payroll_bank_file_sea(
+    db: &sea_orm::DatabaseConnection,
+    period_id: i64,
+) -> Result<String, String> {
+    period_status_sea(db, period_id).await?;
+    let rows = q_all(
+        db,
+        "SELECT e.employee_number, e.first_name || ' ' || COALESCE(e.last_name, ''), COALESCE(e.bank_name, ''), COALESCE(e.bank_account_number, ''), p.net_salary FROM payrolls p INNER JOIN employees e ON e.id = p.employee_id WHERE p.payroll_period_id = ?1 ORDER BY e.employee_number".to_string(),
+        vec![Value::Int(period_id)],
+        5,
+        "bankfile.rows",
+    )
+    .await?;
+    let mut out = String::from("nik;nama;bank;nomor_rekening;jumlah
+");
+    for r in rows {
+        let jumlah = angka_f64(&r[4]).unwrap_or(0.0);
+        out.push_str(&format!(
+            "{};{};{};{};{:.0}
+",
+            value_to_string(&r[0]),
+            value_to_string(&r[1]).replace(';', ","),
+            value_to_string(&r[2]),
+            value_to_string(&r[3]),
+            jumlah
+        ));
+    }
+    Ok(out)
+}
+
+
 #[cfg(test)]
 
 mod tests {
@@ -2127,5 +2246,41 @@ mod tests {
         let semua = all_ewa_sea(db, Some("approved")).await.expect("list");
         assert_eq!(semua.len(), 1);
         assert_eq!(semua[0].notes.as_deref(), Some("ok"));
+    }
+
+    #[tokio::test]
+    async fn whatif_dan_file_bank_tanpa_mengubah_data() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = admin(db).await;
+        let w = payroll_whatif_sea(db, 5_000_000.0, "TK/0").await.expect("whatif");
+        assert_eq!(w.pph21, 12_500.0);
+        assert_eq!(w.bpjs_kesehatan, 50_000.0);
+        assert_eq!(w.bpjs_jht, 100_000.0);
+        assert_eq!(w.bpjs_jp, 50_000.0);
+        assert_eq!(w.net, 4_787_500.0);
+        assert!(payroll_whatif_sea(db, -1.0, "TK/0").await.is_err());
+        let eid = mkemp(db, "EMP-BF", 5_000_000.0, "TK/0").await;
+        exec(
+            db,
+            "UPDATE employees SET bank_name = 'BCA', bank_account_number = '1230001' WHERE id = ?1".to_string(),
+            vec![Value::Int(eid)],
+            "test.bank",
+        )
+        .await
+        .expect("bank");
+        let pid = period_create_sea(db, actor, actor, &period_input("BF", "2026-05-01", "2026-05-31"))
+            .await
+            .expect("periode");
+        assert!(payroll_bank_file_sea(db, pid as i64).await.unwrap_err().contains("belum disetujui"));
+        generate_sea(db, actor, pid as i64).await.expect("generate");
+        approve_period_sea(db, actor, pid as i64).await.expect("setuju");
+        let csv = payroll_bank_file_sea(db, pid as i64).await.expect("file bank");
+        assert!(csv.starts_with("nik;nama;bank;nomor_rekening;jumlah\n"));
+        assert!(csv.contains("EMP-BF"));
+        assert!(csv.contains(";BCA;1230001;"));
+        let total = one(db, "SELECT COUNT(*) FROM ewa_withdrawals", "ewa.nol").await;
+        assert_eq!(total, 0);
     }
 }
