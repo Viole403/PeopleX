@@ -88,7 +88,7 @@ const PARTICIPANT_STATUS: &[&str] = &["registered", "attended", "absent", "compl
 
 // ---------------- Varian SeaORM ----------------
 
-use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
+use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 
 fn topt_text(v: &Value) -> Option<String> {
     match v {
@@ -111,19 +111,6 @@ fn topt_i(v: &Value, f: &str) -> Result<Option<i32>, String> {
         Some(x) => Ok(Some(to_dto_int(x, f)?)),
         None => Ok(None),
     }
-}
-
-async fn trow_id(db: &sea_orm::DatabaseConnection, label: &str) -> Result<i64, String> {
-    let row = q_one(
-        db,
-        "SELECT last_insert_rowid()".to_string(),
-        vec![],
-        1,
-        label,
-    )
-    .await
-    .map_err(|e| format!("gagal membaca id baru: {e}"))?;
-    Ok(row.as_ref().and_then(|r| value_i64(&r[0])).unwrap_or(0))
 }
 
 pub async fn list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Training>, String> {
@@ -263,7 +250,7 @@ pub async fn save_sea(
         .await?;
         to_dto_int(rid, "training.id")
     } else {
-        exec(
+        let rid = exec_insert(
             db,
             "INSERT INTO trainings (title, description, trainer_name, start_date, end_date, location, cost, quota, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)".to_string(),
             vec![
@@ -284,7 +271,7 @@ pub async fn save_sea(
         )
         .await
         .map_err(|e| format!("gagal menambah training: {e}"))?;
-        let rid = trow_id(db, "training.add").await?;
+
         audit::log_sea(
             db,
             Some(actor_id),
@@ -384,7 +371,7 @@ pub async fn add_participant_sea(
     if dup.is_some() {
         return Err("Karyawan sudah terdaftar pada training ini.".to_string());
     }
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO training_participants (training_id, employee_id, status) VALUES (?1, ?2, 'registered')".to_string(),
         vec![Value::Int(training_id), Value::Int(employee_id)],
@@ -392,7 +379,7 @@ pub async fn add_participant_sea(
     )
     .await
     .map_err(|e| format!("gagal menambah peserta: {e}"))?;
-    let rid = trow_id(db, "training.partadd").await?;
+
     audit::log_sea(
         db,
         Some(actor_id),
@@ -547,7 +534,7 @@ pub async fn add_certification_sea(
         Some(s) => Value::Text(s.to_string()),
         None => Value::Null,
     };
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO certifications (employee_id, name, issuer, certificate_number, issued_date, expiry_date) VALUES (?1, ?2, ?3, ?4, ?5, ?6)".to_string(),
         vec![
@@ -562,7 +549,7 @@ pub async fn add_certification_sea(
     )
     .await
     .map_err(|e| format!("gagal menambah sertifikasi: {e}"))?;
-    let rid = trow_id(db, "training.certadd").await?;
+
     audit::log_sea(
         db,
         Some(actor_id),
@@ -810,7 +797,7 @@ pub async fn material_add_sea(
         return Err("Jenis materi tidak valid.".to_string());
     }
     let clean_url = url.map(str::trim).filter(|s| !s.is_empty());
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO training_materials (training_id, title, kind, url) VALUES (?1, ?2, ?3, ?4)".to_string(),
         vec![
@@ -826,7 +813,7 @@ pub async fn material_add_sea(
     )
     .await
     .map_err(|e| format!("gagal menambah materi: {e}"))?;
-    let rid = trow_id(db, "training.matadd").await?;
+
     audit::log_sea(
         db,
         Some(actor_id),
@@ -907,9 +894,18 @@ mod tests {
         )
         .await
         .expect("training");
-        trow_id(db, "test.training")
-            .await
-            .expect("rowid training")
+        q_one(
+            db,
+            "SELECT last_insert_rowid()".to_string(),
+            vec![],
+            1,
+            "test.training",
+        )
+        .await
+        .expect("rowid training")
+        .as_ref()
+        .and_then(|r| value_i64(&r[0]))
+        .expect("id training")
     }
 
     #[tokio::test]

@@ -93,7 +93,7 @@ const REVIEW_ROLES: &[&str] = &["self", "supervisor", "manager", "hr"];
 
 // ---------------- Varian SeaORM ----------------
 
-use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
+use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 
 fn popt_text(v: &Value) -> Option<String> {
     match v {
@@ -116,19 +116,6 @@ fn popt_i(v: &Value, f: &str) -> Result<Option<i32>, String> {
         Some(x) => Ok(Some(to_dto_int(x, f)?)),
         None => Ok(None),
     }
-}
-
-async fn prow_id(db: &sea_orm::DatabaseConnection, label: &str) -> Result<i64, String> {
-    let row = q_one(
-        db,
-        "SELECT last_insert_rowid()".to_string(),
-        vec![],
-        1,
-        label,
-    )
-    .await
-    .map_err(|e| format!("gagal membaca id baru: {e}"))?;
-    Ok(row.as_ref().and_then(|r| value_i64(&r[0])).unwrap_or(0))
 }
 
 pub async fn period_list_sea(
@@ -214,7 +201,7 @@ pub async fn period_save_sea(
         .await?;
         to_dto_int(rid, "period.id")
     } else {
-        exec(
+        let rid = exec_insert(
             db,
             "INSERT INTO performance_periods (name, type, start_date, end_date, status) VALUES (?1, ?2, ?3, ?4, ?5)".to_string(),
             vec![
@@ -228,7 +215,7 @@ pub async fn period_save_sea(
         )
         .await
         .map_err(|e| format!("gagal menambah periode: {e}"))?;
-        let rid = prow_id(db, "perf.periodadd").await?;
+
         audit::log_sea(
             db,
             Some(actor_id),
@@ -373,7 +360,7 @@ pub async fn kpi_save_sea(
         .await?;
         to_dto_int(rid, "kpi.id")
     } else {
-        exec(
+        let rid = exec_insert(
             db,
             "INSERT INTO kpis (name, description, department_id) VALUES (?1, ?2, ?3)".to_string(),
             vec![Value::Text(input.name.trim().to_string()), desc, dept],
@@ -381,7 +368,7 @@ pub async fn kpi_save_sea(
         )
         .await
         .map_err(|e| format!("gagal menambah KPI: {e}"))?;
-        let rid = prow_id(db, "perf.kpiadd").await?;
+
         audit::log_sea(
             db,
             Some(actor_id),
@@ -501,7 +488,7 @@ pub async fn ensure_review_sea(
     if let Some(r) = row {
         return to_dto_int(value_i64(&r[0]).unwrap_or(0), "review.id");
     }
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO performance_reviews (performance_period_id, employee_id, status) VALUES (?1, ?2, 'draft')".to_string(),
         vec![Value::Int(period_id), Value::Int(employee_id)],
@@ -509,7 +496,7 @@ pub async fn ensure_review_sea(
     )
     .await
     .map_err(|e| format!("gagal membuat review: {e}"))?;
-    to_dto_int(prow_id(db, "perf.reviewadd").await?, "review.id")
+    to_dto_int(rid, "review.id")
 }
 
 pub async fn review_detail_sea(
@@ -628,7 +615,7 @@ pub async fn assign_kpi_sea(
     if weight < 0.0 || weight > 100.0 {
         return Err("Bobot 0-100.".to_string());
     }
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO employee_kpis (performance_period_id, employee_id, kpi_id, target, weight) VALUES (?1, ?2, ?3, ?4, ?5)".to_string(),
         vec![
@@ -642,7 +629,7 @@ pub async fn assign_kpi_sea(
     )
     .await
     .map_err(|e| format!("gagal menugaskan KPI: {e}"))?;
-    let rid = prow_id(db, "perf.assign").await?;
+
     ensure_review_sea(db, period_id, employee_id).await?;
     audit::log_sea(
         db,

@@ -194,7 +194,7 @@ fn store_cv(files: &Path, file: &employees::FileUpload) -> Result<String, String
 
 // ---------------- Varian SeaORM ----------------
 
-use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
+use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 
 fn ropt_i(v: &Value, f: &str) -> Result<Option<i32>, String> {
     match value_i64(v) {
@@ -217,19 +217,6 @@ fn ropt_f64(v: &Value) -> Option<f64> {
         Value::Int(i) => Some(*i as f64),
         Value::Text(s) => s.parse().ok(),
     }
-}
-
-async fn rrow_id(db: &sea_orm::DatabaseConnection, label: &str) -> Result<i64, String> {
-    let row = q_one(
-        db,
-        "SELECT last_insert_rowid()".to_string(),
-        vec![],
-        1,
-        label,
-    )
-    .await
-    .map_err(|e| format!("gagal membaca id baru: {e}"))?;
-    Ok(row.as_ref().and_then(|r| value_i64(&r[0])).unwrap_or(0))
 }
 
 pub async fn vacancy_list_sea(
@@ -390,7 +377,7 @@ pub async fn vacancy_save_sea(
         .await?;
         to_dto_int(rid, "vacancy.id")
     } else {
-        exec(
+        let rid = exec_insert(
             db,
             "INSERT INTO vacancies (title, department_id, position_id, employment_type, description, requirements, quota, status, posted_date, closing_date) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)".to_string(),
             vec![
@@ -409,7 +396,7 @@ pub async fn vacancy_save_sea(
         )
         .await
         .map_err(|e| format!("gagal menambah lowongan: {e}"))?;
-        let rid = rrow_id(db, "recruit.vacadd").await?;
+
         audit::log_sea(
             db,
             Some(actor_id),
@@ -709,7 +696,7 @@ pub async fn candidate_create_sea(
         Some(s) => Value::Text(s.to_string()),
         None => Value::Null,
     };
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO candidates (vacancy_id, full_name, email, phone, birth_date, gender, address, cv_path, source, stage) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'applied')".to_string(),
         vec![
@@ -727,7 +714,7 @@ pub async fn candidate_create_sea(
     )
     .await
     .map_err(|e| format!("gagal menambah kandidat: {e}"))?;
-    let rid = rrow_id(db, "recruit.candadd").await?;
+
     log_stage_sea(db, rid, "applied", Some("Kandidat mendaftar"), None).await?;
     audit::log_sea(
         db,
@@ -853,7 +840,7 @@ pub async fn add_interview_sea(
             return Err("Pewawancara tidak ditemukan.".to_string());
         }
     }
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO interviews (candidate_id, interviewer_id, schedule_at, location, type, result, notes) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)".to_string(),
         vec![
@@ -877,7 +864,7 @@ pub async fn add_interview_sea(
     )
     .await
     .map_err(|e| format!("gagal menjadwalkan interview: {e}"))?;
-    let rid = rrow_id(db, "recruit.ivadd").await?;
+
     audit::log_sea(
         db,
         Some(actor_id),
@@ -958,7 +945,7 @@ pub async fn add_assessment_sea(
     if input.assessment_name.len() > 150 {
         return Err("Nama assessment maksimal 150 karakter.".to_string());
     }
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO candidate_assessments (candidate_id, assessment_name, score, notes, assessed_by) VALUES (?1, ?2, ?3, ?4, ?5)".to_string(),
         vec![
@@ -978,7 +965,7 @@ pub async fn add_assessment_sea(
     )
     .await
     .map_err(|e| format!("gagal menyimpan assessment: {e}"))?;
-    let rid = rrow_id(db, "recruit.assadd").await?;
+
     audit::log_sea(
         db,
         Some(actor_id),
