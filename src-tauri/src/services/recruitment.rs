@@ -2465,7 +2465,7 @@ mod tests {
             .await
             .expect("draf2");
         offer_send_sea(db, actor, oid2).await.expect("kirim2");
-        offer_decline_sea(db, actor, oid2).await.expect("tolak");
+        offer_decline_sea(db, oid2).await.expect("tolak");
         let ditolak = offer_get_sea(db, oid2).await.expect("get4").expect("ada4");
         assert_eq!(ditolak.status, "declined");
         let e = offer_verify_sea(db, oid2).await.expect_err("belum ttd");
@@ -2556,7 +2556,7 @@ mod tests {
         let db = &app.sea;
         let actor = admin(db).await;
         let vid = vacancy(db, actor).await;
-        let c1 = kandidat(db, fdir.path(), actor, vid, "Satu") as i64;
+        let c1 = kandidat(db, fdir.path(), actor, vid, "Satu").await as i64;
         let _c2 = kandidat(db, fdir.path(), actor, vid, "Dua");
         let rows = pipeline_sea(db).await.expect("pipeline");
         assert_eq!(rows.len(), 8);
