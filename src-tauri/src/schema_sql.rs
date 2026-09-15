@@ -289,6 +289,7 @@ fn transpile_mysql(stmt: &str, indexed_text: &HashSet<(String, String)>) -> Stri
             out = text_col_to_varchar(&out, &col);
         }
     }
+    out = teks_default_literal_ke_varchar(&out);
     out = replace_ci(
         &out,
         "id INTEGER PRIMARY KEY",
@@ -397,6 +398,93 @@ fn is_word_start(cl: &[char], i: usize) -> bool {
     i == 0 || !(cl[i - 1].is_alphanumeric() || cl[i - 1] == '_')
 }
 
+/// Kolom `TEXT ... DEFAULT 'nilai'` menjadi `VARCHAR(255)` dengan default utuh.
+fn teks_default_literal_ke_varchar(stmt: &str) -> String {
+    stmt.lines()
+        .map(|baris| {
+            if baris.trim_start().starts_with("--") {
+                return baris.to_string();
+            }
+            let cs: Vec<char> = baris.chars().collect();
+            let cl: Vec<char> = baris.to_lowercase().chars().collect();
+            let w: Vec<char> = "default".chars().collect();
+            let mut i = 0usize;
+            let mut dalam = false;
+            while i < cs.len() {
+                let c = cs[i];
+                if c == '\'' {
+                    if dalam && i + 1 < cs.len() && cs[i + 1] == '\'' {
+                        i += 2;
+                        continue;
+                    }
+                    dalam = !dalam;
+                    i += 1;
+                    continue;
+                }
+                if !dalam
+                    && i + w.len() <= cl.len()
+                    && &cl[i..i + w.len()] == w.as_slice()
+                    && is_word_start(&cl, i)
+                    && is_word_end(&cl, i + w.len())
+                {
+                    let mut j = i + w.len();
+                    while j < cs.len() && (cs[j] == ' ' || cs[j] == '\t') {
+                        j += 1;
+                    }
+                    if j < cs.len() && cs[j] == '\'' {
+                        let depan: String = cs[..i].iter().collect();
+                        let sisa: String = cs[i..].iter().collect();
+                        return ganti_teks_pertama(&depan) + &sisa;
+                    }
+                    i = j;
+                    continue;
+                }
+                i += 1;
+            }
+            baris.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Ganti kata TEXT pertama di luar literal menjadi VARCHAR(255).
+fn ganti_teks_pertama(s: &str) -> String {
+    let cs: Vec<char> = s.chars().collect();
+    let cl: Vec<char> = s.to_lowercase().chars().collect();
+    let w: Vec<char> = "text".chars().collect();
+    let mut keluar = String::with_capacity(s.len());
+    let mut i = 0usize;
+    let mut dalam = false;
+    while i < cs.len() {
+        let c = cs[i];
+        if c == '\'' {
+            if dalam && i + 1 < cs.len() && cs[i + 1] == '\'' {
+                keluar.push(c);
+                keluar.push(cs[i + 1]);
+                i += 2;
+                continue;
+            }
+            dalam = !dalam;
+            keluar.push(c);
+            i += 1;
+            continue;
+        }
+        if !dalam
+            && i + w.len() <= cl.len()
+            && &cl[i..i + w.len()] == w.as_slice()
+            && is_word_start(&cl, i)
+            && is_word_end(&cl, i + w.len())
+        {
+            keluar.push_str("VARCHAR(255)");
+            keluar.extend(cs[i + w.len()..].iter());
+            return keluar;
+        }
+        keluar.push(c);
+        i += 1;
+    }
+    keluar
+}
+
 fn is_word_end(cl: &[char], i: usize) -> bool {
     i >= cl.len() || !(cl[i].is_alphanumeric() || cl[i] == '_')
 }
@@ -423,7 +511,7 @@ fn quote_mysql_reserved(s: &str) -> String {
             let word: String = cs[i..j].iter().collect();
             let lw = word.to_lowercase();
             let prev = if i > 0 { cs[i - 1] } else { ' ' };
-            let already = prev == '`' || prev == '.';
+            let already = prev == '`' || prev == '.' || prev.is_alphanumeric() || prev == '_';
             if MYSQL_RESERVED.contains(&lw.as_str()) && !already {
                 out.push('`');
                 out.push_str(&word);
@@ -559,6 +647,31 @@ mod tests {
         let out = transpile(DbBackend::MySql, stmt, &idx);
         assert!(out
             .contains("posted_at VARCHAR(255) NOT NULL DEFAULT (CAST(CURRENT_TIMESTAMP AS CHAR))"));
+    }
+
+    #[test]
+    fn mysql_identifier_majemuk_tidak_ikut_quote() {
+        let stmt = "CREATE INDEX idx_x ON t (employee_id, start_date, end_date)";
+        let out = transpile(DbBackend::MySql, stmt, &HashSet::new());
+        assert!(out.contains("(employee_id, start_date, end_date)"));
+        let col = "CREATE TABLE IF NOT EXISTS t (
+    id INTEGER PRIMARY KEY,
+    date TEXT
+)";
+        let out2 = transpile(DbBackend::MySql, col, &HashSet::new());
+        assert!(out2.contains("`date` TEXT"));
+    }
+
+    #[test]
+    fn mysql_teks_default_literal_jadi_varchar() {
+        let stmt = "CREATE TABLE IF NOT EXISTS t (
+    id INTEGER PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'active',
+    notes TEXT
+)";
+        let out = transpile(DbBackend::MySql, stmt, &HashSet::new());
+        assert!(out.contains("`status` VARCHAR(255) NOT NULL DEFAULT 'active'"));
+        assert!(out.contains("notes TEXT"));
     }
 
     #[test]

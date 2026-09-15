@@ -101,6 +101,49 @@ pub fn migration_scripts() -> &'static [&'static str] {
     MIGRATIONS
 }
 
+/// Benar bila potongan naskah hanya berisi komentar atau baris kosong.
+fn hanya_komentar(s: &str) -> bool {
+    let mut dalam_blok = false;
+    for baris in s.lines() {
+        let mut t = baris.trim().to_string();
+        if dalam_blok {
+            match t.find("*/") {
+                Some(pos) => {
+                    t = t[pos + 2..].trim().to_string();
+                    dalam_blok = false;
+                }
+                None => continue,
+            }
+        }
+        loop {
+            let mulai = match t.find("/*") {
+                Some(m) => m,
+                None => break,
+            };
+            match t[mulai + 2..].find("*/") {
+                Some(rel) => {
+                    let cut = mulai + 2 + rel + 2;
+                    let mut g = String::with_capacity(t.len());
+                    g.push_str(&t[..mulai]);
+                    g.push_str(&t[cut..]);
+                    t = g;
+                }
+                None => {
+                    t = t[..mulai].trim().to_string();
+                    dalam_blok = true;
+                    break;
+                }
+            }
+        }
+        let t = t.trim();
+        if t.is_empty() || t.starts_with("--") {
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
 /// Jalankan migrasi DDL yang belum tercatat di tabel `sea_migrations`.
 ///
 /// Naskah SQLite ditranspil sesuai backend koneksi sebelum dieksekusi,
@@ -153,7 +196,7 @@ pub async fn migrate_sea(db: &DatabaseConnection) -> Result<(), String> {
         // Eksekusi tiap pernyataan DDL satu per satu (SQLite menolak multi-statement).
         for part in script.split(';') {
             let stmt = part.trim();
-            if stmt.is_empty() || stmt.starts_with("--") && !stmt.contains('\n') {
+            if stmt.is_empty() || hanya_komentar(stmt) {
                 continue;
             }
             let stmt = schema_sql::transpile(backend, stmt, &indexed);
