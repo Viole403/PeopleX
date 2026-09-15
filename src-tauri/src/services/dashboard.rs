@@ -185,9 +185,10 @@ pub async fn hr_sea(db: &sea_orm::DatabaseConnection) -> Result<HrDashboard, Str
         .format("%Y-%m-%d")
         .to_string();
 
+    let md = now.format("%m-%d").to_string();
     let brows = q_all(
         db,
-        "SELECT TRIM(first_name || ' ' || COALESCE(last_name,'')), employee_number, birth_date FROM employees WHERE deleted_at IS NULL AND employment_status IN ('active','probation') AND birth_date IS NOT NULL AND strftime('%m-%d', birth_date) = strftime('%m-%d','now','localtime') ORDER BY first_name LIMIT 20".to_string(),
+        "SELECT TRIM(first_name || ' ' || COALESCE(last_name,'')), employee_number, birth_date FROM employees WHERE deleted_at IS NULL AND employment_status IN ('active','probation') AND birth_date IS NOT NULL ORDER BY first_name".to_string(),
         vec![],
         3,
         "dashboard.birthdays",
@@ -196,6 +197,10 @@ pub async fn hr_sea(db: &sea_orm::DatabaseConnection) -> Result<HrDashboard, Str
     .map_err(|e| format!("gagal membaca ulang tahun: {e}"))?;
     let mut birthdays = Vec::new();
     for r in &brows {
+        let bd = value_to_string(&r[2]);
+        if bd.get(5..10) != Some(md.as_str()) {
+            continue;
+        }
         birthdays.push(Birthday {
             name: value_to_string(&r[0]),
             employee_number: value_to_string(&r[1]),
@@ -204,11 +209,14 @@ pub async fn hr_sea(db: &sea_orm::DatabaseConnection) -> Result<HrDashboard, Str
                 _ => Some(value_to_string(&r[2])),
             },
         });
+        if birthdays.len() >= 20 {
+            break;
+        }
     }
     let hrows = q_all(
         db,
-        "SELECT name, date FROM holidays WHERE date >= date('now','localtime') ORDER BY date LIMIT 5".to_string(),
-        vec![],
+        "SELECT name, date FROM holidays WHERE date >= ?1 ORDER BY date LIMIT 5".to_string(),
+        vec![Value::Text(today.clone())],
         2,
         "dashboard.holidays",
     )

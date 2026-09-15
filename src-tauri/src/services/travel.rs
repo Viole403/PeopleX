@@ -129,7 +129,7 @@ const REIMBURSE_STAGES: &[&str] = &["pending", "manager_approved", "finance_veri
 
 // ---------------- Varian SeaORM ----------------
 
-use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
+use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 
 fn tropt_text(v: &Value) -> Option<String> {
     match v {
@@ -152,19 +152,6 @@ fn tropt_i(v: &Value, f: &str) -> Result<Option<i32>, String> {
         Some(x) => Ok(Some(to_dto_int(x, f)?)),
         None => Ok(None),
     }
-}
-
-async fn trow_id(db: &sea_orm::DatabaseConnection, label: &str) -> Result<i64, String> {
-    let row = q_one(
-        db,
-        "SELECT last_insert_rowid()".to_string(),
-        vec![],
-        1,
-        label,
-    )
-    .await
-    .map_err(|e| format!("gagal membaca id baru: {e}"))?;
-    Ok(row.as_ref().and_then(|r| value_i64(&r[0])).unwrap_or(0))
 }
 
 fn map_trip_row(r: &[Value]) -> Result<Trip, String> {
@@ -297,7 +284,7 @@ pub async fn trip_create_sea(
     } else {
         "pending"
     };
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO business_trips (employee_id, destination, purpose, start_date, end_date, transportation, hotel, budget, status, current_step) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1)".to_string(),
         vec![
@@ -321,7 +308,7 @@ pub async fn trip_create_sea(
     )
     .await
     .map_err(|e| format!("gagal mengajukan dinas: {e}"))?;
-    let rid = trow_id(db, "travel.tripadd").await?;
+
     if let Some(first) = chain.first() {
         let name_row = q_one(
             db,
@@ -496,7 +483,7 @@ pub async fn trip_add_expense_sea(
         )?),
         None => None,
     };
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO business_trip_expenses (business_trip_id, category, description, amount, receipt_path) VALUES (?1, ?2, ?3, ?4, ?5)".to_string(),
         vec![
@@ -516,7 +503,7 @@ pub async fn trip_add_expense_sea(
     )
     .await
     .map_err(|e| format!("gagal menambah biaya: {e}"))?;
-    let rid = trow_id(db, "travel.expadd").await?;
+
     audit::log_sea(
         db,
         Some(actor_id),
@@ -647,7 +634,7 @@ pub async fn category_save_sea(
         .await?;
         to_dto_int(rid, "reimbcat.id")
     } else {
-        let res = exec(
+        let rid = exec_insert(
             db,
             "INSERT INTO reimbursement_categories (code, name, max_amount) VALUES (?1, ?2, ?3)".to_string(),
             vec![
@@ -657,26 +644,26 @@ pub async fn category_save_sea(
             ],
             "travel.catadd",
         )
-        .await;
-        let Err(e) = res else {
-            let rid = trow_id(db, "travel.catadd").await?;
-            audit::log_sea(
-                db,
-                Some(actor_id),
-                "CREATE",
-                "reimbursement.category",
-                Some(&rid.to_string()),
-                None,
-                None,
-                None,
-            )
-            .await?;
-            return to_dto_int(rid, "reimbcat.id");
-        };
-        if e.contains("UNIQUE") {
-            return Err("Kode kategori sudah dipakai.".to_string());
-        }
-        return Err(format!("gagal menambah kategori: {e}"));
+        .await
+        .map_err(|e| {
+            if e.contains("UNIQUE") {
+                "Kode kategori sudah dipakai.".to_string()
+            } else {
+                format!("gagal menambah kategori: {e}")
+            }
+        })?;
+        audit::log_sea(
+            db,
+            Some(actor_id),
+            "CREATE",
+            "reimbursement.category",
+            Some(&rid.to_string()),
+            None,
+            None,
+            None,
+        )
+        .await?;
+        return to_dto_int(rid, "reimbcat.id");
     }
 }
 
@@ -815,7 +802,7 @@ pub async fn reimburse_create_sea(
         Some(f) => Some(store_receipt(files, "reimbursements", f)?),
         None => None,
     };
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO reimbursements (employee_id, reimbursement_category_id, amount, description, receipt_path, status, current_step) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', 1)".to_string(),
         vec![
@@ -835,7 +822,7 @@ pub async fn reimburse_create_sea(
     )
     .await
     .map_err(|e| format!("gagal mengajukan reimburse: {e}"))?;
-    let rid = trow_id(db, "travel.reimbadd").await?;
+
     let emp = q_one(
         db,
         "SELECT supervisor_id, manager_id, first_name || ' ' || COALESCE(last_name, '') FROM employees WHERE id = ?1".to_string(),

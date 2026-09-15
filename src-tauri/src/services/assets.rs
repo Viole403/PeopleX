@@ -106,7 +106,7 @@ pub struct MyAsset {
 
 // ---------------- Varian SeaORM ----------------
 
-use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
+use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 
 fn aopt_text(v: &Value) -> Option<String> {
     match v {
@@ -122,19 +122,6 @@ fn aopt_f64(v: &Value) -> Option<f64> {
         Value::Int(i) => Some(*i as f64),
         Value::Text(s) => s.parse().ok(),
     }
-}
-
-async fn arow_id(db: &sea_orm::DatabaseConnection, label: &str) -> Result<i64, String> {
-    let row = q_one(
-        db,
-        "SELECT last_insert_rowid()".to_string(),
-        vec![],
-        1,
-        label,
-    )
-    .await
-    .map_err(|e| format!("gagal membaca id baru: {e}"))?;
-    Ok(row.as_ref().and_then(|r| value_i64(&r[0])).unwrap_or(0))
 }
 
 pub async fn category_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Category>, String> {
@@ -199,7 +186,7 @@ pub async fn category_save_sea(
         .await?;
         to_dto_int(rid, "category.id")
     } else {
-        let res = exec(
+        let rid = exec_insert(
             db,
             "INSERT INTO asset_categories (code, name) VALUES (?1, ?2)".to_string(),
             vec![
@@ -208,26 +195,26 @@ pub async fn category_save_sea(
             ],
             "asset.catadd",
         )
-        .await;
-        let Err(e) = res else {
-            let rid = arow_id(db, "asset.catadd").await?;
-            audit::log_sea(
-                db,
-                Some(actor_id),
-                "CREATE",
-                "asset.category",
-                Some(&rid.to_string()),
-                None,
-                None,
-                None,
-            )
-            .await?;
-            return to_dto_int(rid, "category.id");
-        };
-        if e.contains("UNIQUE") {
-            return Err("Kode kategori sudah dipakai.".to_string());
-        }
-        return Err(format!("gagal menambah kategori: {e}"));
+        .await
+        .map_err(|e| {
+            if e.contains("UNIQUE") {
+                "Kode kategori sudah dipakai.".to_string()
+            } else {
+                format!("gagal menambah kategori: {e}")
+            }
+        })?;
+        audit::log_sea(
+            db,
+            Some(actor_id),
+            "CREATE",
+            "asset.category",
+            Some(&rid.to_string()),
+            None,
+            None,
+            None,
+        )
+        .await?;
+        return to_dto_int(rid, "category.id");
     }
 }
 
@@ -466,7 +453,7 @@ pub async fn asset_save_sea(
         .await?;
         to_dto_int(rid, "asset.id")
     } else {
-        let res = exec(
+        let rid = exec_insert(
             db,
             "INSERT INTO assets (asset_code, name, asset_category_id, brand, serial_number, purchase_date, purchase_price, condition_status, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'available')".to_string(),
             vec![
@@ -484,26 +471,26 @@ pub async fn asset_save_sea(
             ],
             "asset.add",
         )
-        .await;
-        let Err(e) = res else {
-            let rid = arow_id(db, "asset.add").await?;
-            audit::log_sea(
-                db,
-                Some(actor_id),
-                "CREATE",
-                "asset",
-                Some(&rid.to_string()),
-                None,
-                None,
-                None,
-            )
-            .await?;
-            return to_dto_int(rid, "asset.id");
-        };
-        if e.contains("UNIQUE") {
-            return Err("Kode aset sudah dipakai.".to_string());
-        }
-        return Err(format!("gagal menambah aset: {e}"));
+        .await
+        .map_err(|e| {
+            if e.contains("UNIQUE") {
+                "Kode aset sudah dipakai.".to_string()
+            } else {
+                format!("gagal menambah aset: {e}")
+            }
+        })?;
+        audit::log_sea(
+            db,
+            Some(actor_id),
+            "CREATE",
+            "asset",
+            Some(&rid.to_string()),
+            None,
+            None,
+            None,
+        )
+        .await?;
+        return to_dto_int(rid, "asset.id");
     }
 }
 
@@ -621,7 +608,7 @@ pub async fn assign_sea(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(&condition);
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO asset_assignments (asset_id, employee_id, assigned_date, condition_on_assign, notes) VALUES (?1, ?2, ?3, ?4, ?5)".to_string(),
         vec![
@@ -638,7 +625,6 @@ pub async fn assign_sea(
     )
     .await
     .map_err(|e| format!("gagal menugaskan aset: {e}"))?;
-    let rid = arow_id(db, "asset.assign").await?;
     exec(
         db,
         "UPDATE assets SET status = 'assigned' WHERE id = ?1".to_string(),
@@ -773,7 +759,7 @@ pub async fn add_maintenance_sea(
     if !(input.cost >= 0.0) {
         return Err("Biaya minimal 0.".to_string());
     }
-    exec(
+    let rid = exec_insert(
         db,
         "INSERT INTO asset_maintenance (asset_id, maintenance_date, description, cost, performed_by) VALUES (?1, ?2, ?3, ?4, ?5)".to_string(),
         vec![
@@ -790,7 +776,6 @@ pub async fn add_maintenance_sea(
     )
     .await
     .map_err(|e| format!("gagal mencatat maintenance: {e}"))?;
-    let rid = arow_id(db, "asset.maintadd").await?;
     exec(
         db,
         "UPDATE assets SET status = 'maintenance' WHERE id = ?1".to_string(),
