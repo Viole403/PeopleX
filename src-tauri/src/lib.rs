@@ -1227,6 +1227,104 @@ async fn attendance_liveness_challenge(
 
 #[tauri::command]
 #[specta::specta]
+async fn fingerprint_devices(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::fingerprint::FingerDevice>, String> {
+    require(&state, &["attendance.view", "system.manage"]).await?;
+    services::fingerprint::device_list_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_device_save(
+    state: tauri::State<'_, AppState>,
+    id: Option<i32>,
+    input: services::fingerprint::FingerDeviceInput,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint::device_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_device_delete(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint::device_delete_sea(&state.sea, uid, id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_enrolls(
+    state: tauri::State<'_, AppState>,
+    device_id: i32,
+) -> Result<Vec<services::fingerprint::FingerEnroll>, String> {
+    require(&state, &["attendance.view", "system.manage"]).await?;
+    services::fingerprint::enroll_list_sea(&state.sea, device_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_enroll(
+    state: tauri::State<'_, AppState>,
+    device_id: i32,
+    employee_id: i32,
+    device_pin: String,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint::enroll_save_sea(&state.sea, uid, device_id as i64, employee_id as i64, &device_pin).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_ingest(
+    state: tauri::State<'_, AppState>,
+    device_id: i32,
+    device_pin: String,
+    event_time: String,
+    verify_mode: Option<String>,
+) -> Result<i32, String> {
+    let _ = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint::ingest_sea(&state.sea, device_id as i64, &device_pin, &event_time, verify_mode.as_deref()).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_logs(
+    state: tauri::State<'_, AppState>,
+    device_id: Option<i32>,
+    only_pending: bool,
+    limit: i32,
+) -> Result<Vec<services::fingerprint::FingerLog>, String> {
+    require(&state, &["attendance.view", "system.manage"]).await?;
+    services::fingerprint::log_list_sea(&state.sea, device_id.map(|v| v as i64), only_pending, limit as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_probe(
+    state: tauri::State<'_, AppState>,
+    host: String,
+) -> Result<services::fingerprint::DeviceProbe, String> {
+    require(&state, &["attendance.view", "system.manage"]).await?;
+    services::fingerprint::probe_sea(&state.sea, &host, 1500).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_process(
+    state: tauri::State<'_, AppState>,
+    device_id: Option<i32>,
+    limit: i32,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint::process_queue_sea(&state.sea, uid, device_id.map(|v| v as i64), limit as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn attendance_clock_out(
     state: tauri::State<'_, AppState>,
     lat: Option<f64>,
@@ -4641,7 +4739,16 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         report_analytics,
         report_custom_fields,
         report_custom,
-        report_export
+        report_export,
+        fingerprint_devices,
+        fingerprint_device_save,
+        fingerprint_device_delete,
+        fingerprint_enrolls,
+        fingerprint_enroll,
+        fingerprint_ingest,
+        fingerprint_logs,
+        fingerprint_probe,
+        fingerprint_process
     ])
 }
 
@@ -4707,7 +4814,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &131);
+                assert_eq!(t, &134);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),
