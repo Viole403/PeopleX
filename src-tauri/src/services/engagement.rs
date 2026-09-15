@@ -415,7 +415,7 @@ async fn susun_poll(db: &sea_orm::DatabaseConnection, id: i64) -> Result<Option<
         });
     }
     Ok(Some(Poll {
-        id: opt_i(&[Value::Int(id)].to_vec()[..]).unwrap_or(0),
+        id: opt_i(&Value::Int(id)).unwrap_or(0),
         question: teks(&h[0]),
         status: teks(&h[1]),
         total_votes: total as i32,
@@ -521,7 +521,7 @@ pub async fn whistleblow_status_sea(
     )
     .await
     .map_err(|e| format!("gagal membaca laporan: {e}"))?;
-    Ok(rows.first().map(wbc_row))
+    Ok(rows.first().map(|r| wbc_row(r)))
 }
 
 pub async fn whistleblow_list_sea(
