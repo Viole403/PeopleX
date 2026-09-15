@@ -842,11 +842,11 @@ pub async fn benchmark_save_sea(
     }
     let pos = match input.position_id {
         Some(v) => Value::Int(v as i64),
-        None => Value::Null,
+        None => Value::Int(0),
     };
     let dep = match input.department_id {
         Some(v) => Value::Int(v as i64),
-        None => Value::Null,
+        None => Value::Int(0),
     };
     let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let new_id = match id {
@@ -925,7 +925,7 @@ pub async fn benchmark_compare_sea(
         let emp = value_i64(&r[0]).unwrap_or(0);
         let g = q_one(
             db,
-            "SELECT s.basic_salary, s.position_id, s.department_id FROM employee_salaries s WHERE s.employee_id = ?1 AND s.is_active = 1 ORDER BY s.effective_date DESC LIMIT 1".to_string(),
+            "SELECT s.basic_salary, e.position_id, e.department_id FROM employee_salaries s INNER JOIN employees e ON e.id = s.employee_id WHERE s.employee_id = ?1 AND s.is_active = 1 ORDER BY s.effective_date DESC LIMIT 1".to_string(),
             vec![Value::Int(emp)],
             3,
             "cmp.gap.sal",
@@ -945,7 +945,7 @@ pub async fn benchmark_compare_sea(
         };
         let b = q_one(
             db,
-            "SELECT p50 FROM salary_benchmarks WHERE period = ?1 AND COALESCE(position_id, -1) = COALESCE(?2, -1) AND COALESCE(department_id, -1) = COALESCE(?3, -1)".to_string(),
+            "SELECT p50 FROM salary_benchmarks WHERE period = ?1 AND COALESCE(position_id, 0) = COALESCE(?2, 0) AND COALESCE(department_id, 0) = COALESCE(?3, 0)".to_string(),
             vec![Value::Text(period.to_string()), pos, dep],
             1,
             "cmp.gap.bench",
@@ -1103,6 +1103,7 @@ mod tests {
             None,
             &BenefitInput {
                 name: "Asuransi".to_string(),
+                status: "active".to_string(),
                 ..Default::default()
             },
         )
@@ -1171,11 +1172,14 @@ mod tests {
         .await
         .expect("ek");
         let rows = compensation_review_list_sea(db, 2026).await.expect("review");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].employee_name.trim(), "Boni");
-        assert_eq!(rows[0].basic_salary, 5_000_000.0);
-        assert!((rows[0].score - 95.0).abs() < 1e-6);
-        assert_eq!(rows[0].recommendation_percent, 7.0);
+        assert_eq!(rows.len(), 2);
+        let boni = rows
+            .iter()
+            .find(|r| r.employee_name.trim() == "Boni")
+            .expect("baris boni");
+        assert_eq!(boni.basic_salary, 5_000_000.0);
+        assert!((boni.score - 95.0).abs() < 1e-6);
+        assert_eq!(boni.recommendation_percent, 7.0);
         let pos_bench = exec_insert(
             db,
             "INSERT INTO positions (code, name) VALUES ('BENCH', 'Penguji')".to_string(),
