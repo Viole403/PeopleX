@@ -2557,6 +2557,108 @@ async fn announcement_delete(state: tauri::State<'_, AppState>, id: i32) -> Resu
     Ok(())
 }
 
+// ---------------- Survei denyut ----------------
+
+#[tauri::command]
+#[specta::specta]
+async fn pulse_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::pulse::PulseSurvey>, String> {
+    require(&state, &["pulse.view", "system.manage"]).await?;
+    services::pulse::list(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn pulse_get(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+) -> Result<services::pulse::PulseDetail, String> {
+    require(&state, &["pulse.view", "system.manage"]).await?;
+    services::pulse::get(&state.sea, id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn pulse_create(
+    state: tauri::State<'_, AppState>,
+    input: services::pulse::PulseInput,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["pulse.create", "system.manage"]).await?;
+    let id = services::pulse::create(&state.sea, uid, &input).await?;
+    services::audit::log_sea(
+        &state.sea,
+        Some(uid),
+        "CREATE",
+        "pulse",
+        Some(&id.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    Ok(id)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn pulse_publish(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
+    let (uid, _) = require(&state, &["pulse.create", "system.manage"]).await?;
+    services::pulse::publish(&state.sea, id).await?;
+    services::audit::log_sea(
+        &state.sea,
+        Some(uid),
+        "UPDATE",
+        "pulse",
+        Some(&id.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn pulse_answer(
+    state: tauri::State<'_, AppState>,
+    survey_id: i32,
+    items: Vec<services::pulse::AnswerInput>,
+) -> Result<(), String> {
+    let (uid, _) = current_actor(&state).await?;
+    services::pulse::answer(&state.sea, uid, survey_id, &items).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn pulse_results(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+) -> Result<services::pulse::PulseResults, String> {
+    require(&state, &["pulse.view", "system.manage"]).await?;
+    services::pulse::results(&state.sea, id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn pulse_close(state: tauri::State<'_, AppState>, id: i32) -> Result<Option<i32>, String> {
+    let (uid, _) = require(&state, &["pulse.create", "system.manage"]).await?;
+    let next = services::pulse::close(&state.sea, id).await?;
+    services::audit::log_sea(
+        &state.sea,
+        Some(uid),
+        "UPDATE",
+        "pulse",
+        Some(&id.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    Ok(next)
+}
+
 // ---------------- Laporan ----------------
 
 #[tauri::command]
@@ -2962,6 +3064,13 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         announcement_get,
         announcement_create,
         announcement_delete,
+        pulse_list,
+        pulse_get,
+        pulse_create,
+        pulse_publish,
+        pulse_answer,
+        pulse_results,
+        pulse_close,
         report_employees,
         report_headcount,
         report_attendance,

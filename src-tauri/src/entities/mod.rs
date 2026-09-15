@@ -224,6 +224,73 @@ pub mod announcement_read {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
+pub mod pulse_survey {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "pulse_surveys")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        pub title: String,
+        pub description: Option<String>,
+        pub status: String,
+        pub recurrence: String,
+        pub period_start: Option<String>,
+        pub period_end: Option<String>,
+        pub created_by: Option<i32>,
+        pub created_at: String,
+        pub closed_at: Option<String>,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod pulse_question {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "pulse_questions")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        pub survey_id: i32,
+        pub question: String,
+        pub kind: String,
+        pub position: i32,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod pulse_response {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+    #[sea_orm(table_name = "pulse_responses")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        pub survey_id: i32,
+        pub question_id: i32,
+        pub employee_id: i32,
+        pub score: Option<i32>,
+        pub answer: Option<String>,
+        pub submitted_at: String,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
 pub mod user_role {
     use sea_orm::entity::prelude::*;
 

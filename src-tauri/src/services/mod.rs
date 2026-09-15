@@ -17,6 +17,7 @@ pub mod payroll;
 pub mod payslip;
 pub mod performance;
 pub mod permission;
+pub mod pulse;
 pub mod rbac;
 pub mod recruitment;
 pub mod reports;

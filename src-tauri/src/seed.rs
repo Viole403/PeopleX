@@ -516,6 +516,7 @@ async fn seed_permissions(
         ("business_trip", vec!["view", "create", "update", "approve"]),
         ("reimbursement", vec!["view", "create", "update", "approve"]),
         ("announcement", vec!["view", "create", "update", "delete"]),
+        ("pulse", vec!["view", "create", "answer"]),
         ("report", vec!["view", "export"]),
         ("settings", vec!["manage"]),
         ("rbac", vec!["manage"]),
@@ -613,6 +614,7 @@ async fn seed_role_permissions(
                 "reimbursement.view",
                 "reimbursement.approve",
                 "report.view",
+                "pulse.view",
             ]
             .iter()
             .map(|s| s.to_string())
@@ -632,6 +634,7 @@ async fn seed_role_permissions(
                 "overtime.approve",
                 "performance.view",
                 "performance.review",
+                "pulse.view",
             ]
             .iter()
             .map(|s| s.to_string())
@@ -656,6 +659,8 @@ async fn seed_role_permissions(
                 "reimbursement.view",
                 "reimbursement.create",
                 "announcement.view",
+                "pulse.view",
+                "pulse.answer",
             ]
             .iter()
             .map(|s| s.to_string())
