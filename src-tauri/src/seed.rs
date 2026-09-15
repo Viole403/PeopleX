@@ -3,7 +3,7 @@
 //! Idempoten: aman dijalankan berulang, tidak membuat duplikat.
 
 use chrono::Local;
-use sea_orm::sqlx::{AssertSqlSafe, Row};
+use crate::services::sea_raw::{exec, exec_insert, q_all, q_one, Value};
 
 /// Ringkasan hasil seeding untuk logging.
 #[derive(Debug, Default)]
@@ -13,7 +13,7 @@ pub struct SeedSummary {
     pub users: i64,
 }
 
-type Tx<'a> = sea_orm::sqlx::Transaction<'a, sea_orm::sqlx::Sqlite>;
+type Tx = sea_orm::DatabaseTransaction;
 
 /// Nilai sel generik untuk seed dinamis.
 #[derive(Clone, Debug)]
@@ -24,17 +24,22 @@ enum SVal {
     Text(String),
 }
 
-fn tx_cell(row: &sea_orm::sqlx::sqlite::SqliteRow, i: usize) -> SVal {
-    if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(i) {
-        return SVal::Int(v);
+fn ke_db(v: SVal) -> Value {
+    match v {
+        SVal::Null => Value::Null,
+        SVal::Int(i) => Value::Int(i),
+        SVal::Float(f) => Value::Float(f),
+        SVal::Text(s) => Value::Text(s),
     }
-    if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(i) {
-        return SVal::Float(v);
+}
+
+fn dari_db(v: Value) -> SVal {
+    match v {
+        Value::Null => SVal::Null,
+        Value::Int(i) => SVal::Int(i),
+        Value::Float(f) => SVal::Float(f),
+        Value::Text(s) => SVal::Text(s),
     }
-    if let Ok(Some(v)) = row.try_get::<Option<String>, _>(i) {
-        return SVal::Text(v);
-    }
-    SVal::Null
 }
 
 fn sval_i64(v: &SVal) -> Option<i64> {
@@ -46,38 +51,21 @@ fn sval_i64(v: &SVal) -> Option<i64> {
 }
 
 async fn tx_q_all(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     sql: String,
     vals: Vec<SVal>,
     ncols: usize,
     label: &str,
 ) -> Result<Vec<Vec<SVal>>, String> {
-    let mut q = sea_orm::sqlx::query(AssertSqlSafe(sql));
-    for v in vals {
-        q = match v {
-            SVal::Null => q.bind(None::<String>),
-            SVal::Int(i) => q.bind(i),
-            SVal::Float(f) => q.bind(f),
-            SVal::Text(s) => q.bind(s),
-        };
-    }
-    let rows = q
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|e| format!("gagal {label}: {e}"))?;
-    let mut out = Vec::new();
-    for r in rows {
-        let mut v = Vec::with_capacity(ncols);
-        for i in 0..ncols {
-            v.push(tx_cell(&r, i));
-        }
-        out.push(v);
-    }
-    Ok(out)
+    let rows = q_all(tx, sql, vals.into_iter().map(ke_db).collect(), ncols, label).await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| r.into_iter().map(dari_db).collect())
+        .collect())
 }
 
 async fn tx_q_one(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     sql: String,
     vals: Vec<SVal>,
     ncols: usize,
@@ -88,63 +76,34 @@ async fn tx_q_one(
 }
 
 async fn tx_exec(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     sql: String,
     vals: Vec<SVal>,
     label: &str,
 ) -> Result<u64, String> {
-    let mut q = sea_orm::sqlx::query(AssertSqlSafe(sql));
-    for v in vals {
-        q = match v {
-            SVal::Null => q.bind(None::<String>),
-            SVal::Int(i) => q.bind(i),
-            SVal::Float(f) => q.bind(f),
-            SVal::Text(s) => q.bind(s),
-        };
-    }
-    q.execute(&mut **tx)
-        .await
-        .map_err(|e| format!("gagal {label}: {e}"))
-        .map(|r| r.rows_affected())
-}
-
-async fn tx_rowid(tx: &mut Tx<'_>) -> i64 {
-    tx_q_one(
-        tx,
-        "SELECT last_insert_rowid()".to_string(),
-        vec![],
-        1,
-        "seed.rowid",
-    )
-    .await
-    .ok()
-    .flatten()
-    .as_ref()
-    .and_then(|r| sval_i64(&r[0]))
-    .unwrap_or(0)
+    exec(tx, sql, vals.into_iter().map(ke_db).collect(), label).await
 }
 
 /// Jalankan seluruh seed dalam satu transaksi.
 pub async fn seed(db: &sea_orm::DatabaseConnection) -> Result<SeedSummary, String> {
-    let pool = db.get_sqlite_connection_pool();
-    let mut tx = pool
+    let tx = db
         .begin()
         .await
         .map_err(|e| format!("gagal memulai transaksi seed: {e}"))?;
     let inner = async {
-        let company_id = seed_company(&mut tx).await?;
-        let (dept_hr, dept_it, dept_fin) = seed_departments(&mut tx, company_id).await?;
-        let (lvl_staff, _lvl_spv, lvl_mgr) = seed_job_levels(&mut tx).await?;
-        seed_job_grades(&mut tx).await?;
+        let company_id = seed_company(&tx).await?;
+        let (dept_hr, dept_it, dept_fin) = seed_departments(&tx, company_id).await?;
+        let (lvl_staff, _lvl_spv, lvl_mgr) = seed_job_levels(&tx).await?;
+        seed_job_grades(&tx).await?;
         let pos_hr_manager =
-            seed_positions(&mut tx, dept_hr, dept_it, dept_fin, lvl_staff, lvl_mgr).await?;
-        let hq_location = seed_work_location(&mut tx).await?;
-        seed_cost_center(&mut tx, dept_hr).await?;
-        let role_ids = seed_roles(&mut tx).await?;
-        let perm_ids = seed_permissions(&mut tx).await?;
-        seed_role_permissions(&mut tx, &role_ids, &perm_ids).await?;
+            seed_positions(&tx, dept_hr, dept_it, dept_fin, lvl_staff, lvl_mgr).await?;
+        let hq_location = seed_work_location(&tx).await?;
+        seed_cost_center(&tx, dept_hr).await?;
+        let role_ids = seed_roles(&tx).await?;
+        let perm_ids = seed_permissions(&tx).await?;
+        seed_role_permissions(&tx, &role_ids, &perm_ids).await?;
         let admin_employee = seed_admin_employee(
-            &mut tx,
+            &tx,
             company_id,
             dept_hr,
             pos_hr_manager,
@@ -152,16 +111,16 @@ pub async fn seed(db: &sea_orm::DatabaseConnection) -> Result<SeedSummary, Strin
             hq_location,
         )
         .await?;
-        seed_admin_user(&mut tx, &role_ids, admin_employee).await?;
-        seed_leave_types(&mut tx).await?;
-        seed_permission_types(&mut tx).await?;
-        seed_salary_components(&mut tx).await?;
-        let schedule_regular = seed_shifts_and_schedule(&mut tx).await?;
-        seed_shift_assignment(&mut tx, admin_employee, schedule_regular).await?;
-        seed_holidays(&mut tx).await?;
-        seed_approval_workflows(&mut tx, &role_ids).await?;
-        seed_categories(&mut tx).await?;
-        seed_settings(&mut tx).await?;
+        seed_admin_user(&tx, &role_ids, admin_employee).await?;
+        seed_leave_types(&tx).await?;
+        seed_permission_types(&tx).await?;
+        seed_salary_components(&tx).await?;
+        let schedule_regular = seed_shifts_and_schedule(&tx).await?;
+        seed_shift_assignment(&tx, admin_employee, schedule_regular).await?;
+        seed_holidays(&tx).await?;
+        seed_approval_workflows(&tx, &role_ids).await?;
+        seed_categories(&tx).await?;
+        seed_settings(&tx).await?;
         Ok::<(), String>(())
     }
     .await;
@@ -198,25 +157,25 @@ async fn count(db: &sea_orm::DatabaseConnection, table: &str) -> Result<i64, Str
 
 /// Insert bila belum ada (berdasar constraint UNIQUE), kembalikan id.
 async fn insert_ignore(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     table: &str,
     columns: &str,
     placeholders: &str,
     p: Vec<SVal>,
 ) -> Result<i64, String> {
-    tx_exec(
+    Ok(exec_insert(
         tx,
         format!("INSERT OR IGNORE INTO {table} ({columns}) VALUES ({placeholders})"),
-        p,
+        p.into_iter().map(ke_db).collect(),
         "seed.insert",
     )
     .await
-    .map_err(|e| format!("gagal insert {table}: {e}"))?;
-    Ok(tx_rowid(tx).await)
+    .map_err(|e| format!("gagal insert {table}: {e}"))
+    .unwrap_or(0))
 }
 
 async fn find_id(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     table: &str,
     where_clause: &str,
     p: Vec<SVal>,
@@ -241,7 +200,7 @@ fn i(v: i64) -> SVal {
     SVal::Int(v)
 }
 
-async fn seed_company(tx: &mut Tx<'_>) -> Result<i64, String> {
+async fn seed_company(tx: &Tx) -> Result<i64, String> {
     insert_ignore(
         tx,
         "companies",
@@ -268,7 +227,7 @@ async fn seed_company(tx: &mut Tx<'_>) -> Result<i64, String> {
 }
 
 async fn seed_departments(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     company_id: i64,
 ) -> Result<(i64, i64, i64), String> {
     let branch_id = insert_ignore(
@@ -322,7 +281,7 @@ async fn seed_departments(
     Ok((ids[0], ids[1], ids[2]))
 }
 
-async fn seed_job_levels(tx: &mut Tx<'_>) -> Result<(i64, i64, i64), String> {
+async fn seed_job_levels(tx: &Tx) -> Result<(i64, i64, i64), String> {
     let mut ids = Vec::new();
     for (code, name, order) in [
         ("STAFF", "Staff", 1),
@@ -347,7 +306,7 @@ async fn seed_job_levels(tx: &mut Tx<'_>) -> Result<(i64, i64, i64), String> {
     Ok((ids[0], ids[1], ids[2]))
 }
 
-async fn seed_job_grades(tx: &mut Tx<'_>) -> Result<(), String> {
+async fn seed_job_grades(tx: &Tx) -> Result<(), String> {
     for order in 1..=5 {
         let code = format!("G{order}");
         let name = format!("Grade {order}");
@@ -364,7 +323,7 @@ async fn seed_job_grades(tx: &mut Tx<'_>) -> Result<(), String> {
 }
 
 async fn seed_positions(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     dept_hr: i64,
     dept_it: i64,
     dept_fin: i64,
@@ -397,7 +356,7 @@ async fn seed_positions(
     Ok(hr_manager)
 }
 
-async fn seed_work_location(tx: &mut Tx<'_>) -> Result<i64, String> {
+async fn seed_work_location(tx: &Tx) -> Result<i64, String> {
     insert_ignore(
         tx,
         "work_locations",
@@ -422,7 +381,7 @@ async fn seed_work_location(tx: &mut Tx<'_>) -> Result<i64, String> {
     .ok_or_else(|| "work location tidak ditemukan setelah seed".to_string())
 }
 
-async fn seed_cost_center(tx: &mut Tx<'_>, dept_hr: i64) -> Result<(), String> {
+async fn seed_cost_center(tx: &Tx, dept_hr: i64) -> Result<(), String> {
     insert_ignore(
         tx,
         "cost_centers",
@@ -435,7 +394,7 @@ async fn seed_cost_center(tx: &mut Tx<'_>, dept_hr: i64) -> Result<(), String> {
 }
 
 async fn seed_roles(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
 ) -> Result<std::collections::HashMap<String, i64>, String> {
     let roles = [
         (
@@ -514,7 +473,7 @@ fn title_case(s: &str) -> String {
 }
 
 async fn seed_permissions(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
 ) -> Result<std::collections::HashMap<String, i64>, String> {
     let modules: Vec<(&str, Vec<&str>)> = vec![
         (
@@ -585,7 +544,7 @@ async fn seed_permissions(
     Ok(map)
 }
 
-async fn grant(tx: &mut Tx<'_>, role_id: i64, perm_id: i64) -> Result<(), String> {
+async fn grant(tx: &Tx, role_id: i64, perm_id: i64) -> Result<(), String> {
     tx_exec(
         tx,
         "INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?1, ?2)".to_string(),
@@ -598,7 +557,7 @@ async fn grant(tx: &mut Tx<'_>, role_id: i64, perm_id: i64) -> Result<(), String
 }
 
 async fn seed_role_permissions(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     roles: &std::collections::HashMap<String, i64>,
     perms: &std::collections::HashMap<String, i64>,
 ) -> Result<(), String> {
@@ -731,7 +690,7 @@ async fn seed_role_permissions(
 }
 
 async fn seed_admin_employee(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     company_id: i64,
     dept_hr: i64,
     pos_hr_manager: i64,
@@ -781,7 +740,7 @@ async fn seed_admin_employee(
 }
 
 async fn seed_admin_user(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     roles: &std::collections::HashMap<String, i64>,
     admin_employee: i64,
 ) -> Result<(), String> {
@@ -821,7 +780,7 @@ async fn seed_admin_user(
     Ok(())
 }
 
-async fn seed_leave_types(tx: &mut Tx<'_>) -> Result<(), String> {
+async fn seed_leave_types(tx: &Tx) -> Result<(), String> {
     let rows: Vec<(&str, &str, i64, i64, i64, i64, i64)> = vec![
         ("AL", "Annual Leave", 12, 1, 1, 6, 0),
         ("SL", "Sick Leave", 12, 1, 0, 0, 1),
@@ -853,7 +812,7 @@ async fn seed_leave_types(tx: &mut Tx<'_>) -> Result<(), String> {
     Ok(())
 }
 
-async fn seed_permission_types(tx: &mut Tx<'_>) -> Result<(), String> {
+async fn seed_permission_types(tx: &Tx) -> Result<(), String> {
     for (code, name) in [
         ("LATE", "Terlambat"),
         ("EARLY", "Pulang Cepat"),
@@ -872,7 +831,7 @@ async fn seed_permission_types(tx: &mut Tx<'_>) -> Result<(), String> {
     Ok(())
 }
 
-async fn seed_salary_components(tx: &mut Tx<'_>) -> Result<(), String> {
+async fn seed_salary_components(tx: &Tx) -> Result<(), String> {
     let rows: Vec<(&str, &str, &str, &str, i64)> = vec![
         ("BASIC", "Gaji Pokok", "income", "fixed", 1),
         ("POS_ALLOW", "Tunjangan Jabatan", "income", "fixed", 1),
@@ -916,7 +875,7 @@ async fn seed_salary_components(tx: &mut Tx<'_>) -> Result<(), String> {
     Ok(())
 }
 
-async fn seed_shifts_and_schedule(tx: &mut Tx<'_>) -> Result<i64, String> {
+async fn seed_shifts_and_schedule(tx: &Tx) -> Result<i64, String> {
     for (name, start, end, bstart, bend, overnight) in [
         (
             "Regular",
@@ -982,7 +941,7 @@ async fn seed_shifts_and_schedule(tx: &mut Tx<'_>) -> Result<i64, String> {
 }
 
 async fn seed_shift_assignment(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     employee_id: i64,
     schedule_id: i64,
 ) -> Result<(), String> {
@@ -1009,7 +968,7 @@ async fn seed_shift_assignment(
     Ok(())
 }
 
-async fn seed_holidays(tx: &mut Tx<'_>) -> Result<(), String> {
+async fn seed_holidays(tx: &Tx) -> Result<(), String> {
     let year = Local::now().format("%Y").to_string();
     for (name, suffix) in [
         ("Tahun Baru Masehi", "-01-01"),
@@ -1031,7 +990,7 @@ async fn seed_holidays(tx: &mut Tx<'_>) -> Result<(), String> {
 }
 
 async fn seed_approval_workflows(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     roles: &std::collections::HashMap<String, i64>,
 ) -> Result<(), String> {
     let workflows: Vec<(&str, &str, Vec<&str>)> = vec![
@@ -1102,7 +1061,7 @@ async fn seed_approval_workflows(
     Ok(())
 }
 
-async fn seed_categories(tx: &mut Tx<'_>) -> Result<(), String> {
+async fn seed_categories(tx: &Tx) -> Result<(), String> {
     for (code, name) in [
         ("LAPTOP", "Laptop"),
         ("MOBILE", "Handphone"),
@@ -1141,7 +1100,7 @@ async fn seed_categories(tx: &mut Tx<'_>) -> Result<(), String> {
     Ok(())
 }
 
-async fn seed_settings(tx: &mut Tx<'_>) -> Result<(), String> {
+async fn seed_settings(tx: &Tx) -> Result<(), String> {
     let settings: Vec<(&str, &str)> = vec![
         ("company_name", "PT Contoh Sukses Indonesia"),
         ("company_email", "info@contohsukses.co.id"),
