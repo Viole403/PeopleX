@@ -158,7 +158,7 @@ pub async fn ip_allowed(db: &sea_orm::DatabaseConnection, ip: &str) -> Result<bo
 pub struct SecurityStatus {
     pub pii_enabled: bool,
     pub ip_whitelist: String,
-    pub session_ttl_secs: i64,
+    pub session_ttl_secs: i32,
 }
 
 pub async fn security_status_sea(db: &sea_orm::DatabaseConnection) -> Result<SecurityStatus, String> {
@@ -167,13 +167,13 @@ pub async fn security_status_sea(db: &sea_orm::DatabaseConnection) -> Result<Sec
     Ok(SecurityStatus {
         pii_enabled,
         ip_whitelist,
-        session_ttl_secs: SESSION_TTL_SECS,
+        session_ttl_secs: SESSION_TTL_SECS as i32,
     })
 }
 
 async fn upsert_text(db: &sea_orm::DatabaseConnection, key: &str, val: &str) -> Result<(), String> {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let sql = "INSERT INTO system_settings (setting_key, setting_value, updated_at) VALUES ?1, ?2, ?3 \
+    let sql = "INSERT INTO system_settings (setting_key, setting_value, updated_at) VALUES (?1, ?2, ?3) \
                ON CONFLICT(setting_key) DO UPDATE SET setting_value = ?4, updated_at = ?5"
         .to_string();
     exec(
@@ -239,7 +239,7 @@ pub async fn login_activity_list_sea(
 ) -> Result<Vec<LoginActivityRow>, String> {
     let rows = q_all(
         db,
-        "SELECT username_attempt, ip_address, user_agent, status, created_at FROM login_activity ORDER BY id DESC LIMIT 100".to_string(),
+        "SELECT username_attempt, ip_address, user_agent, status, created_at FROM login_activities ORDER BY id DESC LIMIT 100".to_string(),
         vec![],
         5,
         "security.activity",
@@ -312,7 +312,7 @@ mod tests {
         put(&db, "pii_key", "kunci-tes-2").await;
         let st = security_status_sea(&db).await.expect("status");
         assert!(st.pii_enabled);
-        assert_eq!(st.session_ttl_secs, SESSION_TTL_SECS);
+        assert_eq!(st.session_ttl_secs, SESSION_TTL_SECS as i32);
         let aktivitas = login_activity_list_sea(&db).await.expect("aktivitas");
         let _ = aktivitas.len();
     }
