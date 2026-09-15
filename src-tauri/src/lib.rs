@@ -3827,6 +3827,26 @@ async fn report_analytics(
 
 #[tauri::command]
 #[specta::specta]
+async fn report_custom_fields(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::reports::ReportField>, String> {
+    require(&state, &["report.view", "system.manage"]).await?;
+    services::reports::custom_fields_sea().await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn report_custom(
+    state: tauri::State<'_, AppState>,
+    fields: Vec<String>,
+    filters: Vec<services::reports::ReportFilter>,
+) -> Result<services::reports::ReportTable, String> {
+    require(&state, &["report.view", "system.manage"]).await?;
+    services::reports::custom_sea(&state.sea, fields, filters).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn report_export(
     state: tauri::State<'_, AppState>,
     kind: String,
@@ -4228,6 +4248,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         report_performance,
         report_contracts,
         report_analytics,
+        report_custom_fields,
+        report_custom,
         report_export
     ])
 }

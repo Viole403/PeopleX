@@ -193,6 +193,123 @@ use super::sea_raw::{q_all, q_one, value_i64, value_to_string, Value};
 
 const FULL_SEA: &str = "TRIM(e.first_name || ' ' || COALESCE(e.last_name,''))";
 
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct ReportField {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct ReportFilter {
+    pub field: String,
+    pub op: String,
+    pub value: String,
+}
+
+fn custom_fields() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        ("nip", "NIP", "e.employee_number"),
+        ("nama", "Nama", FULL_SEA),
+        ("gender", "Gender", "e.gender"),
+        ("departemen", "Departemen", "d.name"),
+        ("jabatan", "Jabatan", "p.name"),
+        ("tipe", "Tipe", "e.employment_type"),
+        ("status", "Status", "e.employment_status"),
+        ("tgl_masuk", "Tgl Masuk", "e.join_date"),
+        ("email", "Email", "e.personal_email"),
+        ("telepon", "Telepon", "e.phone"),
+        ("lokasi", "Lokasi", "wl.name"),
+        ("nik", "NIK", "e.nik"),
+    ]
+}
+
+pub async fn custom_fields_sea() -> Result<Vec<ReportField>, String> {
+    Ok(custom_fields()
+        .iter()
+        .map(|(id, label, _)| ReportField {
+            id: id.to_string(),
+            label: label.to_string(),
+        })
+        .collect())
+}
+
+pub async fn custom_sea(
+    db: &sea_orm::DatabaseConnection,
+    fields: Vec<String>,
+    filters: Vec<ReportFilter>,
+) -> Result<ReportTable, String> {
+    let defs = custom_fields();
+    let mut cols: Vec<(&str, &str, &str)> = Vec::new();
+    for f in &fields {
+        match defs.iter().find(|(id, _, _)| id == f) {
+            Some((id, label, expr)) => cols.push((id, label, expr)),
+            None => return Err(format!("Field tidak dikenal: {f}.")),
+        }
+    }
+    if cols.is_empty() {
+        return Err("Pilih minimal satu field.".to_string());
+    }
+    if cols.len() > 12 {
+        return Err("Maksimal 12 field.".to_string());
+    }
+    let select = cols
+        .iter()
+        .map(|(_, _, expr)| *expr)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut sql = format!("SELECT {select} FROM employees e LEFT JOIN departments d ON d.id = e.department_id LEFT JOIN positions p ON p.id = e.position_id LEFT JOIN work_locations wl ON wl.id = e.work_location_id WHERE e.deleted_at IS NULL");
+    let mut vals: Vec<Value> = Vec::new();
+    let mut n = 0usize;
+    for flt in &filters {
+        let expr = match defs.iter().find(|(id, _, _)| id == &flt.field) {
+            Some((_, _, expr)) => *expr,
+            None => return Err(format!("Field filter tidak dikenal: {}.", flt.field)),
+        };
+        n += 1;
+        let ph = format!("?{n}");
+        match flt.op.as_str() {
+            "eq" => {
+                sql.push_str(&format!(" AND {expr} = {ph}"));
+                vals.push(Value::Text(flt.value.clone()));
+            }
+            "like" => {
+                sql.push_str(&format!(" AND {expr} LIKE '%' || {ph} || '%'"));
+                vals.push(Value::Text(flt.value.clone()));
+            }
+            "gte" => {
+                sql.push_str(&format!(" AND {expr} >= {ph}"));
+                vals.push(Value::Text(flt.value.clone()));
+            }
+            "lte" => {
+                sql.push_str(&format!(" AND {expr} <= {ph}"));
+                vals.push(Value::Text(flt.value.clone()));
+            }
+            _ => return Err(format!("Operator tidak dikenal: {}.", flt.op)),
+        }
+    }
+    sql.push_str(" ORDER BY e.first_name LIMIT 2000");
+    let rows = q_all(db, sql, vals, cols.len(), "report.custom")
+        .await
+        .map_err(|e| format!("gagal membaca laporan kustom: {e}"))?;
+    let headers = cols.iter().map(|(_, label, _)| label.to_string()).collect();
+    let out = rows
+        .iter()
+        .map(|r| {
+            r.iter()
+                .map(|v| match v {
+                    Value::Null => "-".to_string(),
+                    _ => value_to_string(v),
+                })
+                .collect()
+        })
+        .collect();
+    Ok(ReportTable {
+        title: "Laporan Kustom".to_string(),
+        headers,
+        rows: out,
+    })
+}
+
 fn rnum(v: &Value) -> String {
     num(match v {
         Value::Float(f) => *f,
@@ -807,6 +924,64 @@ mod tests {
             .await
             .expect("pdf tahunan");
         assert!(pdf.bytes.starts_with(b"%PDF"));
+    }
+
+    #[tokio::test]
+    async fn builder_kustom_field_dan_filter_sea() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let fields = custom_fields_sea().await.expect("daftar field");
+        assert!(fields.iter().any(|f| f.id == "nama"));
+        let t = custom_sea(
+            db,
+            vec!["nip".to_string(), "nama".to_string(), "status".to_string()],
+            vec![],
+        )
+        .await
+        .expect("kustom");
+        assert_eq!(t.headers, vec!["NIP", "Nama", "Status"]);
+        assert!(!t.rows.is_empty());
+        let saring = custom_sea(
+            db,
+            vec!["nip".to_string(), "nama".to_string()],
+            vec![ReportFilter {
+                field: "nip".to_string(),
+                op: "eq".to_string(),
+                value: "EMP-0001".to_string(),
+            }],
+        )
+        .await
+        .expect("saring eq");
+        assert_eq!(saring.rows.len(), 1);
+        assert_eq!(saring.rows[0][0], "EMP-0001");
+        let cari = custom_sea(
+            db,
+            vec!["nama".to_string()],
+            vec![ReportFilter {
+                field: "nama".to_string(),
+                op: "like".to_string(),
+                value: "Super".to_string(),
+            }],
+        )
+        .await
+        .expect("saring like");
+        assert_eq!(cari.rows.len(), 1);
+        assert!(custom_sea(db, vec![], vec![]).await.is_err());
+        assert!(custom_sea(db, vec!["ngawur".to_string()], vec![])
+            .await
+            .is_err());
+        assert!(custom_sea(
+            db,
+            vec!["nama".to_string()],
+            vec![ReportFilter {
+                field: "nama".to_string(),
+                op: "ngawur".to_string(),
+                value: "x".to_string(),
+            }],
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]
