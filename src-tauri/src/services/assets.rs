@@ -828,6 +828,232 @@ pub async fn mark_available_sea(
     Ok(())
 }
 
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct QrPayload {
+    pub asset_id: i32,
+    pub code: String,
+    pub payload: String,
+    pub hmac: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct BookRow {
+    pub asset_id: i32,
+    pub code: String,
+    pub name: String,
+    pub cost: f64,
+    pub accumulated: f64,
+    pub book_value: f64,
+}
+
+fn sha256_assets(teks: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(teks.as_bytes());
+    let out = hasher.finalize();
+    let mut s = String::with_capacity(out.len() * 2);
+    for b in out {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
+}
+
+fn dis_num(v: &Value) -> f64 {
+    match v {
+        Value::Float(f) => *f,
+        Value::Int(i) => *i as f64,
+        _ => 0.0,
+    }
+}
+
+pub async fn asset_qr_sea(
+    db: &sea_orm::DatabaseConnection,
+    asset_id: i64,
+) -> Result<QrPayload, String> {
+    let row = q_one(
+        db,
+        "SELECT asset_code, id FROM assets WHERE id = ?1 AND deleted_at IS NULL".to_string(),
+        vec![asset_id.into()],
+        2,
+        "aset.qr",
+    )
+    .await?;
+    let r = row.ok_or("Aset tidak ditemukan.".to_string())?;
+    let code = value_to_string(&r[0]);
+    let id = value_i64(&r[1]).unwrap_or(asset_id);
+    let payload = format!("{}|{}", code, id);
+    let secret_row = q_one(
+        db,
+        "SELECT setting_value FROM system_settings WHERE setting_key = 'qr_secret'".to_string(),
+        vec![],
+        1,
+        "aset.qr.secret",
+    )
+    .await?;
+    let secret = match secret_row {
+        Some(v) => match &v[0] {
+            Value::Text(s) if !s.is_empty() => s.clone(),
+            _ => "peoplex-qr".to_string(),
+        },
+        None => "peoplex-qr".to_string(),
+    };
+    let hmac = sha256_assets(&format!("{}|{}", payload, secret));
+    Ok(QrPayload {
+        asset_id: to_dto_int(id, "qr.asset_id")?,
+        code,
+        payload,
+        hmac,
+    })
+}
+
+pub async fn depreciation_run_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    period: &str,
+) -> Result<i32, String> {
+    if period.len() != 7
+        || !period.bytes().take(4).all(|c| c.is_ascii_digit())
+        || period.as_bytes()[4] != b'-'
+        || !period.bytes().skip(5).all(|c| c.is_ascii_digit())
+    {
+        return Err("Format periode tidak valid.".to_string());
+    }
+    let month: i64 = period[5..7]
+        .parse()
+        .map_err(|_| "Format periode tidak valid.".to_string())?;
+    if month < 1 || month > 12 {
+        return Err("Format periode tidak valid.".to_string());
+    }
+    let bulan = &period[..7];
+    let rows = q_all(
+        db,
+        "SELECT id, purchase_price, purchase_date, COALESCE(useful_life_months, 48), COALESCE(salvage_value, 0) FROM assets WHERE deleted_at IS NULL AND status <> 'disposed' AND purchase_price IS NOT NULL AND purchase_date IS NOT NULL ORDER BY id".to_string(),
+        vec![],
+        5,
+        "dep.list",
+    )
+    .await?;
+    let now = chrono::Local::now().to_rfc3339();
+    let mut count: i64 = 0;
+    for r in rows {
+        let aid = value_i64(&r[0]).unwrap_or(0);
+        let cost = dis_num(&r[1]);
+        let pd = value_to_string(&r[2]);
+        let umur = value_i64(&r[3]).unwrap_or(48);
+        let salvage = dis_num(&r[4]);
+        if pd.len() < 7 || bulan <= &pd[..7] {
+            continue;
+        }
+        if umur <= 0 || cost <= salvage {
+            continue;
+        }
+        let monthly = (cost - salvage) / umur as f64;
+        if monthly <= 0.0 {
+            continue;
+        }
+        let posted = q_one(
+            db,
+            "SELECT COUNT(*) FROM asset_depreciations WHERE asset_id = ?1".to_string(),
+            vec![aid.into()],
+            1,
+            "dep.posted",
+        )
+        .await?;
+        if let Some(p) = posted {
+            if value_i64(&p[0]).unwrap_or(0) >= umur {
+                continue;
+            }
+        }
+        let exists = q_one(
+            db,
+            "SELECT id FROM asset_depreciations WHERE asset_id = ?1 AND period = ?2".to_string(),
+            vec![aid.into(), bulan.to_string().into()],
+            1,
+            "dep.exists",
+        )
+        .await?;
+        if exists.is_some() {
+            continue;
+        }
+        let last = q_one(
+            db,
+            "SELECT closing FROM asset_depreciations WHERE asset_id = ?1 ORDER BY period DESC LIMIT 1".to_string(),
+            vec![aid.into()],
+            1,
+            "dep.last",
+        )
+        .await?;
+        let opening = match &last {
+            Some(v) => dis_num(&v[0]),
+            None => cost,
+        };
+        let mut closing = opening - monthly;
+        if closing < salvage {
+            closing = salvage;
+        }
+        exec(
+            db,
+            "INSERT INTO asset_depreciations (asset_id, period, opening, depreciation, closing, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)".to_string(),
+            vec![
+                aid.into(),
+                bulan.to_string().into(),
+                Value::Float(opening),
+                Value::Float(opening - closing),
+                Value::Float(closing),
+                now.clone().into(),
+                now.clone().into(),
+            ],
+            "dep.insert",
+        )
+        .await?;
+        count += 1;
+    }
+    if count > 0 {
+        audit::log_sea(
+            db,
+            Some(actor_id),
+            "CREATE",
+            "asset.depreciation",
+            None,
+            None,
+            None,
+            Some("Depresiasi berjalan dicatat."),
+        )
+        .await?;
+    }
+    to_dto_int(count, "dep.jumlah")
+}
+
+pub async fn asset_book_sea(
+    db: &sea_orm::DatabaseConnection,
+) -> Result<Vec<BookRow>, String> {
+    let rows = q_all(
+        db,
+        "SELECT a.id, a.asset_code, a.name, a.purchase_price, (SELECT closing FROM asset_depreciations d WHERE d.asset_id = a.id ORDER BY d.period DESC LIMIT 1) FROM assets a WHERE a.deleted_at IS NULL AND a.status <> 'disposed' AND a.purchase_price IS NOT NULL ORDER BY a.id".to_string(),
+        vec![],
+        5,
+        "buku.list",
+    )
+    .await?;
+    let mut out = Vec::new();
+    for r in rows {
+        let cost = dis_num(&r[3]);
+        let book = match &r[4] {
+            Value::Null => cost,
+            v => dis_num(v),
+        };
+        out.push(BookRow {
+            asset_id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "buku.id")?,
+            code: value_to_string(&r[1]),
+            name: value_to_string(&r[2]),
+            cost,
+            accumulated: cost - book,
+            book_value: book,
+        });
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1273,5 +1499,39 @@ mod tests {
         category_delete_sea(db, actor, mobile)
             .await
             .expect("kategori tanpa aset harus terhapus");
+    }
+
+    #[tokio::test]
+    async fn qr_dan_depresiasi_berjalan() {
+        let (_d, state) = state().await;
+        let db = &state.sea;
+        let actor = one(db, "SELECT id FROM users WHERE username = 'admin'", "t.admin").await;
+        let cat = one(db, "SELECT id FROM asset_categories WHERE code = 'LAPTOP'", "t.cat").await as i32;
+        let aid = asset_save_sea(db, actor, None, &aset_input(cat))
+            .await
+            .expect("aset");
+        exec(
+            db,
+            "UPDATE assets SET useful_life_months = 48, salvage_value = NULL WHERE id = ?1".to_string(),
+            vec![aid.into()],
+            "t.upd",
+        )
+        .await
+        .expect("umur");
+        let qr = asset_qr_sea(db, aid as i64).await.expect("qr");
+        assert_eq!(qr.payload, format!("LT-001|{}", aid));
+        assert_eq!(qr.hmac.chars().count(), 64);
+        assert_eq!(depreciation_run_sea(db, actor, "2026-02").await.expect("r1"), 1);
+        assert_eq!(depreciation_run_sea(db, actor, "2026-02").await.expect("r2"), 0);
+        assert_eq!(depreciation_run_sea(db, actor, "2026-03").await.expect("r3"), 1);
+        assert_eq!(depreciation_run_sea(db, actor, "2025-12").await.expect("r0"), 0);
+        assert!(depreciation_run_sea(db, actor, "2026-13")
+            .await
+            .unwrap_err()
+            .contains("Format periode tidak valid."));
+        let buku = asset_book_sea(db).await.expect("buku");
+        let baris = buku.iter().find(|b| b.asset_id == aid).expect("baris buku");
+        assert!((baris.book_value - 14_375_000f64).abs() < 1e-6);
+        assert!((baris.accumulated - 625_000f64).abs() < 1e-6);
     }
 }

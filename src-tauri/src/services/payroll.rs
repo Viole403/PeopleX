@@ -1568,7 +1568,7 @@ pub async fn ewa_request_sea(
     let rid = exec_insert(
         db,
         "INSERT INTO ewa_withdrawals (employee_id, amount) VALUES (?1, ?2)".to_string(),
-        vec![employee_id.into(), amount.into()],
+        vec![employee_id.into(), Value::Float(amount)],
         "ewa.request",
     )
     .await?;
@@ -1687,7 +1687,10 @@ pub async fn ewa_decide_sea(
             decision.into(),
             actor.into(),
             waktu.into(),
-            notes.map(|s| s.to_string()).into(),
+            match notes {
+                Some(s) => Value::Text(s.to_string()),
+                None => Value::Null,
+            },
             id.into(),
         ],
         "ewa.decide",
@@ -1801,7 +1804,7 @@ pub async fn payroll_whatif_sea(
     })
 }
 
-async fn period_status_sea(db: &sea_orm::DatabaseConnection, id: i64) -> Result<String, String> {
+async fn period_paid_or_locked_sea(db: &sea_orm::DatabaseConnection, id: i64) -> Result<String, String> {
     let rows = q_one(
         db,
         "SELECT status FROM payroll_periods WHERE id = ?1".to_string(),
@@ -1823,7 +1826,7 @@ pub async fn payroll_bank_file_sea(
     db: &sea_orm::DatabaseConnection,
     period_id: i64,
 ) -> Result<String, String> {
-    period_status_sea(db, period_id).await?;
+    period_paid_or_locked_sea(db, period_id).await?;
     let rows = q_all(
         db,
         "SELECT e.employee_number, e.first_name || ' ' || COALESCE(e.last_name, ''), COALESCE(e.bank_name, ''), COALESCE(e.bank_account_number, ''), p.net_salary FROM payrolls p INNER JOIN employees e ON e.id = p.employee_id WHERE p.payroll_period_id = ?1 ORDER BY e.employee_number".to_string(),
@@ -1849,6 +1852,164 @@ pub async fn payroll_bank_file_sea(
     Ok(out)
 }
 
+
+pub async fn payroll_journal_post_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    period_id: i64,
+) -> Result<i32, String> {
+    let row = q_one(
+        db,
+        "SELECT status, start_date, name FROM payroll_periods WHERE id = ?1".to_string(),
+        vec![Value::Int(period_id)],
+        3,
+        "read_period_journal",
+    )
+    .await?;
+    let row = match row {
+        Some(r) => r,
+        None => return Err("Periode tidak ditemukan.".to_string()),
+    };
+    let status = value_to_string(&row[0]);
+    if status != "paid" && status != "locked" {
+        return Err("Periode belum dibayar.".to_string());
+    }
+    let start = value_to_string(&row[1]);
+    let name = value_to_string(&row[2]);
+    let label = if start.chars().count() >= 7 {
+        start.chars().take(7).collect::<String>()
+    } else {
+        start.clone()
+    };
+    let agg = q_one(
+        db,
+        "SELECT COALESCE(SUM(gross_salary), 0), COALESCE(SUM(total_deduction), 0), COALESCE(SUM(net_salary), 0) FROM payrolls WHERE payroll_period_id = ?1"
+            .to_string(),
+        vec![Value::Int(period_id)],
+        3,
+        "agg_payroll_journal",
+    )
+    .await?;
+    let mut gross = 0f64;
+    let mut deduction = 0f64;
+    let mut net = 0f64;
+    if let Some(a) = agg {
+        gross = journal_num(&a[0]);
+        deduction = journal_num(&a[1]);
+        net = journal_num(&a[2]);
+    }
+    let source = format!("payroll:{}", period_id);
+    exec(
+        db,
+        "DELETE FROM gl_entries WHERE source = ?1".to_string(),
+        vec![Value::Text(source.clone())],
+        "clear_journal",
+    )
+    .await?;
+    let lines: [(&str, f64, f64); 3] = [
+        ("5-100 Beban Gaji", gross, 0f64),
+        ("2-100 Utang Potongan", 0f64, deduction),
+        ("1-100 Bank", 0f64, net),
+    ];
+    for (account, debit, credit) in lines.iter() {
+        exec(
+            db,
+            "INSERT INTO gl_entries (period, account, debit, credit, description, source, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
+                .to_string(),
+            vec![
+                Value::Text(label.clone()),
+                Value::Text(account.to_string()),
+                Value::Float(*debit),
+                Value::Float(*credit),
+                Value::Text(name.clone()),
+                Value::Text(source.clone()),
+                Value::Text(chrono::Local::now().to_rfc3339()),
+                Value::Text(chrono::Local::now().to_rfc3339()),
+            ],
+            "insert_journal_line",
+        )
+        .await?;
+    }
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "CREATE",
+        "payroll.journal",
+        Some(&period_id.to_string()),
+        None,
+        None,
+        Some("Jurnal gaji dibuat dari periode yang telah dibayar."),
+    )
+    .await?;
+    Ok(3)
+}
+
+pub async fn payroll_journal_list_sea(
+    db: &sea_orm::DatabaseConnection,
+    period: Option<&str>,
+) -> Result<Vec<JournalRow>, String> {
+    let rows = match period {
+        Some(p) => {
+            q_all(
+                db,
+                "SELECT id, period, account, debit, credit, description, source FROM gl_entries WHERE period = ?1 ORDER BY id DESC LIMIT 200".to_string(),
+                vec![Value::Text(p.to_string())],
+                7,
+                "list_journal_filtered",
+            )
+            .await?
+        }
+        None => {
+            q_all(
+                db,
+                "SELECT id, period, account, debit, credit, description, source FROM gl_entries ORDER BY id DESC LIMIT 200".to_string(),
+                vec![],
+                7,
+                "list_journal_all",
+            )
+            .await?
+        }
+    };
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(JournalRow {
+            id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "journal.id")?,
+            period: value_to_string(&r[1]),
+            account: value_to_string(&r[2]),
+            debit: journal_num(&r[3]),
+            credit: journal_num(&r[4]),
+            description: opt_string(&r[5]),
+            source: opt_string(&r[6]),
+        });
+    }
+    Ok(out)
+}
+
+fn journal_num(v: &Value) -> f64 {
+    match v {
+        Value::Float(f) => *f,
+        Value::Int(i) => *i as f64,
+        _ => 0f64,
+    }
+}
+
+fn opt_string(v: &Value) -> Option<String> {
+    match v {
+        Value::Null => None,
+        _ => Some(value_to_string(v)),
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct JournalRow {
+    pub id: i32,
+    pub period: String,
+    pub account: String,
+    pub debit: f64,
+    pub credit: f64,
+    pub description: Option<String>,
+    pub source: Option<String>,
+}
 
 #[cfg(test)]
 
@@ -2282,5 +2443,37 @@ mod tests {
         assert!(csv.contains(";BCA;1230001;"));
         let total = one(db, "SELECT COUNT(*) FROM ewa_withdrawals", "ewa.nol").await;
         assert_eq!(total, 0);
+    }
+
+    #[tokio::test]
+    async fn jurnal_gaji_terkirim_saat_periode_dibayar() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = admin(db).await;
+        mkemp(db, "EMP-JR", 8_000_000.0, "TK/0").await;
+        let pid = period_create_sea(db, actor, actor, &period_input("JR", "2026-02-01", "2026-02-28"))
+            .await
+            .expect("periode");
+        assert_eq!(
+            payroll_journal_post_sea(db, actor, pid as i64).await.unwrap_err(),
+            "Periode belum dibayar."
+        );
+        generate_sea(db, actor, pid as i64).await.expect("generate");
+        approve_period_sea(db, actor, pid as i64).await.expect("setuju");
+        mark_paid_sea(db, actor, pid as i64).await.expect("bayar");
+        let n = payroll_journal_post_sea(db, actor, pid as i64).await.expect("post");
+        assert_eq!(n, 3);
+        let rows = payroll_journal_list_sea(db, Some("2026-02")).await.expect("list");
+        assert_eq!(rows.len(), 3);
+        let debit: f64 = rows.iter().map(|r| r.debit).sum();
+        let credit: f64 = rows.iter().map(|r| r.credit).sum();
+        assert!(debit > 0.0);
+        assert!((debit - credit).abs() < 1e-6);
+        payroll_journal_post_sea(db, actor, pid as i64).await.expect("repost");
+        let total = one(db, "SELECT COUNT(*) FROM gl_entries", "gl.total").await;
+        assert_eq!(total, 3);
+        let src = text(db, "SELECT DISTINCT source FROM gl_entries", "gl.source").await;
+        assert_eq!(src, format!("payroll:{}", pid));
     }
 }

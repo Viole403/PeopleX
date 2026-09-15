@@ -1607,6 +1607,259 @@ pub async fn pipeline_sea(
         .collect())
 }
 
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug, Default)]
+pub struct RequisitionInput {
+    pub position_id: Option<i32>,
+    pub department_id: Option<i32>,
+    pub headcount: i32,
+    pub reason: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct Requisition {
+    pub id: i32,
+    pub requested_by: i32,
+    pub requester_name: String,
+    pub position_id: Option<i32>,
+    pub department_id: Option<i32>,
+    pub headcount: i32,
+    pub reason: String,
+    pub status: String,
+    pub vacancy_id: Option<i32>,
+    pub notes: Option<String>,
+    pub created_at: String,
+}
+
+fn req_opt_i32(v: &Value) -> Result<Option<i32>, String> {
+    match v {
+        Value::Null => Ok(None),
+        _ => Ok(Some(to_dto_int(value_i64(v).unwrap_or(0), "req.nilai")?)),
+    }
+}
+
+fn req_opt_string(v: &Value) -> Option<String> {
+    match v {
+        Value::Null => None,
+        Value::Text(s) => Some(s.clone()),
+        _ => Some(value_to_string(v)),
+    }
+}
+
+fn req_int_val(v: i32) -> Value {
+    (v as i64).into()
+}
+
+fn req_opt_val(v: Option<i32>) -> Value {
+    match v {
+        Some(x) => req_int_val(x),
+        None => Value::Null,
+    }
+}
+
+pub async fn requisition_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: Option<i64>,
+    input: &RequisitionInput,
+) -> Result<i32, String> {
+    if input.headcount < 1 || input.headcount > 999 {
+        return Err("Jumlah permintaan tidak valid.".to_string());
+    }
+    if input.reason.trim().is_empty() {
+        return Err("Alasan wajib diisi.".to_string());
+    }
+    let now = now_str();
+    match id {
+        Some(i) => {
+            let row = q_one(
+                db,
+                "SELECT status FROM requisitions WHERE id = ?1".to_string(),
+                vec![i.into()],
+                1,
+                "req.get",
+            )
+            .await?;
+            let r = row.ok_or("Permintaan tidak ditemukan.".to_string())?;
+            if value_to_string(&r[0]) != "pending" {
+                return Err("Keputusan sudah diambil.".to_string());
+            }
+            exec(
+                db,
+                "UPDATE requisitions SET position_id = ?1, department_id = ?2, headcount = ?3, reason = ?4, updated_at = ?5 WHERE id = ?6".to_string(),
+                vec![
+                    req_opt_val(input.position_id),
+                    req_opt_val(input.department_id),
+                    req_int_val(input.headcount),
+                    input.reason.trim().to_string().into(),
+                    now.clone().into(),
+                    i.into(),
+                ],
+                "req.upd",
+            )
+            .await?;
+            audit::log_sea(
+                db,
+                Some(actor_id),
+                "UPDATE",
+                "recruitment.requisition",
+                Some(&i.to_string()),
+                None,
+                None,
+                Some("Requisition diperbarui."),
+            )
+            .await?;
+            to_dto_int(i, "req.id")
+        }
+        None => {
+            let new_id = exec_insert(
+                db,
+                "INSERT INTO requisitions (requested_by, position_id, department_id, headcount, reason, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)".to_string(),
+                vec![
+                    actor_id.into(),
+                    req_opt_val(input.position_id),
+                    req_opt_val(input.department_id),
+                    req_int_val(input.headcount),
+                    input.reason.trim().to_string().into(),
+                    now.clone().into(),
+                    now.into(),
+                ],
+                "req.ins",
+            )
+            .await?;
+            audit::log_sea(
+                db,
+                Some(actor_id),
+                "CREATE",
+                "recruitment.requisition",
+                Some(&new_id.to_string()),
+                None,
+                None,
+                Some("Requisition dibuat."),
+            )
+            .await?;
+            to_dto_int(new_id, "req.id")
+        }
+    }
+}
+
+pub async fn requisition_decide_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: i64,
+    approve: bool,
+) -> Result<(), String> {
+    let row = q_one(
+        db,
+        "SELECT status, headcount, reason, position_id, department_id FROM requisitions WHERE id = ?1".to_string(),
+        vec![id.into()],
+        5,
+        "req.get",
+    )
+    .await?;
+    let r = row.ok_or("Permintaan tidak ditemukan.".to_string())?;
+    if value_to_string(&r[0]) != "pending" {
+        return Err("Keputusan sudah diambil.".to_string());
+    }
+    let headcount = value_i64(&r[1]).unwrap_or(1);
+    let reason = value_to_string(&r[2]);
+    let now = now_str();
+    if !approve {
+        exec(
+            db,
+            "UPDATE requisitions SET status = 'rejected', approved_by = ?1, approved_at = ?2, updated_at = ?3 WHERE id = ?4".to_string(),
+            vec![actor_id.into(), now.clone().into(), now.into(), id.into()],
+            "req.rej",
+        )
+        .await?;
+        audit::log_sea(
+            db,
+            Some(actor_id),
+            "UPDATE",
+            "recruitment.requisition",
+            Some(&id.to_string()),
+            None,
+            None,
+            Some("Requisition ditolak."),
+        )
+        .await?;
+        return Ok(());
+    }
+    exec(
+        db,
+        "UPDATE requisitions SET status = 'approved', approved_by = ?1, approved_at = ?2, updated_at = ?3 WHERE id = ?4".to_string(),
+        vec![actor_id.into(), now.clone().into(), now.clone().into(), id.into()],
+        "req.appr",
+    )
+    .await?;
+    let vid = vacancy_save_sea(
+        db,
+        actor_id,
+        None,
+        &VacancyInput {
+            title: format!("Requisition #{}", id),
+            department_id: req_opt_i32(&r[4])?,
+            position_id: req_opt_i32(&r[3])?,
+            employment_type: "contract".to_string(),
+            description: Some(reason),
+            requirements: None,
+            quota: headcount as i32,
+            status: "open".to_string(),
+            posted_date: None,
+            closing_date: None,
+        },
+    )
+    .await?;
+    exec(
+        db,
+        "UPDATE requisitions SET vacancy_id = ?1, updated_at = ?2 WHERE id = ?3".to_string(),
+        vec![(vid as i64).into(), now.into(), id.into()],
+        "req.vid",
+    )
+    .await?;
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "UPDATE",
+        "recruitment.requisition",
+        Some(&id.to_string()),
+        None,
+        None,
+        Some("Requisition disetujui, lowongan dibuka."),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn requisition_list_sea(
+    db: &sea_orm::DatabaseConnection,
+) -> Result<Vec<Requisition>, String> {
+    let rows = q_all(
+        db,
+        "SELECT r.id, r.requested_by, u.username, r.position_id, r.department_id, r.headcount, r.reason, r.status, r.vacancy_id, r.notes, r.created_at FROM requisitions r INNER JOIN users u ON u.id = r.requested_by ORDER BY r.id DESC".to_string(),
+        vec![],
+        11,
+        "req.list",
+    )
+    .await?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(Requisition {
+            id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "req.id")?,
+            requested_by: to_dto_int(value_i64(&r[1]).unwrap_or(0), "req.by")?,
+            requester_name: value_to_string(&r[2]),
+            position_id: req_opt_i32(&r[3])?,
+            department_id: req_opt_i32(&r[4])?,
+            headcount: to_dto_int(value_i64(&r[5]).unwrap_or(0), "req.hc")?,
+            reason: value_to_string(&r[6]),
+            status: value_to_string(&r[7]),
+            vacancy_id: req_opt_i32(&r[8])?,
+            notes: req_opt_string(&r[9]),
+            created_at: value_to_string(&r[10]),
+        });
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2315,5 +2568,97 @@ mod tests {
         let rows2 = pipeline_sea(db).await.expect("pipeline2");
         assert_eq!(rows2.iter().find(|r| r.stage == "applied").expect("a").count, 1);
         assert_eq!(rows2.iter().find(|r| r.stage == "screening").expect("s").count, 1);
+    }
+
+    #[tokio::test]
+    async fn requisition_menuju_lowongan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = admin(db).await;
+        let id = requisition_save_sea(
+            db,
+            actor,
+            None,
+            &RequisitionInput {
+                position_id: None,
+                department_id: None,
+                headcount: 2,
+                reason: "Butuh dua analis baru".to_string(),
+            },
+        )
+        .await
+        .expect("simpan");
+        assert_eq!(
+            requisition_save_sea(
+                db,
+                actor,
+                Some(id as i64),
+                &RequisitionInput {
+                    position_id: None,
+                    department_id: None,
+                    headcount: 3,
+                    reason: "Butuh tiga analis baru".to_string(),
+                },
+            )
+            .await
+            .expect("ubah"),
+            id
+        );
+        assert!(requisition_save_sea(
+            db,
+            actor,
+            None,
+            &RequisitionInput {
+                position_id: None,
+                department_id: None,
+                headcount: 0,
+                reason: "x".to_string(),
+            },
+        )
+        .await
+        .unwrap_err()
+        .contains("Jumlah permintaan tidak valid."));
+        let list = requisition_list_sea(db).await.expect("list");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].status, "pending");
+        assert_eq!(list[0].headcount, 3);
+        let v0 = value_i64(
+            &q_one(
+                db,
+                "SELECT COUNT(*) FROM vacancies".to_string(),
+                vec![],
+                1,
+                "t.v0",
+            )
+            .await
+            .expect("v0")
+            .expect("baris")[0],
+        )
+        .unwrap_or(0);
+        requisition_decide_sea(db, actor, id as i64, true)
+            .await
+            .expect("setuju");
+        let list2 = requisition_list_sea(db).await.expect("list2");
+        assert_eq!(list2[0].status, "approved");
+        assert!(list2[0].vacancy_id.is_some());
+        let v1 = value_i64(
+            &q_one(
+                db,
+                "SELECT COUNT(*) FROM vacancies".to_string(),
+                vec![],
+                1,
+                "t.v1",
+            )
+            .await
+            .expect("v1")
+            .expect("baris")[0],
+        )
+        .unwrap_or(0);
+        assert_eq!(v1, v0 + 1);
+        assert!(requisition_decide_sea(db, actor, id as i64, false)
+            .await
+            .unwrap_err()
+            .contains("Keputusan sudah diambil."));
     }
 }

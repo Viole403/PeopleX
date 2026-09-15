@@ -2553,6 +2553,102 @@ async fn asset_mark_available(state: tauri::State<'_, AppState>, asset_id: i32) 
 
 #[tauri::command]
 #[specta::specta]
+async fn payroll_journal_post(
+    state: tauri::State<'_, AppState>,
+    period_id: i32,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state,
+        &["payroll.approve", "system.manage"],
+    ).await?;
+    services::payroll::payroll_journal_post_sea(&state.sea, uid, period_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn payroll_journal_list(
+    state: tauri::State<'_, AppState>,
+    period: Option<String>,
+) -> Result<Vec<services::payroll::JournalRow>, String> {
+    require(&state,
+        &["payroll.view", "system.manage"],
+    ).await?;
+    services::payroll::payroll_journal_list_sea(&state.sea, period.as_deref()).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn asset_qr(
+    state: tauri::State<'_, AppState>,
+    asset_id: i32,
+) -> Result<services::assets::QrPayload, String> {
+    require(&state,
+        &["asset.view", "system.manage"],
+    ).await?;
+    services::assets::asset_qr_sea(&state.sea, asset_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn asset_depreciation_run(
+    state: tauri::State<'_, AppState>,
+    period: String,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state,
+        &["asset.create", "asset.update", "system.manage"],
+    ).await?;
+    services::assets::depreciation_run_sea(&state.sea, uid, &period).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn asset_book_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::assets::BookRow>, String> {
+    require(&state,
+        &["asset.view", "system.manage"],
+    ).await?;
+    services::assets::asset_book_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn recruitment_requisition_save(
+    state: tauri::State<'_, AppState>,
+    id: Option<i32>,
+    input: services::recruitment::RequisitionInput,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state,
+        &["recruitment.create", "recruitment.update", "system.manage"],
+    ).await?;
+    services::recruitment::requisition_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn recruitment_requisition_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::recruitment::Requisition>, String> {
+    require(&state,
+        &["recruitment.view", "system.manage"],
+    ).await?;
+    services::recruitment::requisition_list_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn recruitment_requisition_decide(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+    approve: bool,
+) -> Result<(), String> {
+    let (uid, _) = require(&state,
+        &["recruitment.update", "system.manage"],
+    ).await?;
+    services::recruitment::requisition_decide_sea(&state.sea, uid, id as i64, approve).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn trip_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::travel::Trip>, String> {
     let (uid, _) = current_actor(&state).await?;
     services::travel::my_trips_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
@@ -3769,6 +3865,14 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         policy_acks,
         consent_set,
         consent_list,
+        payroll_journal_post,
+        payroll_journal_list,
+        asset_qr,
+        asset_depreciation_run,
+        asset_book_list,
+        recruitment_requisition_save,
+        recruitment_requisition_list,
+        recruitment_requisition_decide,
         leave_carryover_run,
         approval_delegate,
         approval_delegations,
@@ -3963,7 +4067,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &111);
+                assert_eq!(t, &114);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),
