@@ -1,7 +1,7 @@
 use super::audit;
 use crate::services::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 use crate::to_dto_int;
-use chrono::Local;
+use chrono::{Datelike, Local, NaiveDate};
 
 fn now_str() -> String {
     Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
@@ -1253,5 +1253,149 @@ mod tests {
         assert_eq!(gap2.len(), 1);
         assert!((gap2[0].ratio - 5_000_000.0 / 6_000_000.0 * 100.0).abs() < 1.0);
     }
+
+    #[tokio::test]
+    async fn esop_vesting_cliff_dan_laporan() {
+        let dir = tempfile::tempdir().expect("dir");
+        let app = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &app.sea;
+        let actor = admin_id(db).await;
+        let emp = mkemp(db, "EMP-ESOP", 5_000_000.0).await;
+        assert!(esop_grant_sea(db, actor, &EsopGrantInput { employee_id: emp as i32, total_shares: 0, grant_date: "2026-01-01".to_string(), vest_months: 12, cliff_months: 3 }).await.is_err());
+        assert!(esop_grant_sea(db, actor, &EsopGrantInput { employee_id: emp as i32, total_shares: 1200, grant_date: "bukan-tanggal".to_string(), vest_months: 12, cliff_months: 3 }).await.is_err());
+        let gid = esop_grant_sea(db, actor, &EsopGrantInput { employee_id: emp as i32, total_shares: 1200, grant_date: "2026-01-01".to_string(), vest_months: 12, cliff_months: 3 }).await.expect("grant");
+        assert!(gid > 0);
+        let naik = esop_vest_run_sea(db, actor, "2026-06-01").await.expect("vest");
+        assert_eq!(naik, 2);
+        let daftar = esop_list_sea(db).await.expect("list");
+        let baris = daftar.iter().find(|g| g.id == gid).expect("baris");
+        assert_eq!(baris.vested_shares + baris.scheduled_shares, 1200);
+        assert_eq!(baris.vested_shares, 200);
+        let naik2 = esop_vest_run_sea(db, actor, "2027-06-01").await.expect("vest2");
+        assert_eq!(naik2, 7);
+        let daftar2 = esop_list_sea(db).await.expect("list2");
+        let baris2 = daftar2.iter().find(|g| g.id == gid).expect("baris2");
+        assert_eq!(baris2.vested_shares, 1200);
+        assert_eq!(baris2.scheduled_shares, 0);
+    }
+}
+
+// ---------------- ESOP vesting + kepemilikan ----------------
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct EsopGrant {
+    pub id: i32,
+    pub employee_id: i32,
+    pub employee_name: String,
+    pub total_shares: i32,
+    pub grant_date: String,
+    pub vest_months: i32,
+    pub cliff_months: i32,
+    pub vested_shares: i32,
+    pub scheduled_shares: i32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug, Default)]
+pub struct EsopGrantInput {
+    pub employee_id: i32,
+    pub total_shares: i32,
+    pub grant_date: String,
+    pub vest_months: i32,
+    pub cliff_months: i32,
+}
+
+fn tambah_bulan(tgl: NaiveDate, n: i32) -> NaiveDate {
+    let total = tgl.month0() + n as u32;
+    let tahun = tgl.year() + (total / 12) as i32;
+    let bulan = total % 12 + 1;
+    let batas = match bulan {
+        2 => if tahun % 4 == 0 && (tahun % 100 != 0 || tahun % 400 == 0) { 29 } else { 28 },
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    NaiveDate::from_ymd_opt(tahun, bulan, tgl.day().min(batas)).unwrap_or(tgl)
+}
+
+pub async fn esop_grant_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    input: &EsopGrantInput,
+) -> Result<i32, String> {
+    if input.total_shares < 1 {
+        return Err("Jumlah saham minimal 1.".to_string());
+    }
+    if input.vest_months < 1 || input.cliff_months < 0 || input.cliff_months > input.vest_months {
+        return Err("Tenor vesting tidak valid.".to_string());
+    }
+    let grant = NaiveDate::parse_from_str(input.grant_date.trim(), "%Y-%m-%d")
+        .map_err(|_| "Tanggal grant tidak valid.".to_string())?;
+    let now = now_str();
+    let gid = exec_insert(
+        db,
+        "INSERT INTO esop_grants (employee_id, total_shares, grant_date, vest_months, cliff_months, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)".to_string(),
+        vec![Value::Int(input.employee_id as i64), Value::Int(input.total_shares as i64), Value::Text(input.grant_date.trim().to_string()), Value::Int(input.vest_months as i64), Value::Int(input.cliff_months as i64), Value::Text(now)],
+        "esop.grant",
+    )
+    .await?;
+    let per_bulan = input.total_shares / input.vest_months;
+    let sisa = input.total_shares % input.vest_months;
+    for i in input.cliff_months..input.vest_months {
+        let lembar = if i == input.vest_months - 1 { per_bulan + sisa + per_bulan * input.cliff_months } else { per_bulan };
+        let tgl = tambah_bulan(grant, i + 1).format("%Y-%m-%d").to_string();
+        exec(
+            db,
+            "INSERT OR IGNORE INTO esop_vestings (grant_id, vest_date, shares, status) VALUES (?1, ?2, ?3, 'scheduled')".to_string(),
+            vec![Value::Int(gid), Value::Text(tgl), Value::Int(lembar as i64)],
+            "esop.jadwal",
+        )
+        .await?;
+    }
+    audit::log_sea(db, Some(actor_id), "CREATE", "compensation.esop", Some(&gid.to_string()), None, None, None).await?;
+    to_dto_int(gid, "esop.id")
+}
+
+pub async fn esop_vest_run_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    as_of: &str,
+) -> Result<i32, String> {
+    NaiveDate::parse_from_str(as_of.trim(), "%Y-%m-%d")
+        .map_err(|_| "Tanggal tidak valid.".to_string())?;
+    let n = exec(
+        db,
+        "UPDATE esop_vestings SET status = 'vested' WHERE status = 'scheduled' AND vest_date <= ?1".to_string(),
+        vec![Value::Text(as_of.trim().to_string())],
+        "esop.vest",
+    )
+    .await?;
+    audit::log_sea(db, Some(actor_id), "UPDATE", "compensation.esop.vest", None, None, None, None).await?;
+    to_dto_int(n as i64, "esop.vested")
+}
+
+pub async fn esop_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<EsopGrant>, String> {
+    let rows = q_all(
+        db,
+        "SELECT g.id, g.employee_id, TRIM(e.first_name || ' ' || COALESCE(e.last_name, '')), g.total_shares, g.grant_date, g.vest_months, g.cliff_months, COALESCE((SELECT SUM(shares) FROM esop_vestings v WHERE v.grant_id = g.id AND v.status = 'vested'), 0), COALESCE((SELECT SUM(shares) FROM esop_vestings v WHERE v.grant_id = g.id AND v.status = 'scheduled'), 0) FROM esop_grants g INNER JOIN employees e ON e.id = g.employee_id ORDER BY g.id".to_string(),
+        vec![],
+        9,
+        "esop.list",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca ESOP: {e}"))?;
+    rows.iter()
+        .map(|r| {
+            Ok(EsopGrant {
+                id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "esop.id")?,
+                employee_id: to_dto_int(value_i64(&r[1]).unwrap_or(0), "esop.emp")?,
+                employee_name: value_to_string(&r[2]),
+                total_shares: to_dto_int(value_i64(&r[3]).unwrap_or(0), "esop.total")?,
+                grant_date: value_to_string(&r[4]),
+                vest_months: to_dto_int(value_i64(&r[5]).unwrap_or(0), "esop.vest")?,
+                cliff_months: to_dto_int(value_i64(&r[6]).unwrap_or(0), "esop.cliff")?,
+                vested_shares: to_dto_int(value_i64(&r[7]).unwrap_or(0), "esop.vested")?,
+                scheduled_shares: to_dto_int(value_i64(&r[8]).unwrap_or(0), "esop.sched")?,
+            })
+        })
+        .collect()
 }
 
