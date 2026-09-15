@@ -589,6 +589,7 @@ pub async fn decide_sea(
         )
         .await
         .map_err(|e| format!("gagal menonaktifkan akun: {e}"))?;
+        let _ = super::assets::revoke_all_access_sea(db, det.employee_id as i64).await;
     }
     audit::log_sea(
         db,

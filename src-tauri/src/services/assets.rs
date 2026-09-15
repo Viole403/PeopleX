@@ -1054,6 +1054,198 @@ pub async fn asset_book_sea(
     Ok(out)
 }
 
+// ---------------- Lisensi software + provisioning ----------------
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct License {
+    pub id: i32,
+    pub name: String,
+    pub vendor: Option<String>,
+    pub total_seats: i32,
+    pub used_seats: i32,
+    pub cost: f64,
+    pub expires_at: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug, Default)]
+pub struct LicenseInput {
+    pub name: String,
+    pub vendor: Option<String>,
+    pub total_seats: i32,
+    pub cost: f64,
+    pub expires_at: Option<String>,
+}
+
+pub async fn license_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<License>, String> {
+    let rows = q_all(
+        db,
+        "SELECT l.id, l.name, l.vendor, l.total_seats, (SELECT COUNT(*) FROM license_assignments a WHERE a.license_id = l.id AND a.revoked_at IS NULL), l.cost, l.expires_at FROM software_licenses l ORDER BY l.name".to_string(),
+        vec![],
+        7,
+        "lic.list",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca lisensi: {e}"))?;
+    rows.iter()
+        .map(|r| {
+            Ok(License {
+                id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "lic.id")?,
+                name: value_to_string(&r[1]),
+                vendor: match &r[2] {
+                    Value::Null => None,
+                    v => Some(value_to_string(v)),
+                },
+                total_seats: to_dto_int(value_i64(&r[3]).unwrap_or(0), "lic.seats")?,
+                used_seats: to_dto_int(value_i64(&r[4]).unwrap_or(0), "lic.used")?,
+                cost: match &r[5] {
+                    Value::Float(v) => *v,
+                    Value::Int(v) => *v as f64,
+                    _ => 0.0,
+                },
+                expires_at: match &r[6] {
+                    Value::Null => None,
+                    v => Some(value_to_string(v)),
+                },
+            })
+        })
+        .collect()
+}
+
+pub async fn license_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: Option<i64>,
+    input: &LicenseInput,
+) -> Result<i32, String> {
+    if input.name.trim().is_empty() {
+        return Err("Nama lisensi wajib diisi.".to_string());
+    }
+    if input.total_seats < 1 {
+        return Err("Jumlah kursi minimal 1.".to_string());
+    }
+    if let Some(exp) = input.expires_at.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        chrono::NaiveDate::parse_from_str(exp, "%Y-%m-%d")
+            .map_err(|_| "Tanggal kedaluwarsa tidak valid.".to_string())?;
+    }
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let vendor = input.vendor.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| Value::Text(s.to_string())).unwrap_or(Value::Null);
+    let exp = input.expires_at.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| Value::Text(s.to_string())).unwrap_or(Value::Null);
+    let rid = match id {
+        Some(x) => {
+            let n = exec(
+                db,
+                "UPDATE software_licenses SET name = ?1, vendor = ?2, total_seats = ?3, cost = ?4, expires_at = ?5, updated_at = ?6 WHERE id = ?7".to_string(),
+                vec![Value::Text(input.name.trim().to_string()), vendor, Value::Int(input.total_seats as i64), Value::Float(input.cost), exp, Value::Text(now), Value::Int(x)],
+                "lic.upd",
+            )
+            .await?;
+            if n == 0 {
+                return Err("Lisensi tidak ditemukan.".to_string());
+            }
+            x
+        }
+        None => {
+            exec_insert(
+                db,
+                "INSERT INTO software_licenses (name, vendor, total_seats, cost, expires_at, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)".to_string(),
+                vec![Value::Text(input.name.trim().to_string()), vendor, Value::Int(input.total_seats as i64), Value::Float(input.cost), exp, Value::Text(now)],
+                "lic.ins",
+            )
+            .await?
+        }
+    };
+    audit::log_sea(db, Some(actor_id), if id.is_some() { "UPDATE" } else { "CREATE" }, "asset.license", Some(&rid.to_string()), None, None, None).await?;
+    to_dto_int(rid, "lic.id")
+}
+
+pub async fn license_assign_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    license_id: i64,
+    employee_id: i64,
+) -> Result<(), String> {
+    let lic = q_one(
+        db,
+        "SELECT total_seats, (SELECT COUNT(*) FROM license_assignments WHERE license_id = ?1 AND revoked_at IS NULL) FROM software_licenses WHERE id = ?1".to_string(),
+        vec![Value::Int(license_id)],
+        2,
+        "lic.cek",
+    )
+    .await
+    .map_err(|e| format!("gagal memeriksa lisensi: {e}"))?;
+    let Some(lic) = lic else {
+        return Err("Lisensi tidak ditemukan.".to_string());
+    };
+    if value_i64(&lic[1]).unwrap_or(0) >= value_i64(&lic[0]).unwrap_or(1) {
+        let dup = q_one(
+            db,
+            "SELECT id FROM license_assignments WHERE license_id = ?1 AND employee_id = ?2 AND revoked_at IS NULL".to_string(),
+            vec![Value::Int(license_id), Value::Int(employee_id)],
+            1,
+            "lic.dup",
+        )
+        .await
+        .map_err(|e| format!("gagal memeriksa duplikat: {e}"))?;
+        if dup.is_none() {
+            return Err("Kursi lisensi penuh.".to_string());
+        }
+    }
+    exec(
+        db,
+        "INSERT OR IGNORE INTO license_assignments (license_id, employee_id) VALUES (?1, ?2)".to_string(),
+        vec![Value::Int(license_id), Value::Int(employee_id)],
+        "lic.assign",
+    )
+    .await?;
+    exec(
+        db,
+        "UPDATE license_assignments SET revoked_at = NULL WHERE license_id = ?1 AND employee_id = ?2".to_string(),
+        vec![Value::Int(license_id), Value::Int(employee_id)],
+        "lic.reopen",
+    )
+    .await?;
+    audit::log_sea(db, Some(actor_id), "CREATE", "asset.license.assign", Some(&license_id.to_string()), None, None, None).await?;
+    Ok(())
+}
+
+pub async fn license_revoke_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    license_id: i64,
+    employee_id: i64,
+) -> Result<(), String> {
+    exec(
+        db,
+        "UPDATE license_assignments SET revoked_at = datetime('now','localtime') WHERE license_id = ?1 AND employee_id = ?2 AND revoked_at IS NULL".to_string(),
+        vec![Value::Int(license_id), Value::Int(employee_id)],
+        "lic.revoke",
+    )
+    .await?;
+    audit::log_sea(db, Some(actor_id), "UPDATE", "asset.license.revoke", Some(&license_id.to_string()), None, None, None).await?;
+    Ok(())
+}
+
+pub async fn revoke_all_access_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+) -> Result<i64, String> {
+    let lic = exec(
+        db,
+        "UPDATE license_assignments SET revoked_at = datetime('now','localtime') WHERE employee_id = ?1 AND revoked_at IS NULL".to_string(),
+        vec![Value::Int(employee_id)],
+        "prov.lic",
+    )
+    .await?;
+    let aset = exec(
+        db,
+        "UPDATE asset_assignments SET returned_date = date('now','localtime') WHERE employee_id = ?1 AND returned_date IS NULL".to_string(),
+        vec![Value::Int(employee_id)],
+        "prov.aset",
+    )
+    .await?;
+    Ok(lic as i64 + aset as i64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1222,6 +1414,37 @@ mod tests {
         .await
         .expect("cek");
         assert!(gone.is_none());
+    }
+
+    #[tokio::test]
+    async fn lisensi_seat_dan_cabut_otomatis_offboard() {
+        let (_d, state) = state().await;
+        let db = &state.sea;
+        let actor = one(db, "SELECT id FROM users WHERE username = 'admin'", "t.admin").await;
+        let eid = one(db, "SELECT id FROM employees WHERE employee_number = 'EMP-0001'", "t.emp").await;
+        let lid = license_save_sea(
+            db,
+            actor,
+            None,
+            &LicenseInput {
+                name: "Office".to_string(),
+                vendor: Some("MS".to_string()),
+                total_seats: 1,
+                cost: 1000000.0,
+                expires_at: None,
+            },
+        )
+        .await
+        .expect("lisensi");
+        assert!(license_save_sea(db, actor, None, &LicenseInput { name: "".to_string(), vendor: None, total_seats: 1, cost: 0.0, expires_at: None }).await.is_err());
+        license_assign_sea(db, actor, lid as i64, eid).await.expect("assign");
+        let daftar = license_list_sea(db).await.expect("list");
+        assert_eq!(daftar.iter().find(|l| l.id == lid).expect("baris").used_seats, 1);
+        license_assign_sea(db, actor, lid as i64, eid).await.expect("idempoten");
+        let dicabut = revoke_all_access_sea(db, eid).await.expect("revoke");
+        assert!(dicabut >= 1);
+        let daftar2 = license_list_sea(db).await.expect("list2");
+        assert_eq!(daftar2.iter().find(|l| l.id == lid).expect("baris2").used_seats, 0);
     }
 
     #[tokio::test]
