@@ -3000,6 +3000,121 @@ async fn approval_revoke(state: tauri::State<'_, AppState>, id: i32) -> Result<(
     services::approval::delegation_revoke_sea(&state.sea, uid, id as i64).await
 }
 
+// ---------------- Kompensasi lanjutan ----------------
+
+#[tauri::command]
+#[specta::specta]
+async fn compensation_scheme_save(
+    state: tauri::State<'_, AppState>,
+    id: Option<i32>,
+    input: services::compensation::BonusInput,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["payroll.update", "system.manage"]).await?;
+    services::compensation::scheme_save_sea(&state.sea, uid, id.map(|i| i as i64), &input).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn compensation_scheme_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::compensation::BonusScheme>, String> {
+    require(&state, &["payroll.view", "system.manage"]).await?;
+    services::compensation::scheme_list_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn compensation_bonus_run(
+    state: tauri::State<'_, AppState>,
+    scheme_id: i32,
+    period: String,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["payroll.update", "system.manage"]).await?;
+    services::compensation::bonus_run_sea(&state.sea, uid, scheme_id as i64, &period).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn compensation_bonus_list(
+    state: tauri::State<'_, AppState>,
+    period: Option<String>,
+) -> Result<Vec<services::compensation::BonusRow>, String> {
+    require(&state, &["payroll.view", "system.manage"]).await?;
+    services::compensation::bonus_list_sea(&state.sea, period.as_deref()).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn compensation_bonus_decide(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+    decision: String,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["payroll.approve", "system.manage"]).await?;
+    services::compensation::bonus_decide_sea(&state.sea, uid, id as i64, &decision).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn compensation_benefit_save(
+    state: tauri::State<'_, AppState>,
+    id: Option<i32>,
+    input: services::compensation::BenefitInput,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["payroll.update", "system.manage"]).await?;
+    services::compensation::benefit_save_sea(&state.sea, uid, id.map(|i| i as i64), &input).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn compensation_benefit_list(
+    state: tauri::State<'_, AppState>,
+    active_only: bool,
+) -> Result<Vec<services::compensation::Benefit>, String> {
+    require(&state, &["payroll.view", "system.manage"]).await?;
+    services::compensation::benefit_list_sea(&state.sea, active_only).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn compensation_benefit_enroll(
+    state: tauri::State<'_, AppState>,
+    employee_id: i32,
+    benefit_id: i32,
+    year: i32,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["payroll.update", "system.manage"]).await?;
+    services::compensation::benefit_enroll_sea(
+        &state.sea,
+        uid,
+        employee_id as i64,
+        benefit_id as i64,
+        year,
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn compensation_benefit_mine(
+    state: tauri::State<'_, AppState>,
+    year: i32,
+) -> Result<Vec<services::compensation::EnrolledBenefit>, String> {
+    let (uid, _) = current_actor(&state).await?;
+    let emp = my_employee_sea(&state.sea, uid).await?;
+    services::compensation::my_benefits_sea(&state.sea, emp, year).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn compensation_merit_model(
+    state: tauri::State<'_, AppState>,
+    percent: f64,
+) -> Result<Vec<services::compensation::MeritRow>, String> {
+    require(&state, &["payroll.view", "system.manage"]).await?;
+    services::compensation::merit_model_sea(&state.sea, percent).await
+}
+
 // ---------------- Laporan ----------------
 
 #[tauri::command]
@@ -3325,6 +3440,16 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         payroll_deduction_delete,
         payroll_bank_file,
         payroll_whatif,
+        compensation_scheme_save,
+        compensation_scheme_list,
+        compensation_bonus_run,
+        compensation_bonus_list,
+        compensation_bonus_decide,
+        compensation_benefit_save,
+        compensation_benefit_list,
+        compensation_benefit_enroll,
+        compensation_benefit_mine,
+        compensation_merit_model,
         leave_carryover_run,
         approval_delegate,
         approval_delegations,
@@ -3519,7 +3644,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &98);
+                assert_eq!(t, &102);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),

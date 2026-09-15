@@ -5,6 +5,7 @@ pub mod attendance;
 pub mod audit;
 pub mod auth;
 pub mod backup;
+pub mod compensation;
 pub mod dashboard;
 pub mod employees;
 pub mod leave;
