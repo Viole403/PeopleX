@@ -131,6 +131,27 @@ pub struct CandidateInput {
     pub source: Option<String>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct CareerVacancy {
+    pub id: i32,
+    pub title: String,
+    pub department_name: Option<String>,
+    pub position_name: Option<String>,
+    pub employment_type: String,
+    pub description: Option<String>,
+    pub requirements: Option<String>,
+    pub quota: i32,
+    pub closing_date: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug, Default)]
+pub struct CareerApplyInput {
+    pub full_name: String,
+    pub email: String,
+    pub phone: Option<String>,
+    pub address: Option<String>,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug, Default)]
 pub struct InterviewInput {
     pub interviewer_id: Option<i32>,
@@ -721,6 +742,122 @@ pub async fn candidate_create_sea(
         Some(actor_id),
         "CREATE",
         "recruitment.candidate",
+        Some(&rid.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    to_dto_int(rid, "candidate.id")
+}
+
+pub async fn career_list_sea(
+    db: &sea_orm::DatabaseConnection,
+) -> Result<Vec<CareerVacancy>, String> {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let rows = q_all(
+        db,
+        "SELECT v.id, v.title, d.name, p.name, v.employment_type, v.description, v.requirements, v.quota, v.closing_date FROM vacancies v LEFT JOIN departments d ON d.id = v.department_id LEFT JOIN positions p ON p.id = v.position_id WHERE v.deleted_at IS NULL AND v.status = 'open' AND (v.closing_date IS NULL OR v.closing_date >= ?1) ORDER BY v.created_at DESC".to_string(),
+        vec![Value::Text(today)],
+        9,
+        "career.list",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca lowongan publik: {e}"))?;
+    let mut out = Vec::new();
+    for r in &rows {
+        out.push(CareerVacancy {
+            id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "career.id")?,
+            title: value_to_string(&r[1]),
+            department_name: ropt_text(&r[2]),
+            position_name: ropt_text(&r[3]),
+            employment_type: value_to_string(&r[4]),
+            description: ropt_text(&r[5]),
+            requirements: ropt_text(&r[6]),
+            quota: to_dto_int(value_i64(&r[7]).unwrap_or(0), "career.quota")?,
+            closing_date: ropt_text(&r[8]),
+        });
+    }
+    Ok(out)
+}
+
+pub async fn career_apply_sea(
+    db: &sea_orm::DatabaseConnection,
+    files: &std::path::Path,
+    vacancy_id: i64,
+    input: &CareerApplyInput,
+    cv: Option<&employees::FileUpload>,
+) -> Result<i32, String> {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let vac = q_one(
+        db,
+        "SELECT id FROM vacancies WHERE id = ?1 AND deleted_at IS NULL AND status = 'open' AND (closing_date IS NULL OR closing_date >= ?2)"
+            .to_string(),
+        vec![Value::Int(vacancy_id), Value::Text(today)],
+        1,
+        "career.vaccheck",
+    )
+    .await
+    .map_err(|e| format!("gagal memeriksa lowongan: {e}"))?;
+    if vac.is_none() {
+        return Err("Lowongan tidak tersedia.".to_string());
+    }
+    if input.full_name.trim().is_empty() {
+        return Err("Nama lengkap wajib diisi.".to_string());
+    }
+    if input.full_name.len() > 150 {
+        return Err("Nama maksimal 150 karakter.".to_string());
+    }
+    let email = input.email.trim();
+    if email.is_empty() {
+        return Err("Email wajib diisi.".to_string());
+    }
+    if !email.contains('@') {
+        return Err("Email tidak valid.".to_string());
+    }
+    let dup = q_one(
+        db,
+        "SELECT id FROM candidates WHERE vacancy_id = ?1 AND lower(email) = lower(?2) AND deleted_at IS NULL"
+            .to_string(),
+        vec![Value::Int(vacancy_id), Value::Text(email.to_string())],
+        1,
+        "career.dupcheck",
+    )
+    .await
+    .map_err(|e| format!("gagal memeriksa lamaran: {e}"))?;
+    if dup.is_some() {
+        return Err("Anda sudah melamar lowongan ini.".to_string());
+    }
+    let cv_path = match cv {
+        Some(f) => Some(store_cv(files, f)?),
+        None => None,
+    };
+    let opt_t = |v: Option<&str>| match v {
+        Some(s) => Value::Text(s.to_string()),
+        None => Value::Null,
+    };
+    let rid = exec_insert(
+        db,
+        "INSERT INTO candidates (vacancy_id, full_name, email, phone, address, cv_path, source, stage) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'career-page', 'applied')".to_string(),
+        vec![
+            Value::Int(vacancy_id),
+            Value::Text(input.full_name.trim().to_string()),
+            Value::Text(email.to_string()),
+            opt_t(input.phone.as_deref().map(str::trim).filter(|s| !s.is_empty())),
+            opt_t(input.address.as_deref().map(str::trim).filter(|s| !s.is_empty())),
+            opt_t(cv_path.as_deref()),
+        ],
+        "career.apply",
+    )
+    .await
+    .map_err(|e| format!("gagal mengirim lamaran: {e}"))?;
+
+    log_stage_sea(db, rid, "applied", Some("Lamaran lewat halaman karir"), None).await?;
+    audit::log_sea(
+        db,
+        None,
+        "CREATE",
+        "career.apply",
         Some(&rid.to_string()),
         None,
         None,
@@ -1596,5 +1733,109 @@ mod tests {
         .await
         .expect_err("kandidat asing");
         assert!(e.contains("Kandidat tidak ditemukan"));
+    }
+
+    #[tokio::test]
+    async fn halaman_karir_menampilkan_dan_menerima_lamaran() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files = tempfile::tempdir().expect("tempdir");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let actor = admin(db).await;
+        let buka = vacancy(db, actor).await;
+
+        let mut input = vac_input();
+        input.status = "closed".to_string();
+        let ditutup = vacancy_save_sea(db, actor, None, &input)
+            .await
+            .expect("lowongan closed");
+
+        let mut input = vac_input();
+        input.title = "Pustakawan".to_string();
+        input.closing_date = Some("2020-01-01".to_string());
+        let lewat = vacancy_save_sea(db, actor, None, &input)
+            .await
+            .expect("lowongan lewat");
+
+        let daftar = career_list_sea(db).await.expect("daftar karir");
+        assert_eq!(daftar.len(), 1);
+        assert_eq!(daftar[0].id, buka);
+        assert!(!daftar.iter().any(|v| v.id == ditutup));
+        assert!(!daftar.iter().any(|v| v.id == lewat));
+
+        let cv = crate::services::employees::FileUpload {
+            name: "cv-sinta.pdf".to_string(),
+            mime: "application/pdf".to_string(),
+            bytes: b"%PDF-1.4 lamaran karir".to_vec(),
+        };
+        let rid = career_apply_sea(
+            db,
+            files.path(),
+            buka as i64,
+            &CareerApplyInput {
+                full_name: "Sinta Dewi".to_string(),
+                email: "Sinta@Contoh.ID".to_string(),
+                phone: Some("0812".to_string()),
+                address: Some("Surabaya".to_string()),
+            },
+            Some(&cv),
+        )
+        .await
+        .expect("lamar");
+        assert!(rid > 0);
+        assert_eq!(
+            text(db, &format!("SELECT source FROM candidates WHERE id = {rid}")).await,
+            "career-page"
+        );
+        let cv_path = text(db, &format!("SELECT cv_path FROM candidates WHERE id = {rid}")).await;
+        assert!(cv_path.starts_with("candidates/"));
+
+        let e = career_apply_sea(
+            db,
+            files.path(),
+            buka as i64,
+            &CareerApplyInput {
+                full_name: "Sinta Dewi".to_string(),
+                email: "sinta@contoh.id".to_string(),
+                phone: None,
+                address: None,
+            },
+            None,
+        )
+        .await
+        .expect_err("email duplikat beda kapital");
+        assert!(e.contains("sudah melamar"));
+
+        let e = career_apply_sea(
+            db,
+            files.path(),
+            ditutup as i64,
+            &CareerApplyInput {
+                full_name: "Budi".to_string(),
+                email: "budi@contoh.id".to_string(),
+                phone: None,
+                address: None,
+            },
+            None,
+        )
+        .await
+        .expect_err("lowongan closed");
+        assert!(e.contains("Lowongan tidak tersedia"));
+
+        let e = career_apply_sea(
+            db,
+            files.path(),
+            buka as i64,
+            &CareerApplyInput {
+                full_name: "Cica".to_string(),
+                email: "bukan-email".to_string(),
+                phone: None,
+                address: None,
+            },
+            None,
+        )
+        .await
+        .expect_err("email tanpa @");
+        assert!(e.contains("Email tidak valid"));
     }
 }

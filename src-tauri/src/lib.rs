@@ -1716,6 +1716,33 @@ async fn candidate_create(
 
 #[tauri::command]
 #[specta::specta]
+async fn career_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::recruitment::CareerVacancy>, String> {
+    services::recruitment::career_list_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn career_apply(
+    state: tauri::State<'_, AppState>,
+    vacancy_id: i32,
+    input: services::recruitment::CareerApplyInput,
+    cv: Option<services::employees::FileUpload>,
+) -> Result<i32, String> {
+    let dir = files_dir(&state);
+    services::recruitment::career_apply_sea(
+        &state.sea,
+        &dir,
+        vacancy_id as i64,
+        &input,
+        cv.as_ref(),
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn candidate_delete(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
     let (uid, _) = require(&state, &["recruitment.delete", "system.manage"]).await?;
     services::recruitment::candidate_delete_sea(&state.sea, uid, id as i64).await
@@ -3080,6 +3107,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         assessment_add,
         candidate_hire,
         candidate_cv,
+        career_list,
+        career_apply,
         onboarding_list,
         onboarding_get,
         onboarding_mine,
