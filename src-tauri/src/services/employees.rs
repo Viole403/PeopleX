@@ -2290,7 +2290,7 @@ pub async fn expiry_notify_sea(db: &sea_orm::DatabaseConnection, days: i32) -> R
     for a in &alerts {
         let uid = q_one(
             db,
-            "SELECT id FROM users WHERE employee_id = ?1 AND deleted_at IS NULL LIMIT 1".to_string(),
+            "SELECT id FROM users WHERE employee_id = ?1 LIMIT 1".to_string(),
             vec![Value::Int(a.employee_id as i64)],
             1,
             "akun karyawan",
@@ -3347,7 +3347,7 @@ mod tests {
         let actor = admin_id(db).await;
         exec(
             db,
-            "INSERT INTO system_settings (setting_key, setting_value) VALUES ?1, ?2              ON CONFLICT(setting_key) DO UPDATE SET setting_value = ?3"
+            "INSERT INTO system_settings (setting_key, setting_value) VALUES (?1, ?2) ON CONFLICT(setting_key) DO UPDATE SET setting_value = ?3"
                 .to_string(),
             vec![
                 Value::from("pii_key".to_string()),
