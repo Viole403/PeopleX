@@ -298,7 +298,7 @@ pub async fn toggle_task_sea(
 pub struct PreboardingStatus {
     pub employee_id: i32,
     pub join_date: String,
-    pub days_left: i64,
+    pub days_left: i32,
     pub tasks_total: i32,
     pub tasks_done: i32,
     pub contracts: i32,
@@ -400,7 +400,7 @@ pub async fn preboarding_status_sea(
     Ok(PreboardingStatus {
         employee_id: employee_id as i32,
         join_date,
-        days_left,
+        days_left: i32::try_from(days_left).map_err(|_| "Sisa hari di luar jangkauan.".to_string())?,
         tasks_total: tasks_total as i32,
         tasks_done: tasks_done as i32,
         contracts: contracts as i32,
