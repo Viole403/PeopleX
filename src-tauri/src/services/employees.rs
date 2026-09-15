@@ -2584,6 +2584,51 @@ pub async fn contract_verify_sea(
     Ok(sha256_hex_emp(&format!("{id}|{angka}|{nama}|{saat}")) == hash)
 }
 
+
+pub async fn privacy_export_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+) -> Result<String, String> {
+    let det = detail_sea(db, employee_id)
+        .await?
+        .ok_or("Karyawan tidak ditemukan.".to_string())?;
+    serde_json::to_string(&det).map_err(|_| "Gagal menyusun data pribadi.".to_string())
+}
+
+pub async fn privacy_erase_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    employee_id: i64,
+    reason: &str,
+) -> Result<(), String> {
+    if reason.trim().is_empty() {
+        return Err("Alasan wajib diisi.".to_string());
+    }
+    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let n = exec(
+        db,
+        "UPDATE employees SET nik = NULL, birth_place = NULL, birth_date = NULL, phone = NULL,          personal_email = NULL, bank_name = NULL, bank_account_number = NULL, bank_account_holder = NULL,          npwp = NULL, bpjs_health_number = NULL, bpjs_employment_number = NULL,          first_name = 'Terhapus', last_name = 'Data', updated_at = ?1 WHERE id = ?2".to_string(),
+        vec![Value::Text(now), Value::Int(employee_id)],
+        "privacy.erase",
+    )
+    .await?;
+    if n == 0 {
+        return Err("Karyawan tidak ditemukan.".to_string());
+    }
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "DELETE",
+        "privacy.erasure",
+        Some(&employee_id.to_string()),
+        None,
+        None,
+        Some(reason.trim()),
+    )
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3349,4 +3394,50 @@ mod tests {
         assert_eq!(det.phone.as_deref(), Some("081234567890"));
         assert_eq!(det.personal_email.as_deref(), Some("diri@example.test"));
     }
+
+    #[tokio::test]
+    async fn hak_lupa_export_lalu_hapus_data() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files = tempfile::tempdir().expect("files");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let (actor, emp) = mkemp(db, files.path()).await;
+        exec(
+            db,
+            "UPDATE employees SET nik = '3201010101' WHERE id = ?1".to_string(),
+            vec![Value::Int(emp)],
+            "t.nik",
+        )
+        .await
+        .expect("nik");
+        let ekspor = privacy_export_sea(db, emp).await.expect("export");
+        assert!(ekspor.contains("3201010101"));
+        assert!(ekspor.contains("Budi"));
+        let err = privacy_erase_sea(db, actor, emp, "   ")
+            .await
+            .expect_err("alasan kosong");
+        assert!(err.contains("Alasan wajib diisi."));
+        let err = privacy_erase_sea(db, actor, 999999, "Permintaan subjek data")
+            .await
+            .expect_err("tak ada");
+        assert!(err.contains("Karyawan tidak ditemukan."));
+        privacy_erase_sea(db, actor, emp, "Permintaan subjek data")
+            .await
+            .expect("hapus");
+        let raw = q_one(
+            db,
+            "SELECT nik, first_name FROM employees WHERE id = ?1".to_string(),
+            vec![Value::Int(emp)],
+            2,
+            "t.raw",
+        )
+        .await
+        .expect("raw")
+        .expect("baris");
+        assert!(matches!(raw[0], Value::Null));
+        assert_eq!(value_to_string(&raw[1]), "Terhapus");
+        let ekspor2 = privacy_export_sea(db, emp).await.expect("export2");
+        assert!(!ekspor2.contains("3201010101"));
+    }
 }
+

@@ -2840,6 +2840,27 @@ async fn organization_compliance_status(
 
 #[tauri::command]
 #[specta::specta]
+async fn privacy_data_export(
+    state: tauri::State<'_, AppState>,
+    employee_id: i32,
+) -> Result<String, String> {
+    require(&state, &["employee.view", "system.manage"]).await?;
+    services::employees::privacy_export_sea(&state.sea, employee_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn privacy_data_erase(
+    state: tauri::State<'_, AppState>,
+    employee_id: i32,
+    reason: String,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["employee.update", "system.manage"]).await?;
+    services::employees::privacy_erase_sea(&state.sea, uid, employee_id as i64, &reason).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn trip_my(state: tauri::State<'_, AppState>) -> Result<Vec<services::travel::Trip>, String> {
     let (uid, _) = current_actor(&state).await?;
     services::travel::my_trips_sea(&state.sea, my_employee_sea(&state.sea, uid).await?).await
@@ -4077,6 +4098,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         salary_benchmark_compare,
         organization_compliance_save,
         organization_compliance_status,
+        privacy_data_export,
+        privacy_data_erase,
         leave_carryover_run,
         approval_delegate,
         approval_delegations,
