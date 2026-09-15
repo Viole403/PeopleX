@@ -3,6 +3,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use chrono::Local;
+
 use super::audit;
 use super::security::{pii_decrypt, pii_encrypt};
 use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
@@ -1328,7 +1330,7 @@ pub async fn detail_sea(
         "memuat karyawan",
     )
     .await?;
-    let mut det = row.map(|v| {
+    let mut det = row.map(|v| -> Result<EmployeeDetail, String> {
         Ok(EmployeeDetail {
             id: to_dto_int(value_i64(&v[0]).unwrap_or(0), "employee.id")?,
             employee_number: value_to_string(&v[1]),
