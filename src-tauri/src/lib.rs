@@ -2939,6 +2939,67 @@ async fn pulse_enps(
     services::pulse::enps_by_department(&state.sea, id).await
 }
 
+// ---------------- Cuti lanjutan dan delegasi ----------------
+
+#[tauri::command]
+#[specta::specta]
+async fn leave_carryover_run(
+    state: tauri::State<'_, AppState>,
+    year: i32,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["leave.approve", "system.manage"]).await?;
+    services::leave::carryover_run_sea(&state.sea, uid, year).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn approval_delegate(
+    state: tauri::State<'_, AppState>,
+    to_user: i32,
+    module: String,
+    start_date: String,
+    end_date: String,
+    reason: Option<String>,
+) -> Result<i32, String> {
+    const MODUL: [&str; 5] = [
+        "leave",
+        "overtime",
+        "permission",
+        "business_trip",
+        "reimbursement",
+    ];
+    if !MODUL.contains(&module.as_str()) {
+        return Err("Modul tidak dikenal.".to_string());
+    }
+    let (uid, _) = require(&state, &["leave.approve", "system.manage"]).await?;
+    services::approval::delegate_sea(
+        &state.sea,
+        uid,
+        to_user as i64,
+        &module,
+        &start_date,
+        &end_date,
+        reason.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn approval_delegations(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::approval::Delegation>, String> {
+    let (uid, _) = require(&state, &["leave.approve", "system.manage"]).await?;
+    services::approval::delegation_list_sea(&state.sea, uid).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn approval_revoke(state: tauri::State<'_, AppState>, id: i32) -> Result<(), String> {
+    let (uid, _) = require(&state, &["leave.approve", "system.manage"]).await?;
+    services::approval::delegation_revoke_sea(&state.sea, uid, id as i64).await
+}
+
 // ---------------- Laporan ----------------
 
 #[tauri::command]
@@ -3264,6 +3325,10 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         payroll_deduction_delete,
         payroll_bank_file,
         payroll_whatif,
+        leave_carryover_run,
+        approval_delegate,
+        approval_delegations,
+        approval_revoke,
         payroll_ewa_limit,
         payroll_ewa_request,
         payroll_ewa_my,
@@ -3454,7 +3519,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &95);
+                assert_eq!(t, &98);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),

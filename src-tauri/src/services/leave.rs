@@ -340,6 +340,46 @@ pub async fn all_requests_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Le
     rows.iter().map(|r| map_request_sea(r)).collect()
 }
 
+async fn leave_chain_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+    type_id: i64,
+) -> Result<Vec<approval::ChainStep>, String> {
+    let row = q_one(
+        db,
+        "SELECT COALESCE(department_id, 0) FROM employees WHERE id = ?1".to_string(),
+        vec![Value::Int(employee_id)],
+        1,
+        "leave.dept",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca departemen: {e}"))?;
+    let dept = row.and_then(|r| value_i64(&r[0])).unwrap_or(0);
+    let scopes = if dept == 0 { vec![0] } else { vec![dept, 0] };
+    for scope in scopes {
+        let rows = q_all(
+            db,
+            "SELECT step_order, approver_user_id FROM leave_type_levels WHERE leave_type_id = ?1 AND department_id = ?2 ORDER BY step_order".to_string(),
+            vec![Value::Int(type_id), Value::Int(scope)],
+            2,
+            "leave.levels",
+        )
+        .await
+        .map_err(|e| format!("gagal membaca jenjang: {e}"))?;
+        if !rows.is_empty() {
+            return Ok(rows
+                .iter()
+                .map(|r| approval::ChainStep {
+                    order: value_i64(&r[0]).unwrap_or(0),
+                    approver_id: value_i64(&r[1]).unwrap_or(0),
+                    role: "specific_user".to_string(),
+                })
+                .collect());
+        }
+    }
+    Ok(vec![])
+}
+
 pub async fn create_sea(
     db: &sea_orm::DatabaseConnection,
     actor_id: i64,
@@ -436,7 +476,18 @@ pub async fn create_sea(
     )
     .await
     .map_err(|e| format!("gagal mengajukan cuti: {e}"))?;
-    let chain = approval::build_chain_sea(db, "leave", employee_id).await?;
+    let mut chain = leave_chain_sea(db, employee_id, tid).await?;
+    if chain.is_empty() {
+        chain = approval::build_chain_sea(db, "leave", employee_id).await?;
+    }
+    let hari_ini = Local::now().date_naive().format("%Y-%m-%d").to_string();
+    for step in chain.iter_mut() {
+        if let Some(d) =
+            approval::active_delegate_sea(db, "leave", step.approver_id, &hari_ini).await?
+        {
+            step.approver_id = d;
+        }
+    }
     if chain.is_empty() {
         exec(
             db,
@@ -813,6 +864,91 @@ pub async fn calendar_sea(
     }
     out.sort_by(|a, b| a.date.cmp(&b.date));
     Ok(out)
+}
+
+pub async fn carryover_run_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    year: i32,
+) -> Result<i32, String> {
+    if !(1990..=2100).contains(&year) {
+        return Err("Tahun harus antara 1990 sampai 2100.".to_string());
+    }
+    let rows = q_all(
+        db,
+        "SELECT b.employee_id, b.leave_type_id, b.allocated_days + b.carried_days + b.adjustment_days - b.used_days, t.carry_forward_max_days FROM leave_balances b INNER JOIN leave_types t ON t.id = b.leave_type_id WHERE t.deleted_at IS NULL AND t.carry_forward = 1 AND b.year = ?1 AND b.allocated_days + b.carried_days + b.adjustment_days - b.used_days > 0 AND NOT EXISTS (SELECT 1 FROM leave_carryovers lc WHERE lc.employee_id = b.employee_id AND lc.leave_type_id = b.leave_type_id AND lc.from_year = b.year) ORDER BY b.id".to_string(),
+        vec![Value::Int(year as i64)],
+        4,
+        "leave.carryover.q",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca saldo: {e}"))?;
+    let mut diproses = 0i64;
+    for r in &rows {
+        let emp = value_i64(&r[0]).unwrap_or(0);
+        let tid = value_i64(&r[1]).unwrap_or(0);
+        let sisa = sea_f64(&r[2]);
+        let maks = sea_f64(&r[3]);
+        let dibawa = if maks > 0.0 { sisa.min(maks) } else { sisa };
+        let hangus = sisa - dibawa;
+        let next = year + 1;
+        let exist = q_one(
+            db,
+            "SELECT id FROM leave_balances WHERE employee_id = ?1 AND leave_type_id = ?2 AND year = ?3".to_string(),
+            vec![Value::Int(emp), Value::Int(tid), Value::Int(next as i64)],
+            1,
+            "leave.carryover.bal",
+        )
+        .await
+        .map_err(|e| format!("gagal memeriksa saldo: {e}"))?;
+        if let Some(b) = exist {
+            exec(
+                db,
+                "UPDATE leave_balances SET carried_days = ?1 WHERE id = ?2".to_string(),
+                vec![Value::Float(dibawa), Value::Int(value_i64(&b[0]).unwrap_or(0))],
+                "leave.carryover.upd",
+            )
+            .await
+            .map_err(|e| format!("gagal memperbarui saldo: {e}"))?;
+        } else {
+            exec(
+                db,
+                "INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days, carried_days, adjustment_days) VALUES (?1, ?2, ?3, 0, 0, ?4, 0)".to_string(),
+                vec![Value::Int(emp), Value::Int(tid), Value::Int(next as i64), Value::Float(dibawa)],
+                "leave.carryover.ins",
+            )
+            .await
+            .map_err(|e| format!("gagal membuat saldo: {e}"))?;
+        }
+        exec(
+            db,
+            "INSERT INTO leave_carryovers (employee_id, leave_type_id, from_year, to_year, days_carried, days_expired) VALUES (?1, ?2, ?3, ?4, ?5, ?6)".to_string(),
+            vec![
+                Value::Int(emp),
+                Value::Int(tid),
+                Value::Int(year as i64),
+                Value::Int(next as i64),
+                Value::Float(dibawa),
+                Value::Float(hangus),
+            ],
+            "leave.carryover.rec",
+        )
+        .await
+        .map_err(|e| format!("gagal mencatat carry-over: {e}"))?;
+        diproses += 1;
+    }
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "CREATE",
+        "leave.carryover",
+        Some(&year.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await;
+    to_dto_int(diproses, "leave.carryover")
 }
 
 pub async fn type_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<LeaveType>, String> {
@@ -1371,5 +1507,141 @@ mod tests {
                 .unwrap(),
             4
         );
+    }
+
+    #[tokio::test]
+    async fn carryover_membawa_sisa_dan_mencatat_hangus() {
+        let dir = state().await;
+        let app = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &app.sea;
+        let actor = admin_id(db).await;
+        let tid = type_save_sea(
+            db,
+            actor,
+            None,
+            &LeaveTypeInput {
+                code: "CFO".to_string(),
+                name: "Cuti Carry".to_string(),
+                default_days_per_year: 12.0,
+                is_paid: true,
+                carry_forward: true,
+                carry_forward_max_days: 3.0,
+                requires_attachment: false,
+            },
+        )
+        .await
+        .expect("tipe") as i64;
+        let (_uid, eid) = mkuser(db, "cfo1", "EMP-CFO1", None).await;
+        exec(
+            db,
+            "INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days, carried_days, adjustment_days) VALUES (?1, ?2, 2025, 12, 5, 0, 0)".to_string(),
+            vec![Value::Int(eid), Value::Int(tid)],
+            "t.bl",
+        )
+        .await
+        .expect("saldo");
+        assert_eq!(carryover_run_sea(db, actor, 2025).await.expect("jalankan"), 1);
+        let bal = q_one(
+            db,
+            "SELECT carried_days FROM leave_balances WHERE employee_id = ?1 AND leave_type_id = ?2 AND year = 2026".to_string(),
+            vec![Value::Int(eid), Value::Int(tid)],
+            "t.b26",
+        )
+        .await
+        .expect("b26")
+        .expect("ada");
+        assert!((sea_f64(&bal[0]) - 3.0).abs() < 1e-9);
+        let rec = q_all(
+            db,
+            "SELECT days_carried, days_expired FROM leave_carryovers WHERE employee_id = ?1".to_string(),
+            vec![Value::Int(eid)],
+            2,
+            "t.rec",
+        )
+        .await
+        .expect("rec");
+        assert!((sea_f64(&rec[0][0]) - 3.0).abs() < 1e-9);
+        assert!((sea_f64(&rec[0][1]) - 4.0).abs() < 1e-9);
+        assert_eq!(carryover_run_sea(db, actor, 2025).await.expect("idempoten"), 0);
+    }
+
+    #[tokio::test]
+    async fn jenjang_jenis_dan_delegasi_memindahkan_antrean() {
+        let dir = state().await;
+        let app = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &app.sea;
+        let actor = admin_id(db).await;
+        let tid = type_save_sea(
+            db,
+            actor,
+            None,
+            &LeaveTypeInput {
+                code: "JEN".to_string(),
+                name: "Cuti Jenjang".to_string(),
+                default_days_per_year: 12.0,
+                is_paid: true,
+                carry_forward: false,
+                carry_forward_max_days: 0.0,
+                requires_attachment: false,
+            },
+        )
+        .await
+        .expect("tipe") as i64;
+        let (x_uid, _) = mkuser(db, "jenkx", "EMP-JNKX", None).await;
+        let (z_uid, _) = mkuser(db, "jenzk", "EMP-JNZK", None).await;
+        let (uid, eid) = mkuser(db, "jenap", "EMP-JNAP", None).await;
+        exec(
+            db,
+            "INSERT INTO leave_type_levels (leave_type_id, department_id, step_order, approver_user_id) VALUES (?1, 0, 1, ?2)".to_string(),
+            vec![Value::Int(tid), Value::Int(x_uid)],
+            "t.lvl",
+        )
+        .await
+        .expect("jenjang");
+        approval::delegate_sea(db, x_uid, z_uid, "leave", "2020-01-01", "2099-12-31", None)
+            .await
+            .expect("delegasi");
+        let start = fwd_monday();
+        let end = start + chrono::Duration::days(1);
+        let year: i32 = ds(start)[..4].parse().expect("tahun");
+        exec(
+            db,
+            "INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days, carried_days, adjustment_days) VALUES (?1, ?2, ?3, 12, 0, 0, 0)".to_string(),
+            vec![Value::Int(eid), Value::Int(tid), Value::Int(year as i64)],
+            "t.bl2",
+        )
+        .await
+        .expect("saldo");
+        let rid = create_sea(
+            db,
+            uid,
+            eid,
+            &LeaveCreate {
+                leave_type_id: tid as i32,
+                start_date: ds(start),
+                end_date: ds(end),
+                reason: Some("Perlu tugas keluarga yang mendesak.".to_string()),
+            },
+        )
+        .await
+        .expect("ajukan") as i64;
+        assert_eq!(pending_for_sea(db, z_uid).await.expect("antrean z").len(), 1);
+        assert_eq!(pending_for_sea(db, x_uid).await.expect("antrean x").len(), 0);
+        decide_sea(db, z_uid, rid, "approved", None)
+            .await
+            .expect("setujui");
+        assert_eq!(
+            text(
+                db,
+                &format!("SELECT status FROM leave_requests WHERE id = {rid}"),
+                "t.st",
+            ),
+            "approved"
+        );
+        assert!((used_days(db, eid, tid, year).await - 2.0).abs() < 1e-9);
+        let err = decide_sea(db, x_uid, rid, "approved", None)
+            .await
+            .expect_err("ganda");
+        assert!(err.contains("sudah diproses"));
     }
 }
