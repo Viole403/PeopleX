@@ -4,7 +4,9 @@ use chrono::Local;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, QueryOrder, Set,
 };
-use crate::entities::{notification, pulse_question, pulse_response, pulse_survey, user};
+use crate::entities::{
+    department, employee, notification, pulse_question, pulse_response, pulse_survey, user,
+};
 use crate::to_dto_int;
 
 const KINDS: &[&str] = &["scale", "text"];
@@ -363,6 +365,105 @@ pub async fn results(
     })
 }
 
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct EnpsRow {
+    pub department_id: i32,
+    pub department: String,
+    pub promoters: i32,
+    pub passives: i32,
+    pub detractors: i32,
+    pub total: i32,
+    pub score: f64,
+}
+
+pub async fn enps_by_department(
+    db: &sea_orm::DatabaseConnection,
+    id: i32,
+) -> Result<Vec<EnpsRow>, String> {
+    find_survey(db, id).await?;
+    let scale: Vec<i32> = questions_of(db, id)
+        .await?
+        .into_iter()
+        .filter(|q| q.kind == "scale")
+        .map(|q| q.id)
+        .collect();
+    if scale.is_empty() {
+        return Ok(Vec::new());
+    }
+    let answers = pulse_response::Entity::find()
+        .filter(pulse_response::Column::SurveyId.eq(id))
+        .filter(pulse_response::Column::Score.is_not_null())
+        .all(db)
+        .await
+        .map_err(|e| format!("gagal memuat jawaban: {e}"))?;
+    let scored: Vec<&pulse_response::Model> = answers
+        .iter()
+        .filter(|r| scale.contains(&r.question_id))
+        .collect();
+    if scored.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<i32> = scored
+        .iter()
+        .map(|r| r.employee_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let emps = employee::Entity::find()
+        .filter(employee::Column::Id.is_in(ids))
+        .all(db)
+        .await
+        .map_err(|e| format!("gagal memuat karyawan: {e}"))?;
+    let dept_of: std::collections::HashMap<i32, Option<i32>> =
+        emps.into_iter().map(|e| (e.id, e.department_id)).collect();
+    let need: Vec<i32> = dept_of
+        .values()
+        .filter_map(|d| *d)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let names: std::collections::HashMap<i32, String> = department::Entity::find()
+        .filter(department::Column::Id.is_in(need))
+        .all(db)
+        .await
+        .map_err(|e| format!("gagal memuat departemen: {e}"))?
+        .into_iter()
+        .map(|d| (d.id, d.name))
+        .collect();
+    let mut agg: std::collections::HashMap<i32, (i32, i32, i32)> =
+        std::collections::HashMap::new();
+    for r in &scored {
+        let dept = dept_of.get(&r.employee_id).and_then(|d| *d).unwrap_or(0);
+        let e = agg.entry(dept).or_insert((0, 0, 0));
+        match r.score.unwrap_or(0) {
+            5 => e.0 += 1,
+            4 => e.1 += 1,
+            _ => e.2 += 1,
+        }
+    }
+    let mut rows: Vec<EnpsRow> = agg
+        .into_iter()
+        .map(|(dept, (prom, pas, det))| {
+            let total = prom + pas + det;
+            let score = (prom - det) as f64 / total.max(1) as f64 * 100.0;
+            EnpsRow {
+                department_id: dept,
+                department: names
+                    .get(&dept)
+                    .cloned()
+                    .unwrap_or_else(|| "Tanpa departemen".to_string()),
+                promoters: prom,
+                passives: pas,
+                detractors: det,
+                total,
+                score: (score * 10.0).round() / 10.0,
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| a.department.cmp(&b.department));
+    Ok(rows)
+}
+
 pub async fn close(
     db: &sea_orm::DatabaseConnection,
     id: i32,
@@ -545,6 +646,101 @@ mod tests {
         assert_eq!(d.questions.len(), 1);
         let all = list(db).await.unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn enps_mengelompokkan_per_departemen() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::init_state(dir.path().to_path_buf()).expect("init_state");
+        let db = &state.sea;
+        let mut depts = department::Entity::find()
+            .order_by_asc(department::Column::Id)
+            .all(db)
+            .await
+            .unwrap();
+        assert!(depts.len() >= 2, "seed wajib punya 2 departemen");
+        let b = depts.remove(1);
+        let a = depts.remove(0);
+        let admin_emp = employee_of(db, 1).await.unwrap().expect("pegawai admin");
+        let base = employee::Entity::find_by_id(admin_emp)
+            .one(db)
+            .await
+            .unwrap()
+            .expect("baris pegawai");
+        let (comp, join) = (base.company_id, base.join_date.clone());
+        let mut am = base.into_active_model();
+        am.department_id = Set(Some(a.id));
+        am.update(db).await.unwrap();
+        let sid = create(
+            db,
+            1,
+            &PulseInput {
+                title: "Pulse eNPS".to_string(),
+                description: None,
+                recurrence: "none".to_string(),
+                questions: vec![QuestionInput {
+                    question: "Rekomendasi?".to_string(),
+                    kind: "scale".to_string(),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        publish(db, sid).await.unwrap();
+        let qid = get(db, sid).await.unwrap().questions[0].id;
+        answer(
+            db,
+            1,
+            sid,
+            &[AnswerInput {
+                question_id: qid,
+                score: Some(5),
+                answer: None,
+            }],
+        )
+        .await
+        .unwrap();
+        let e2 = employee::ActiveModel {
+            employee_number: Set("EMP-ENPS".to_string()),
+            first_name: Set("Sari".to_string()),
+            company_id: Set(comp),
+            join_date: Set(join),
+            department_id: Set(Some(b.id)),
+            ..Default::default()
+        }
+        .insert(db)
+        .await
+        .unwrap();
+        let u2 = user::ActiveModel {
+            username: Set("enps".to_string()),
+            email: Set("enps@uji.test".to_string()),
+            password: Set("sandi".to_string()),
+            employee_id: Set(Some(e2.id)),
+            ..Default::default()
+        }
+        .insert(db)
+        .await
+        .unwrap();
+        answer(
+            db,
+            u2.id as i64,
+            sid,
+            &[AnswerInput {
+                question_id: qid,
+                score: Some(2),
+                answer: None,
+            }],
+        )
+        .await
+        .unwrap();
+        let rows = enps_by_department(db, sid).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        let ra = rows.iter().find(|r| r.department_id == a.id).expect("baris a");
+        assert_eq!((ra.promoters, ra.passives, ra.detractors, ra.total), (1, 0, 0, 1));
+        assert_eq!(ra.score, 100.0);
+        let rb = rows.iter().find(|r| r.department_id == b.id).expect("baris b");
+        assert_eq!((rb.promoters, rb.passives, rb.detractors, rb.total), (0, 0, 1, 1));
+        assert_eq!(rb.score, -100.0);
     }
 
     #[test]

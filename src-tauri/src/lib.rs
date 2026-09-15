@@ -2659,6 +2659,16 @@ async fn pulse_close(state: tauri::State<'_, AppState>, id: i32) -> Result<Optio
     Ok(next)
 }
 
+#[tauri::command]
+#[specta::specta]
+async fn pulse_enps(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+) -> Result<Vec<services::pulse::EnpsRow>, String> {
+    require(&state, &["pulse.view", "system.manage"]).await?;
+    services::pulse::enps_by_department(&state.sea, id).await
+}
+
 // ---------------- Laporan ----------------
 
 #[tauri::command]
@@ -3071,6 +3081,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         pulse_answer,
         pulse_results,
         pulse_close,
+        pulse_enps,
         report_employees,
         report_headcount,
         report_attendance,
