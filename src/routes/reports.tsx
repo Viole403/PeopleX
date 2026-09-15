@@ -20,7 +20,8 @@ type Kind =
   | "performance"
   | "contracts"
   | "pph21annual"
-  | "analytics";
+  | "analytics"
+  | "builder";
 
 const KINDS: { id: Kind; label: string }[] = [
   { id: "employees", label: "Karyawan" },
@@ -33,6 +34,7 @@ const KINDS: { id: Kind; label: string }[] = [
   { id: "contracts", label: "Kontrak" },
   { id: "pph21annual", label: "PPh 21 Tahunan" },
   { id: "analytics", label: "Analitik" },
+  { id: "builder", label: "Builder" },
 ];
 
 function currentMonth() {
@@ -50,6 +52,8 @@ function ReportsPage() {
   const [periodId, setPeriodId] = useState<number | null>(null);
   const [perfId, setPerfId] = useState<number | null>(null);
   const [before, setBefore] = useState("");
+  const [bFields, setBFields] = useState<string[]>(["nip", "nama", "status"]);
+  const [bFilters, setBFilters] = useState<{ field: string; op: string; value: string }[]>([]);
 
   const allowed = can(session.data, "report.view", "system.manage");
   const canExport = can(session.data, "report.export", "system.manage");
@@ -65,7 +69,7 @@ function ReportsPage() {
     enabled: allowed && kind === "performance",
   });
   const table = useQuery({
-    queryKey: ["report", kind, search, status, month, year, periodId, perfId, before],
+    queryKey: ["report", kind, search, status, month, year, periodId, perfId, before, bFields, bFilters],
     queryFn: (): Promise<ReportTable> => {
       switch (kind) {
         case "employees":
@@ -88,9 +92,22 @@ function ReportsPage() {
           return unwrap(commands.reportPph21Annual(Number(year) || 0));
         case "analytics":
           return unwrap(commands.reportHeadcount());
+        case "builder":
+          return unwrap(
+            commands.reportCustom(
+              bFields,
+              bFilters.map((f) => ({ field: f.field, op: f.op, value: f.value })),
+            ),
+          );
       }
     },
     enabled: allowed && kind !== "analytics",
+    retry: false,
+  });
+  const fieldList = useQuery({
+    queryKey: ["reportCustomFields"],
+    queryFn: () => unwrap(commands.reportCustomFields()),
+    enabled: allowed && kind === "builder",
     retry: false,
   });
   const analytics = useQuery({
@@ -112,6 +129,7 @@ function ReportsPage() {
       contracts: { arg1: before || "9999-12-31", arg2: null },
       pph21annual: { arg1: null, arg2: Number(year) || 0 },
       analytics: { arg1: null, arg2: null },
+      builder: { arg1: null, arg2: null },
     };
     try {
       const f = await unwrap(commands.reportExport(kind, format, args[kind].arg1, args[kind].arg2));
@@ -134,7 +152,7 @@ function ReportsPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-display-sm font-semibold">Laporan</h1>
-        {canExport && kind !== "analytics" && (
+        {canExport && kind !== "analytics" && kind !== "builder" && (
           <div className="flex gap-2">
             {(
               [
@@ -243,6 +261,83 @@ function ReportsPage() {
             className="rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm"
           />
         </label>
+      )}
+      {kind === "builder" && (
+        <div className="space-y-3 rounded-xl border border-border-secondary bg-bg-primary p-4">
+          <div>
+            <p className="mb-2 text-sm font-medium">Field tampil</p>
+            <div className="flex flex-wrap gap-2">
+              {(fieldList.data ?? []).map((f) => (
+                <label key={f.id} className="flex items-center gap-1.5 rounded-lg border border-border-primary px-3 py-1.5 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={bFields.includes(f.id)}
+                    onChange={(e) =>
+                      setBFields((prev) =>
+                        e.target.checked ? [...prev, f.id] : prev.filter((x) => x !== f.id),
+                      )
+                    }
+                  />
+                  {f.label}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="mb-2 text-sm font-medium">Filter (semua harus cocok)</p>
+            <div className="space-y-2">
+              {bFilters.map((fl, i) => (
+                <div key={i} className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={fl.field}
+                    onChange={(e) =>
+                      setBFilters((prev) => prev.map((x, j) => (j === i ? { ...x, field: e.target.value } : x)))
+                    }
+                    className="rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm"
+                  >
+                    {(fieldList.data ?? []).map((f) => (
+                      <option key={f.id} value={f.id}>{f.label}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={fl.op}
+                    onChange={(e) =>
+                      setBFilters((prev) => prev.map((x, j) => (j === i ? { ...x, op: e.target.value } : x)))
+                    }
+                    className="rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm"
+                  >
+                    <option value="like">mengandung</option>
+                    <option value="eq">sama dengan</option>
+                    <option value="gte">≥</option>
+                    <option value="lte">≤</option>
+                  </select>
+                  <input
+                    value={fl.value}
+                    onChange={(e) =>
+                      setBFilters((prev) => prev.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))
+                    }
+                    placeholder="Nilai…"
+                    className="rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setBFilters((prev) => prev.filter((_, j) => j !== i))}
+                    className="rounded-lg border border-border-primary px-3 py-2 text-sm hover:bg-bg-primary_hover"
+                  >
+                    Hapus
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => setBFilters((prev) => [...prev, { field: "nama", op: "like", value: "" }])}
+                className="rounded-lg border border-border-primary px-3 py-2 text-sm hover:bg-bg-primary_hover"
+              >
+                + Tambah filter
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {kind === "analytics" ? (

@@ -560,6 +560,8 @@ export const commands = {
 	reportPerformance: (periodId: number) => typedError<ReportTable, string>(__TAURI_INVOKE("report_performance", { periodId })),
 	reportContracts: (before: string) => typedError<ReportTable, string>(__TAURI_INVOKE("report_contracts", { before })),
 	reportAnalytics: () => typedError<DeptStat[], string>(__TAURI_INVOKE("report_analytics")),
+	reportCustomFields: () => typedError<ReportField[], string>(__TAURI_INVOKE("report_custom_fields")),
+	reportCustom: (fields: string[], filters: ReportFilter[]) => typedError<ReportTable, string>(__TAURI_INVOKE("report_custom", { fields, filters })),
 	reportExport: (kind: string, format: string, arg1: string | null, arg2: number | null) => typedError<ExportFile, string>(__TAURI_INVOKE("report_export", { kind, format, arg1, arg2 })),
 };
 
@@ -2042,6 +2044,17 @@ export type ReimburseInput = {
 	category_id: number,
 	amount: number | null,
 	description: string | null,
+};
+
+export type ReportField = {
+	id: string,
+	label: string,
+};
+
+export type ReportFilter = {
+	field: string,
+	op: string,
+	value: string,
 };
 
 export type ReportTable = {
