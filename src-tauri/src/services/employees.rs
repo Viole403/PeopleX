@@ -2458,6 +2458,95 @@ pub async fn set_salary_sea(
     to_dto_int(salary_id, "salary.id")
 }
 
+fn now_str_emp() -> String {
+    chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn sha256_hex_emp(teks: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(teks.as_bytes());
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub async fn contract_sign_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    id: i64,
+    signature_name: &str,
+) -> Result<(), String> {
+    let nama = signature_name.trim();
+    if nama.is_empty() {
+        return Err("Nama penanda tangan wajib diisi.".to_string());
+    }
+    let row = q_one(
+        db,
+        "SELECT contract_number, signature_hash FROM employee_contracts WHERE id = ?1".to_string(),
+        vec![Value::Int(id)],
+        2,
+        "contract.sign.q",
+    )
+    .await?;
+    let row = row.ok_or("Kontrak tidak ditemukan.")?;
+    let angka = match &row[0] {
+        Value::Text(s) => s.clone(),
+        _ => return Err("Kontrak tidak ditemukan.".to_string()),
+    };
+    if matches!(row[1], Value::Text(_)) {
+        return Err("Kontrak sudah ditandatangani.".to_string());
+    }
+    let signed_at = now_str_emp();
+    let hash = sha256_hex_emp(&format!("{id}|{angka}|{nama}|{signed_at}"));
+    exec(
+        db,
+        "UPDATE employee_contracts SET signature_name = ?1, signature_hash = ?2, signed_at = ?3, updated_at = ?4 WHERE id = ?5".to_string(),
+        vec![
+            Value::Text(nama.to_string()),
+            Value::Text(hash),
+            Value::Text(signed_at),
+            Value::Text(now_str_emp()),
+            Value::Int(id),
+        ],
+        "contract.sign.u",
+    )
+    .await?;
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "UPDATE",
+        "contract.sign",
+        Some(&id.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await;
+    Ok(())
+}
+
+pub async fn contract_verify_sea(
+    db: &sea_orm::DatabaseConnection,
+    id: i64,
+) -> Result<bool, String> {
+    let row = q_one(
+        db,
+        "SELECT contract_number, signature_name, signature_hash, signed_at FROM employee_contracts WHERE id = ?1".to_string(),
+        vec![Value::Int(id)],
+        4,
+        "contract.verify.q",
+    )
+    .await?;
+    let row = match row {
+        Some(r) => r,
+        None => return Err("Kontrak tidak ditemukan.".to_string()),
+    };
+    let angka = match &row[0] { Value::Text(s) => s.clone(), _ => return Ok(false) };
+    let nama = match &row[1] { Value::Text(s) => s.clone(), _ => return Ok(false) };
+    let hash = match &row[2] { Value::Text(s) => s.clone(), _ => return Ok(false) };
+    let saat = match &row[3] { Value::Text(s) => s.clone(), _ => return Ok(false) };
+    Ok(sha256_hex_emp(&format!("{id}|{angka}|{nama}|{saat}")) == hash)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3129,5 +3218,39 @@ mod tests {
         .expect("hitung")
         .expect("ada");
         assert_eq!(value_i64(&cnt[0]), Some(1));
+    }
+    #[tokio::test]
+    async fn kontrak_digital_ditandatangani_dan_diverifikasi() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files = tempfile::tempdir().expect("files");
+        let state = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &state.sea;
+        let (actor, emp) = mkemp(db, files.path()).await;
+        exec(
+            db,
+            "INSERT INTO employee_contracts (employee_id, contract_number, type, start_date) VALUES (?1, 'K-CSG-1', 'pkwt', '2026-01-05')".to_string(),
+            vec![Value::Int(emp)],
+            "t.c",
+        )
+        .await
+        .expect("kontrak");
+        let cid = one(db, "SELECT last_insert_rowid()", "t.cid").await;
+        contract_sign_sea(db, actor, cid, "Budi Santoso")
+            .await
+            .expect("ttd");
+        assert!(contract_verify_sea(db, cid).await.expect("verif"));
+        let err = contract_sign_sea(db, actor, cid, "Budi")
+            .await
+            .expect_err("dua kali");
+        assert!(err.contains("sudah ditandatangani"));
+        exec(
+            db,
+            "UPDATE employee_contracts SET signature_name = 'Palsu' WHERE id = ?1".to_string(),
+            vec![Value::Int(cid)],
+            "t.p",
+        )
+        .await
+        .expect("tamper");
+        assert!(!contract_verify_sea(db, cid).await.expect("verif2"));
     }
 }

@@ -293,3 +293,180 @@ pub async fn toggle_task_sea(
         status.to_string(),
     ))
 }
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct PreboardingStatus {
+    pub employee_id: i32,
+    pub join_date: String,
+    pub days_left: i64,
+    pub tasks_total: i32,
+    pub tasks_done: i32,
+    pub contracts: i32,
+    pub documents: i32,
+    pub assets: i32,
+    pub ready: bool,
+}
+
+async fn hitung(
+    db: &sea_orm::DatabaseConnection,
+    sql: String,
+    employee_id: i64,
+    label: &str,
+) -> Result<i64, String> {
+    let row = q_one(db, sql, vec![Value::Int(employee_id)], 1, label)
+        .await
+        .map_err(|e| format!("gagal menghitung: {e}"))?;
+    Ok(row.and_then(|r| value_i64(&r[0])).unwrap_or(0))
+}
+
+pub async fn preboarding_status_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: i64,
+) -> Result<PreboardingStatus, String> {
+    use chrono::{Datelike, Local, NaiveDate};
+    let row = q_one(
+        db,
+        "SELECT join_date FROM employees WHERE id = ?1 AND deleted_at IS NULL".to_string(),
+        vec![Value::Int(employee_id)],
+        1,
+        "preboarding.emp",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca karyawan: {e}"))?
+    .ok_or_else(|| "Karyawan tidak ditemukan.".to_string())?;
+    let join_date = match &row[0] {
+        Value::Text(s) => s.clone(),
+        _ => return Err("Tanggal masuk tidak valid.".to_string()),
+    };
+    let masuk = NaiveDate::parse_from_str(&join_date, "%Y-%m-%d")
+        .map_err(|_| "Tanggal masuk tidak valid.".to_string())?;
+    let days_left = (masuk - Local::now().date_naive()).num_days();
+    let oid = q_one(
+        db,
+        "SELECT id FROM onboarding WHERE employee_id = ?1".to_string(),
+        vec![Value::Int(employee_id)],
+        1,
+        "preboarding.onb",
+    )
+    .await
+    .map_err(|e| format!("gagal membaca onboarding: {e}"))?;
+    let (mut tasks_total, mut tasks_done) = (0i64, 0i64);
+    if let Some(o) = oid {
+        let ob = value_i64(&o[0]).unwrap_or(0);
+        tasks_total = q_one(
+            db,
+            "SELECT COUNT(*) FROM onboarding_tasks WHERE onboarding_id = ?1".to_string(),
+            vec![Value::Int(ob)],
+            1,
+            "preboarding.total",
+        )
+        .await
+        .map_err(|e| format!("gagal menghitung tugas: {e}"))?
+        .and_then(|r| value_i64(&r[0]))
+        .unwrap_or(0);
+        tasks_done = q_one(
+            db,
+            "SELECT COUNT(*) FROM onboarding_tasks WHERE onboarding_id = ?1 AND is_completed = 1".to_string(),
+            vec![Value::Int(ob)],
+            1,
+            "preboarding.done",
+        )
+        .await
+        .map_err(|e| format!("gagal menghitung tugas selesai: {e}"))?
+        .and_then(|r| value_i64(&r[0]))
+        .unwrap_or(0);
+    }
+    let contracts = hitung(
+        db,
+        "SELECT COUNT(*) FROM employee_contracts WHERE employee_id = ?1 AND deleted_at IS NULL".to_string(),
+        employee_id,
+        "preboarding.contract",
+    )
+    .await?;
+    let documents = hitung(
+        db,
+        "SELECT COUNT(*) FROM employee_documents WHERE employee_id = ?1".to_string(),
+        employee_id,
+        "preboarding.doc",
+    )
+    .await?;
+    let assets = hitung(
+        db,
+        "SELECT COUNT(*) FROM asset_assignments WHERE employee_id = ?1 AND returned_date IS NULL".to_string(),
+        employee_id,
+        "preboarding.asset",
+    )
+    .await?;
+    Ok(PreboardingStatus {
+        employee_id: employee_id as i32,
+        join_date,
+        days_left,
+        tasks_total: tasks_total as i32,
+        tasks_done: tasks_done as i32,
+        contracts: contracts as i32,
+        documents: documents as i32,
+        assets: assets as i32,
+        ready: contracts >= 1 && documents >= 1 && tasks_total > 0 && tasks_done == tasks_total,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sea_raw::{exec, q_one, value_i64};
+    use super::*;
+
+    async fn actor_id(db: &sea_orm::DatabaseConnection) -> i64 {
+        let row = q_one(
+            db,
+            "SELECT id FROM users WHERE username = 'admin'".to_string(),
+            vec![],
+            1,
+            "t.admin",
+        )
+        .await
+        .expect("admin")
+        .expect("ada");
+        value_i64(&row[0]).expect("i")
+    }
+
+    #[tokio::test]
+    async fn preboarding_status_menggambarkan_kesiapan() {
+        let dir = tempfile::tempdir().expect("dir");
+        let app = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &app.sea;
+        let actor = actor_id(db).await;
+        exec(
+            db,
+            "INSERT INTO employees (employee_number, first_name, company_id, join_date, employment_status, employment_type) VALUES ('EMP-PRE', 'Pre', 1, '2026-12-01', 'active', 'permanent')".to_string(),
+            vec![],
+            "t.emp",
+        )
+        .await
+        .expect("karyawan");
+        let rid = q_one(db, "SELECT last_insert_rowid()".to_string(), vec![], 1, "t.rid")
+            .await
+            .expect("rid")
+            .expect("ada");
+        let emp = value_i64(&rid[0]).expect("id");
+        let awal = preboarding_status_sea(db, emp).await.expect("status");
+        assert_eq!(awal.tasks_total, 0);
+        assert!(!awal.ready);
+        assert!(awal.days_left > 0);
+        create_for_employee_sea(db, actor, emp, None, "2026-12-01")
+            .await
+            .expect("onboarding");
+        exec(
+            db,
+            "UPDATE onboarding_tasks SET is_completed = 1, completed_at = '2026-11-01 09:00:00' WHERE onboarding_id = (SELECT id FROM onboarding WHERE employee_id = ?1) AND sort_order = 0".to_string(),
+            vec![Value::Int(emp)],
+            "t.done",
+        )
+        .await
+        .expect("tuntas");
+        let lanjut = preboarding_status_sea(db, emp).await.expect("status2");
+        assert_eq!(lanjut.tasks_total, 10);
+        assert_eq!(lanjut.tasks_done, 1);
+        assert!(!lanjut.ready);
+        assert!(preboarding_status_sea(db, 999999).await.is_err());
+    }
+}

@@ -3115,6 +3115,66 @@ async fn compensation_merit_model(
     services::compensation::merit_model_sea(&state.sea, percent).await
 }
 
+#[tauri::command]
+#[specta::specta]
+async fn employee_contract_sign(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+    signature_name: String,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["contract.update", "system.manage"]).await?;
+    services::employees::contract_sign_sea(&state.sea, uid, id as i64, &signature_name).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn employee_contract_verify(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+) -> Result<bool, String> {
+    require(&state, &["contract.view", "system.manage"]).await?;
+    services::employees::contract_verify_sea(&state.sea, id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn recruitment_background_save(
+    state: tauri::State<'_, AppState>,
+    candidate_id: i32,
+    id: Option<i32>,
+    input: services::recruitment::BgInput,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["recruitment.update", "system.manage"]).await?;
+    services::recruitment::bg_save_sea(
+        &state.sea,
+        uid,
+        candidate_id as i64,
+        id.map(|i| i as i64),
+        &input,
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn recruitment_background_list(
+    state: tauri::State<'_, AppState>,
+    candidate_id: i32,
+) -> Result<Vec<services::recruitment::BackgroundCheck>, String> {
+    require(&state, &["recruitment.view", "system.manage"]).await?;
+    services::recruitment::bg_list_sea(&state.sea, candidate_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn onboarding_preboarding_status(
+    state: tauri::State<'_, AppState>,
+    employee_id: i32,
+) -> Result<services::onboarding::PreboardingStatus, String> {
+    require(&state, &["onboarding.view", "system.manage"]).await?;
+    services::onboarding::preboarding_status_sea(&state.sea, employee_id as i64).await
+}
+
 // ---------------- Laporan ----------------
 
 #[tauri::command]
@@ -3450,6 +3510,11 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         compensation_benefit_enroll,
         compensation_benefit_mine,
         compensation_merit_model,
+        employee_contract_sign,
+        employee_contract_verify,
+        recruitment_background_save,
+        recruitment_background_list,
+        onboarding_preboarding_status,
         leave_carryover_run,
         approval_delegate,
         approval_delegations,
@@ -3644,7 +3709,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &102);
+                assert_eq!(t, &103);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),

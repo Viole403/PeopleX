@@ -1324,7 +1324,7 @@ pub async fn offer_save_sea(db: &sea_orm::DatabaseConnection, actor:i64, id:Opti
             let now = now_str();
             let rid = exec_insert(db, "INSERT INTO offer_letters (candidate_id, title, message, status, recipient_name, created_at, updated_at) VALUES (?1, ?2, ?3, 'draft', ?4, ?5, ?5)".to_string(), vec![Value::Int(input.candidate_id as i64), Value::Text(judul.to_string()), Value::Text(input.message.clone()), Value::Text(penerima.to_string()), Value::Text(now)], "offer.save").await?;
             audit::log_sea(db, Some(actor), "CREATE", "recruitment.offer", Some(&rid.to_string()), None, None, None).await?;
-            Ok(to_dto_int(rid, "id tawaran"))
+            to_dto_int(rid, "id tawaran")
         }
         Some(_existing) => {
             let baris = tawaran_by_id(db, _existing).await?.ok_or("Tawaran tidak ditemukan.")?;
@@ -1404,8 +1404,8 @@ const TAWARAN_SELECT:&str = "SELECT id, candidate_id, title, message, status, re
 fn tawaran_row(r:&Vec<super::sea_raw::Value>)->OfferLetter{
     use super::sea_raw::{value_i64, value_to_string};
     OfferLetter {
-        id: to_dto_int(value_i64(&r[0]).unwrap_or_default(), "id tawaran"),
-        candidate_id: to_dto_int(value_i64(&r[1]).unwrap_or_default(), "id kandidat"),
+        id: value_i64(&r[0]).unwrap_or_default() as i32,
+        candidate_id: value_i64(&r[1]).unwrap_or_default() as i32,
         title: value_to_string(&r[2]),
         message: value_to_string(&r[3]),
         status: value_to_string(&r[4]),
@@ -1416,6 +1416,164 @@ fn tawaran_row(r:&Vec<super::sea_raw::Value>)->OfferLetter{
         signed_at: ropt_text(&r[9]),
         created_at: value_to_string(&r[10]),
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct BackgroundCheck {
+    pub id: i32,
+    pub candidate_id: i32,
+    pub kind: String,
+    pub status: String,
+    pub result: Option<String>,
+    pub checked_by: Option<i32>,
+    pub checked_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug, Default)]
+pub struct BgInput {
+    pub kind: String,
+    pub status: String,
+    pub result: Option<String>,
+}
+
+fn bopt_i(v: &Value) -> Option<i32> {
+    match v {
+        Value::Int(i) => Some(*i as i32),
+        _ => None,
+    }
+}
+
+fn bopt_t(v: &Value) -> Option<String> {
+    match v {
+        Value::Text(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+fn bg_row(r: &[Value]) -> BackgroundCheck {
+    BackgroundCheck {
+        id: bopt_i(&r[0]).unwrap_or(0),
+        candidate_id: bopt_i(&r[1]).unwrap_or(0),
+        kind: value_to_string(&r[2]),
+        status: value_to_string(&r[3]),
+        result: bopt_t(&r[4]),
+        checked_by: bopt_i(&r[5]),
+        checked_at: bopt_t(&r[6]),
+        created_at: value_to_string(&r[7]),
+    }
+}
+
+pub async fn bg_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    candidate_id: i64,
+    id: Option<i64>,
+    input: &BgInput,
+) -> Result<i32, String> {
+    const JENIS: [&str; 4] = ["criminal", "education", "employment", "reference"];
+    const STATUS: [&str; 3] = ["pending", "clear", "flagged"];
+    if !JENIS.contains(&input.kind.as_str()) {
+        return Err("Jenis pemeriksaan tidak valid.".to_string());
+    }
+    if !STATUS.contains(&input.status.as_str()) {
+        return Err("Status pemeriksaan tidak valid.".to_string());
+    }
+    let ada = q_one(
+        db,
+        "SELECT id FROM candidates WHERE id = ?1 AND deleted_at IS NULL".to_string(),
+        vec![Value::Int(candidate_id)],
+        1,
+        "bg.cand",
+    )
+    .await?;
+    if ada.is_none() {
+        return Err("Kandidat tidak ditemukan.".to_string());
+    }
+    let sekarang = now_str();
+    if let Some(rid) = id {
+        let milik = q_one(
+            db,
+            "SELECT id FROM background_checks WHERE id = ?1 AND candidate_id = ?2".to_string(),
+            vec![Value::Int(rid), Value::Int(candidate_id)],
+            1,
+            "bg.own",
+        )
+        .await?;
+        if milik.is_none() {
+            return Err("Pemeriksaan tidak ditemukan.".to_string());
+        }
+        exec(
+            db,
+            "UPDATE background_checks SET kind = ?1, status = ?2, result = ?3, checked_by = ?4, checked_at = ?5, updated_at = ?6 WHERE id = ?7".to_string(),
+            vec![
+                Value::Text(input.kind.clone()),
+                Value::Text(input.status.clone()),
+                input.result.as_ref().map(|s| Value::Text(s.clone())).unwrap_or(Value::Null),
+                Value::Int(actor_id),
+                Value::Text(sekarang.clone()),
+                Value::Text(sekarang),
+                Value::Int(rid),
+            ],
+            "bg.upd",
+        )
+        .await?;
+        audit::log_sea(
+            db,
+            Some(actor_id),
+            "UPDATE",
+            "recruitment.background",
+            Some(&rid.to_string()),
+            None,
+            None,
+            None,
+        )
+        .await;
+        return to_dto_int(rid, "bg.id");
+    }
+    let rid = exec_insert(
+        db,
+        "INSERT INTO background_checks (candidate_id, kind, status, result, checked_by, checked_at, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)".to_string(),
+        vec![
+            Value::Int(candidate_id),
+            Value::Text(input.kind.clone()),
+            Value::Text(input.status.clone()),
+            input.result.as_ref().map(|s| Value::Text(s.clone())).unwrap_or(Value::Null),
+            Value::Int(actor_id),
+            Value::Text(sekarang.clone()),
+            Value::Text(sekarang.clone()),
+            Value::Text(sekarang),
+        ],
+        "bg.ins",
+    )
+    .await?;
+    audit::log_sea(
+        db,
+        Some(actor_id),
+        "CREATE",
+        "recruitment.background",
+        Some(&rid.to_string()),
+        None,
+        None,
+        None,
+    )
+    .await;
+    to_dto_int(rid, "bg.id")
+}
+
+pub async fn bg_list_sea(
+    db: &sea_orm::DatabaseConnection,
+    candidate_id: i64,
+) -> Result<Vec<BackgroundCheck>, String> {
+    let rows = q_all(
+        db,
+        "SELECT id, candidate_id, kind, status, result, checked_by, checked_at, created_at FROM background_checks WHERE candidate_id = ?1 ORDER BY id".to_string(),
+        vec![Value::Int(candidate_id)],
+        8,
+        "bg.list",
+    )
+    .await?;
+    Ok(rows.iter().map(|r| bg_row(r)).collect())
 }
 
 #[cfg(test)]
@@ -2032,5 +2190,77 @@ mod tests {
             .await
             .expect_err("kandidat asing");
         assert!(e.contains("Kandidat tidak ditemukan"));
+    }
+
+    #[tokio::test]
+    async fn pemeriksaan_latar_mencatat_hasil() {
+        let dir = tempfile::tempdir().expect("dir");
+        let files = tempfile::tempdir().expect("files");
+        let app = crate::init_state(dir.path().to_path_buf()).expect("state");
+        let db = &app.sea;
+        let actor = admin(db).await;
+        let vid = vacancy(db, actor).await;
+        let cid = kandidat(db, files.path(), actor, vid, "Cek").await as i64;
+        let bid = bg_save_sea(
+            db,
+            actor,
+            cid,
+            None,
+            &BgInput {
+                kind: "criminal".to_string(),
+                status: "pending".to_string(),
+                result: None,
+            },
+        )
+        .await
+        .expect("buat");
+        let daftar = bg_list_sea(db, cid).await.expect("daftar");
+        assert_eq!(daftar.len(), 1);
+        assert_eq!(daftar[0].status, "pending");
+        bg_save_sea(
+            db,
+            actor,
+            cid,
+            Some(bid as i64),
+            &BgInput {
+                kind: "criminal".to_string(),
+                status: "clear".to_string(),
+                result: Some("BERSIH".to_string()),
+            },
+        )
+        .await
+        .expect("ubah");
+        let daftar = bg_list_sea(db, cid).await.expect("daftar2");
+        assert_eq!(daftar.len(), 1);
+        assert_eq!(daftar[0].status, "clear");
+        assert_eq!(daftar[0].result.as_deref(), Some("BERSIH"));
+        let err = bg_save_sea(
+            db,
+            actor,
+            cid,
+            None,
+            &BgInput {
+                kind: "hantu".to_string(),
+                status: "clear".to_string(),
+                result: None,
+            },
+        )
+        .await
+        .expect_err("jenis");
+        assert!(err.contains("Jenis pemeriksaan tidak valid"));
+        let err = bg_save_sea(
+            db,
+            actor,
+            999999,
+            None,
+            &BgInput {
+                kind: "reference".to_string(),
+                status: "pending".to_string(),
+                result: None,
+            },
+        )
+        .await
+        .expect_err("kandidat");
+        assert!(err.contains("Kandidat tidak ditemukan"));
     }
 }
