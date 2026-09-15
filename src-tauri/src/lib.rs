@@ -3124,6 +3124,49 @@ async fn dashboard_me(state: tauri::State<'_, AppState>) -> Result<services::das
     services::dashboard::mine_sea(&state.sea, uid).await
 }
 
+#[tauri::command]
+#[specta::specta]
+async fn workforce_plan_save(
+    state: tauri::State<'_, AppState>,
+    year: i32,
+    department_id: i32,
+    planned: i32,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["organization.create", "system.manage"]).await?;
+    services::dashboard::headcount_plan_save_sea(&state.sea, uid, year, department_id as i64, planned).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn workforce_budget_save(
+    state: tauri::State<'_, AppState>,
+    year: i32,
+    department_id: i32,
+    budget: f64,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["organization.create", "system.manage"]).await?;
+    services::dashboard::dept_budget_save_sea(&state.sea, uid, year, department_id as i64, budget).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn workforce_overview(
+    state: tauri::State<'_, AppState>,
+    year: i32,
+) -> Result<Vec<services::dashboard::DeptPlan>, String> {
+    require(&state, &["organization.view", "system.manage"]).await?;
+    services::dashboard::workforce_overview_sea(&state.sea, year).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn organization_drilldown(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::dashboard::DrillNode>, String> {
+    require(&state, &["organization.view", "system.manage"]).await?;
+    services::dashboard::drilldown_sea(&state.sea).await
+}
+
 // ---------------- Notifikasi ----------------
 
 #[tauri::command]
@@ -4329,6 +4372,10 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         reimburse_decide,
         dashboard_hr,
         dashboard_me,
+        workforce_plan_save,
+        workforce_budget_save,
+        workforce_overview,
+        organization_drilldown,
         notification_recent,
         notification_all,
         notification_unread,
@@ -4425,7 +4472,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &122);
+                assert_eq!(t, &124);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),
