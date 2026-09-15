@@ -412,7 +412,7 @@ pub async fn preboarding_status_sea(
 
 #[cfg(test)]
 mod tests {
-    use super::sea_raw::{exec, q_one, value_i64};
+    use crate::services::sea_raw::{exec, q_one, value_i64};
     use super::*;
 
     async fn actor_id(db: &sea_orm::DatabaseConnection) -> i64 {
