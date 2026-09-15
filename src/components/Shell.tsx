@@ -68,6 +68,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Talenta",
     items: [
       { to: "/recruitment", label: "Rekrutmen", icon: Briefcase02 },
+      { to: "/career", label: "Halaman Karir", icon: Globe01 },
       { to: "/onboarding", label: "Onboarding", icon: ClipboardCheck },
       { to: "/offboarding", label: "Offboarding", icon: FileCheck01 },
       { to: "/performance", label: "Kinerja", icon: Award01 },
