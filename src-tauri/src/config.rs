@@ -63,6 +63,17 @@ pub fn load(data_dir: &Path) -> Result<AppConfig, String> {
 }
 
 impl AppConfig {
+    /// Konfigurasi SQLite yang menunjuk satu berkas di dalam direktori data.
+    pub fn sqlite_file(file_name: &str) -> Self {
+        Self {
+            database: DbConfig {
+                driver: "sqlite".to_string(),
+                path: Some(file_name.to_string()),
+                ..Default::default()
+            },
+        }
+    }
+
     /// URL koneksi SeaORM sesuai driver.
     pub fn sea_url(&self, data_dir: &Path) -> Result<String, String> {
         match self.database.driver.as_str() {

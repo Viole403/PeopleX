@@ -9,9 +9,9 @@
 //! Driver PostgreSQL dan MySQL dipakai lewat URL dari config tanpa pragma khusus.
 
 use crate::config::AppConfig;
-use crate::services::sea_raw::{q_all, Value};
-use sea_orm::DatabaseConnection;
-use sea_orm::sqlx::{AssertSqlSafe, Row};
+use crate::schema_sql;
+use crate::services::sea_raw::{exec, q_all, q_one, Value};
+use sea_orm::{ConnectionTrait, DatabaseConnection};
 use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
@@ -86,72 +86,76 @@ pub async fn connect_sea(cfg: &AppConfig, data_dir: &Path) -> Result<DatabaseCon
     }
 }
 
-async fn exec_one(
-    conn: &mut sea_orm::sqlx::SqliteConnection,
-    sql: String,
-) -> Result<u64, sea_orm::sqlx::Error> {
-    sea_orm::sqlx::query(AssertSqlSafe(sql))
-        .execute(&mut *conn)
-        .await
-        .map(|r| r.rows_affected())
+/// Kumpulan naskah migrasi berurut (versi = indeks + 1), untuk pemakai luar.
+pub fn migration_scripts() -> &'static [&'static str] {
+    MIGRATIONS
 }
 
-async fn applied_versions(
-    conn: &mut sea_orm::sqlx::SqliteConnection,
-) -> Result<Vec<i64>, sea_orm::sqlx::Error> {
-    let rows = sea_orm::sqlx::query(AssertSqlSafe(
-        "SELECT version FROM sea_migrations ORDER BY version".to_string(),
-    ))
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut out = Vec::new();
-    for r in rows {
-        if let Ok(v) = r.try_get::<i64, _>(0) {
-            out.push(v);
-        }
-    }
-    Ok(out)
-}
-
-/// Jalankan semua migrasi yang belum teraplikasi (atomik per versi).
+/// Jalankan migrasi DDL yang belum tercatat di tabel `sea_migrations`.
 ///
-/// Seluruh pernyataan dijalankan pada satu koneksi agar perubahan skema
-/// (mis. DROP lalu RENAME pada M02) selalu dilihat oleh langkah berikutnya.
+/// Naskah SQLite ditranspil sesuai backend koneksi sebelum dieksekusi,
+/// sehingga satu sumber skema berlaku untuk SQLite, PostgreSQL, dan MySQL.
 pub async fn migrate_sea(db: &DatabaseConnection) -> Result<(), String> {
-    let mut conn = db
-        .get_sqlite_connection_pool()
-        .acquire()
-        .await
-        .map_err(|e| format!("migrasi database gagal: {e}"))?;
-    exec_one(
-        &mut conn,
-        "CREATE TABLE IF NOT EXISTS sea_migrations (version INTEGER PRIMARY KEY)".to_string(),
+    let backend = db.get_database_backend();
+
+    // Kumpulkan kolom TEXT terindeks dari seluruh naskah (indeks bisa
+    // merujuk tabel yang dibuat di file migrasi lain).
+    let mut semua = String::new();
+    for script in MIGRATIONS {
+        semua.push_str(script);
+        semua.push('\n');
+    }
+    let indexed = schema_sql::collect_indexed_text(&semua);
+
+    exec(
+        db,
+        schema_sql::transpile(
+            backend,
+            "CREATE TABLE IF NOT EXISTS sea_migrations (version INTEGER PRIMARY KEY)",
+            &indexed,
+        ),
+        vec![],
+        "migrasi database gagal: membuat sea_migrations",
     )
-    .await
-    .map_err(|e| format!("migrasi database gagal: {e}"))?;
-    let applied = applied_versions(&mut conn)
-        .await
-        .map_err(|e| format!("migrasi database gagal: {e}"))?;
+    .await?;
+
+    let rows = q_all(
+        db,
+        "SELECT version FROM sea_migrations ORDER BY version".to_string(),
+        vec![],
+        1,
+        "migrasi database gagal: membaca sea_migrations",
+    )
+    .await?;
+    let applied: std::collections::HashSet<i64> = rows
+        .iter()
+        .filter_map(|r| match r.first() {
+            Some(Value::Int(v)) => Some(*v),
+            _ => None,
+        })
+        .collect();
+
     for (idx, script) in MIGRATIONS.iter().enumerate() {
         let version = idx as i64 + 1;
         if applied.contains(&version) {
             continue;
         }
+        // Eksekusi tiap pernyataan DDL satu per satu (SQLite menolak multi-statement).
         for part in script.split(';') {
             let stmt = part.trim();
             if stmt.is_empty() || stmt.starts_with("--") && !stmt.contains('\n') {
                 continue;
             }
-            exec_one(&mut conn, stmt.to_string())
-                .await
-                .map_err(|e| format!("migrasi M{version:02} gagal: {e}"))?;
+            let stmt = schema_sql::transpile(backend, stmt, &indexed);
+            exec(db, stmt, vec![], &format!("migrasi M{version:02} gagal")).await?;
         }
-        exec_one(
-            &mut conn,
+        exec(
+            db,
             format!("INSERT INTO sea_migrations (version) VALUES ({version})"),
+            vec![],
+            "migrasi database gagal: mencatat versi",
         )
-        .await
-        .map_err(|e| format!("migrasi database gagal: {e}"))?;
+        .await?;
     }
     Ok(())
 }
@@ -184,7 +188,7 @@ mod tests {
         let (_dir, db) = migrated_db().await;
         let rows = q_all(
             &db,
-            "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'".to_string(),
+            schema_sql::count_tables_sql(db.get_database_backend()),
             vec![],
             1,
             "count",

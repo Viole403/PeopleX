@@ -168,7 +168,6 @@ pub struct PayslipInfo {
 // ---------------- Varian SeaORM ----------------
 
 use super::sea_raw::{exec, q_all, q_one, value_i64, value_to_string, Value};
-use sea_orm::sqlx::AssertSqlSafe;
 
 fn pf64(v: &Value) -> f64 {
     match v {
@@ -199,91 +198,39 @@ async fn prow_id(db: &sea_orm::DatabaseConnection, label: &str) -> Result<i64, S
     Ok(row.as_ref().and_then(|r| value_i64(&r[0])).unwrap_or(0))
 }
 
-fn sqlx_pool(sea: &sea_orm::DatabaseConnection) -> &sea_orm::sqlx::SqlitePool {
-    sea.get_sqlite_connection_pool()
-}
-
-// Transaksi generate memakai sqlx langsung agar atomic penuh.
-type Tx<'a> = sea_orm::sqlx::Transaction<'a, sea_orm::sqlx::Sqlite>;
-
-fn tx_cell(row: &sea_orm::sqlx::sqlite::SqliteRow, i: usize) -> Value {
-    use sea_orm::sqlx::Row;
-    if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(i) {
-        return Value::Int(v);
-    }
-    if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(i) {
-        return Value::Float(v);
-    }
-    if let Ok(Some(v)) = row.try_get::<Option<String>, _>(i) {
-        return Value::Text(v);
-    }
-    Value::Null
-}
+// Transaksi generate memakai koneksi SeaORM agar atomic penuh.
+type Tx = sea_orm::DatabaseTransaction;
 
 async fn tx_q_all(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     sql: String,
     vals: Vec<Value>,
     ncols: usize,
     label: &str,
 ) -> Result<Vec<Vec<Value>>, String> {
-    let mut q = sea_orm::sqlx::query(AssertSqlSafe(sql));
-    for v in vals {
-        q = match v {
-            Value::Null => q.bind(None::<String>),
-            Value::Int(i) => q.bind(i),
-            Value::Float(f) => q.bind(f),
-            Value::Text(s) => q.bind(s),
-        };
-    }
-    let rows = q
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|e| format!("gagal {label}: {e}"))?;
-    let mut out = Vec::new();
-    for r in rows {
-        let mut v = Vec::with_capacity(ncols);
-        for i in 0..ncols {
-            v.push(tx_cell(&r, i));
-        }
-        out.push(v);
-    }
-    Ok(out)
+    q_all(tx, sql, vals, ncols, label).await
 }
 
 async fn tx_q_one(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     sql: String,
     vals: Vec<Value>,
     ncols: usize,
     label: &str,
 ) -> Result<Option<Vec<Value>>, String> {
-    let mut rows = tx_q_all(tx, sql, vals, ncols, label).await?;
-    Ok(rows.pop())
+    q_one(tx, sql, vals, ncols, label).await
 }
 
 async fn tx_exec(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     sql: String,
     vals: Vec<Value>,
     label: &str,
 ) -> Result<u64, String> {
-    let mut q = sea_orm::sqlx::query(AssertSqlSafe(sql));
-    for v in vals {
-        q = match v {
-            Value::Null => q.bind(None::<String>),
-            Value::Int(i) => q.bind(i),
-            Value::Float(f) => q.bind(f),
-            Value::Text(s) => q.bind(s),
-        };
-    }
-    q.execute(&mut **tx)
-        .await
-        .map_err(|e| format!("gagal {label}: {e}"))
-        .map(|r| r.rows_affected())
+    exec(tx, sql, vals, label).await
 }
 
-async fn tx_rowid(tx: &mut Tx<'_>) -> i64 {
+async fn tx_rowid(tx: &Tx) -> i64 {
     tx_q_one(tx, "SELECT last_insert_rowid()".to_string(), vec![], 1, "payroll.rowid")
         .await
         .ok()
@@ -294,7 +241,7 @@ async fn tx_rowid(tx: &mut Tx<'_>) -> i64 {
 }
 
 async fn overtime_amount_tx(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     employee_id: i64,
     start: &str,
     end: &str,
@@ -323,7 +270,7 @@ async fn overtime_amount_tx(
 }
 
 async fn absence_deduction_tx(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     employee_id: i64,
     start: &str,
     end: &str,
@@ -349,7 +296,7 @@ async fn absence_deduction_tx(
     Ok(((basic / 22.0) * n as f64).round())
 }
 
-async fn setting_tx(tx: &mut Tx<'_>, key: &str) -> Option<String> {
+async fn setting_tx(tx: &Tx, key: &str) -> Option<String> {
     tx_q_one(
         tx,
         "SELECT setting_value FROM system_settings WHERE setting_key = ?1".to_string(),
@@ -365,7 +312,7 @@ async fn setting_tx(tx: &mut Tx<'_>, key: &str) -> Option<String> {
 }
 
 async fn thr_for_period_tx(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     basic: f64,
     join_date: &str,
     pstart: &str,
@@ -398,7 +345,7 @@ async fn thr_for_period_tx(
     Ok((basic * months as f64 / 12.0).round())
 }
 
-async fn capped_base_tx(tx: &mut Tx<'_>, basic: f64, key: &str) -> Result<f64, String> {
+async fn capped_base_tx(tx: &Tx, basic: f64, key: &str) -> Result<f64, String> {
     let cap = setting_tx(tx, key)
         .await
         .and_then(|v| v.parse::<f64>().ok());
@@ -416,7 +363,7 @@ struct MoneyLine {
 }
 
 async fn save_lines_tx(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     payroll_id: i64,
     period_id: i64,
     lines: &[MoneyLine],
@@ -455,7 +402,7 @@ async fn save_lines_tx(
 }
 
 async fn generate_one_tx(
-    tx: &mut Tx<'_>,
+    tx: &Tx,
     employee_id: i64,
     period_id: i64,
     pstart: &str,
@@ -734,13 +681,12 @@ pub async fn generate_sea(
     let health_pct = setting_pct_sea(db, "bpjs_health_employee_percent", 1.0).await / 100.0;
     let emp_pct = setting_pct_sea(db, "bpjs_employment_employee_percent", 2.0).await / 100.0;
     let jp_pct = setting_pct_sea(db, "bpjs_jp_employee_percent", 1.0).await / 100.0;
-    let pool = sqlx_pool(db);
-    let mut tx = pool
+    let tx = db
         .begin()
         .await
         .map_err(|e| format!("gagal memulai transaksi: {e}"))?;
     let ids = tx_q_all(
-        &mut tx,
+        &tx,
         "SELECT id FROM employees WHERE deleted_at IS NULL AND employment_status IN ('active','probation')".to_string(),
         vec![],
         1,
@@ -758,7 +704,7 @@ pub async fn generate_sea(
     for r in &ids {
         let eid = value_i64(&r[0]).unwrap_or(0);
         if let Err(e) =
-            generate_one_tx(&mut tx, eid, period_id, &pstart, &pend, health_pct, emp_pct, jp_pct)
+            generate_one_tx(&tx, eid, period_id, &pstart, &pend, health_pct, emp_pct, jp_pct)
                 .await
         {
             failed = Some(e);
@@ -770,7 +716,7 @@ pub async fn generate_sea(
         return Err(e);
     }
     if let Err(e) = tx_exec(
-        &mut tx,
+        &tx,
         "UPDATE payroll_periods SET status = 'review' WHERE id = ?1".to_string(),
         vec![Value::Int(period_id)],
         "payroll.toreview",

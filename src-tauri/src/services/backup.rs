@@ -174,8 +174,11 @@ mod tests {
         let db = &state.sea;
         let name = backup_now_sea(db, backups.path()).await.expect("backup");
         assert!(name.starts_with("peoplex-"));
-        let chk = crate::db::connect_sea(&backups.path().join(&name))
-            .await
+        let chk = crate::db::connect_sea(
+            &crate::config::AppConfig::sqlite_file(&name),
+            backups.path(),
+        )
+        .await
             .expect("buka cadangan");
         let n = q_one(
             &chk,
@@ -210,8 +213,11 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         backup_restore_sea(&db_path, backups.path(), &name).expect("restore");
-        let c2 = crate::db::connect_sea(&db_path)
-            .await
+        let c2 = crate::db::connect_sea(
+            &crate::config::AppConfig::sqlite_file("peoplex.db"),
+            dir.path(),
+        )
+        .await
             .expect("buka pulihan");
         let n = q_one(
             &c2,

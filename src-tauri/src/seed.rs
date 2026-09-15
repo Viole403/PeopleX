@@ -1182,7 +1182,7 @@ mod tests {
 
     async fn seeded_db() -> (tempfile::TempDir, sea_orm::DatabaseConnection) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let db = connect_sea(&dir.path().join("seed.db"))
+        let db = connect_sea(&crate::config::AppConfig::sqlite_file("seed.db"), dir.path())
             .await
             .expect("connect");
         migrate_sea(&db).await.expect("migrate");

@@ -43,8 +43,8 @@ impl From<i32> for Value {
 }
 
 /// Jalankan SELECT dan kembalikan semua baris sebagai kolom bernilai `Value`.
-pub async fn q_all(
-    db: &sea_orm::DatabaseConnection,
+pub async fn q_all<C: ConnectionTrait>(
+    db: &C,
     sql: String,
     vals: Vec<Value>,
     ncols: usize,
@@ -67,8 +67,8 @@ pub async fn q_all(
 }
 
 /// Jalankan SELECT dan kembalikan hanya baris pertama, bila ada.
-pub async fn q_one(
-    db: &sea_orm::DatabaseConnection,
+pub async fn q_one<C: ConnectionTrait>(
+    db: &C,
     sql: String,
     vals: Vec<Value>,
     ncols: usize,
@@ -79,8 +79,8 @@ pub async fn q_one(
 }
 
 /// Jalankan INSERT, UPDATE, atau DELETE; kembalikan jumlah baris terdampak.
-pub async fn exec(
-    db: &sea_orm::DatabaseConnection,
+pub async fn exec<C: ConnectionTrait>(
+    db: &C,
     sql: String,
     vals: Vec<Value>,
     label: &str,
@@ -94,8 +94,8 @@ pub async fn exec(
 }
 
 /// Ubah placeholder dan parameter sesuai backend, lalu buat Statement.
-fn siapkan(
-    db: &sea_orm::DatabaseConnection,
+fn siapkan<C: ConnectionTrait>(
+    db: &C,
     sql: String,
     vals: Vec<Value>,
 ) -> Statement {
@@ -111,7 +111,7 @@ fn siapkan(
     let binds: Vec<SqValue> = vals2
         .iter()
         .map(|v| match v {
-            Value::Null => SqValue::Null,
+            Value::Null => SqValue::String(None),
             Value::Int(i) => SqValue::BigInt(Some(*i)),
             Value::Float(f) => SqValue::Double(Some(*f)),
             Value::Text(t) => SqValue::String(Some(t.clone())),

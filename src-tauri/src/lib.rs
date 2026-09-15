@@ -1,6 +1,7 @@
 pub mod config;
 pub mod db;
 pub mod entities;
+pub mod schema_sql;
 pub mod seed;
 pub mod services;
 
@@ -44,31 +45,29 @@ fn to_dto_int(v: i64, field: &str) -> Result<i32, String> {
 #[specta::specta]
 async fn db_status(state: tauri::State<'_, AppState>) -> Result<DbStatus, String> {
     use sea_orm::ConnectionTrait;
-    let tables_stmt = sea_orm::Statement::from_string(
-        sea_orm::DbBackend::Sqlite,
-        "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-            .to_string(),
-    );
-    let tables: i64 = state
-        .sea
-        .query_one_raw(tables_stmt)
-        .await
-        .map_err(|e| format!("gagal menghitung tabel: {e}"))?
-        .ok_or("hasil hitung tabel kosong.".to_string())?
-        .try_get::<i64>("", "n")
-        .map_err(|e| format!("gagal membaca hitung tabel: {e}"))?;
-    let users_stmt = sea_orm::Statement::from_string(
-        sea_orm::DbBackend::Sqlite,
+    let tables_sql = schema_sql::count_tables_sql(state.sea.get_database_backend());
+    let tables_row = services::sea_raw::q_one(
+        &state.sea,
+        tables_sql,
+        vec![],
+        1,
+        "menghitung tabel",
+    )
+    .await?
+    .ok_or("hasil hitung tabel kosong.".to_string())?;
+    let tables = services::sea_raw::value_i64(&tables_row[0])
+        .ok_or("hasil hitung tabel kosong.".to_string())?;
+    let users_row = services::sea_raw::q_one(
+        &state.sea,
         "SELECT COUNT(*) AS n FROM users".to_string(),
-    );
-    let users: i64 = state
-        .sea
-        .query_one_raw(users_stmt)
-        .await
-        .map_err(|e| format!("gagal menghitung users: {e}"))?
-        .ok_or("hasil hitung users kosong.".to_string())?
-        .try_get::<i64>("", "n")
-        .map_err(|e| format!("gagal membaca hitung users: {e}"))?;
+        vec![],
+        1,
+        "menghitung users",
+    )
+    .await?
+    .ok_or("hasil hitung users kosong.".to_string())?;
+    let users = services::sea_raw::value_i64(&users_row[0])
+        .ok_or("hasil hitung users kosong.".to_string())?;
     Ok(DbStatus {
         ok: true,
         tables: to_dto_int(tables, "tables")?,
@@ -3017,10 +3016,10 @@ mod tests {
         assert!(dir.path().join("peoplex.db").exists());
         assert_eq!(state.data_dir, dir.path());
         assert!(state.session.lock().unwrap().is_none());
+        use sea_orm::ConnectionTrait as _;
         let tables = q_one(
             &state.sea,
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-                .to_string(),
+            schema_sql::count_tables_sql(state.sea.get_database_backend()),
             vec![],
             1,
             "hitung tabel",
