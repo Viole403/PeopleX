@@ -61,12 +61,19 @@ fn week_ago() -> String {
 // ---------------- Varian SeaORM ----------------
 
 use super::sea_raw::{exec, q_one, value_to_string, Value};
+use sea_orm::ConnectionTrait;
 
 /// Salin isi database hidup ke berkas cadangan baru. Kembalikan nama berkas.
 pub async fn backup_now_sea(
     db: &sea_orm::DatabaseConnection,
     dir: &Path,
 ) -> Result<String, String> {
+    if !matches!(
+        db.get_database_backend(),
+        sea_orm::DbBackend::Sqlite
+    ) {
+        return Err("Cadangan berkas hanya untuk database SQLite.".to_string());
+    }
     std::fs::create_dir_all(dir).map_err(|e| format!("gagal membuat folder cadangan: {e}"))?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let name = format!("peoplex-{stamp}.db");
