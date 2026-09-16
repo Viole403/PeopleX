@@ -594,6 +594,33 @@ export const commands = {
 	reportCustomFields: () => typedError<ReportField[], string>(__TAURI_INVOKE("report_custom_fields")),
 	reportCustom: (fields: string[], filters: ReportFilter[]) => typedError<ReportTable, string>(__TAURI_INVOKE("report_custom", { fields, filters })),
 	reportExport: (kind: string, format: string, arg1: string | null, arg2: number | null) => typedError<ExportFile, string>(__TAURI_INVOKE("report_export", { kind, format, arg1, arg2 })),
+	fingerprintDevices: () => typedError<FingerDevice[], string>(__TAURI_INVOKE("fingerprint_devices")),
+	fingerprintDeviceSave: (id: number | null, input: FingerDeviceInput) => typedError<number, string>(__TAURI_INVOKE("fingerprint_device_save", { id, input })),
+	fingerprintDeviceDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("fingerprint_device_delete", { id })),
+	fingerprintEnrolls: (deviceId: number) => typedError<FingerEnroll[], string>(__TAURI_INVOKE("fingerprint_enrolls", { deviceId })),
+	fingerprintEnroll: (deviceId: number, employeeId: number, devicePin: string) => typedError<number, string>(__TAURI_INVOKE("fingerprint_enroll", { deviceId, employeeId, devicePin })),
+	fingerprintIngest: (deviceId: number, devicePin: string, eventTime: string, verifyMode: string | null) => typedError<number, string>(__TAURI_INVOKE("fingerprint_ingest", { deviceId, devicePin, eventTime, verifyMode })),
+	fingerprintLogs: (deviceId: number | null, onlyPending: boolean, limit: number) => typedError<FingerLog[], string>(__TAURI_INVOKE("fingerprint_logs", { deviceId, onlyPending, limit })),
+	fingerprintProbe: (host: string) => typedError<DeviceProbe, string>(__TAURI_INVOKE("fingerprint_probe", { host })),
+	fingerprintProcess: (deviceId: number | null, limit: number) => typedError<number, string>(__TAURI_INVOKE("fingerprint_process", { deviceId, limit })),
+	fingerprintCredSave: (employeeId: number, credType: string, credValue: string) => typedError<number, string>(__TAURI_INVOKE("fingerprint_cred_save", { employeeId, credType, credValue })),
+	fingerprintCreds: (employeeId: number | null) => typedError<FpCredential[], string>(__TAURI_INVOKE("fingerprint_creds", { employeeId })),
+	fingerprintCmdEnqueue: (deviceId: number, op: string, payload: string) => typedError<number, string>(__TAURI_INVOKE("fingerprint_cmd_enqueue", { deviceId, op, payload })),
+	fingerprintCmdPending: (deviceId: number, limit: number) => typedError<DeviceCommand[], string>(__TAURI_INVOKE("fingerprint_cmd_pending", { deviceId, limit })),
+	fingerprintCmdAck: (deviceId: number, cmdId: number, ok: boolean, error: string | null) => typedError<null, string>(__TAURI_INVOKE("fingerprint_cmd_ack", { deviceId, cmdId, ok, error })),
+	fingerprintRoster: (deviceId: number | null) => typedError<DeviceRosterRow[], string>(__TAURI_INVOKE("fingerprint_roster", { deviceId })),
+	apiTokenIssue: (userId: number, name: string, scopes: string, ttlDays: number | null) => typedError<ApiTokenIssued, string>(__TAURI_INVOKE("api_token_issue", { userId, name, scopes, ttlDays })),
+	apiTokenList: () => typedError<ApiTokenRow[], string>(__TAURI_INVOKE("api_token_list")),
+	apiTokenRevoke: (id: number) => typedError<null, string>(__TAURI_INVOKE("api_token_revoke", { id })),
+	apiTokenAuth: (token: string) => typedError<{
+	user_id: number,
+	scopes: string,
+} | null, string>(__TAURI_INVOKE("api_token_auth", { token })),
+	webhookSave: (id: number | null, input: WebhookInput) => typedError<number, string>(__TAURI_INVOKE("webhook_save", { id, input })),
+	webhookList: () => typedError<WebhookRow[], string>(__TAURI_INVOKE("webhook_list")),
+	webhookDelete: (id: number) => typedError<null, string>(__TAURI_INVOKE("webhook_delete", { id })),
+	webhookEmit: (event: string, payloadJson: string) => typedError<number, string>(__TAURI_INVOKE("webhook_emit", { event, payloadJson })),
+	webhookDispatch: (max: number) => typedError<number, string>(__TAURI_INVOKE("webhook_dispatch", { max })),
 };
 
 /* Types */
@@ -644,6 +671,27 @@ export type AnswerInput = {
 	question_id: number,
 	score: number | null,
 	answer: string | null,
+};
+
+export type ApiTokenAuthed = {
+	user_id: number,
+	scopes: string,
+};
+
+export type ApiTokenIssued = {
+	id: number,
+	token: string,
+};
+
+export type ApiTokenRow = {
+	id: number,
+	user_id: number,
+	name: string,
+	token_prefix: string,
+	scopes: string,
+	expires_at: string | null,
+	last_used_at: string | null,
+	revoked_at: string | null,
 };
 
 export type Assessment = {
@@ -1233,6 +1281,30 @@ export type DeptStat = {
 	avg_performance: number | null,
 };
 
+export type DeviceCommand = {
+	id: number,
+	device_id: number,
+	op: string,
+	payload: string,
+	status: string,
+	attempts: number,
+};
+
+export type DeviceProbe = {
+	host: string,
+	zk_4370_open: boolean,
+	adms_hint: string,
+};
+
+export type DeviceRosterRow = {
+	device_id: number,
+	device_name: string,
+	employee_id: number,
+	employee_name: string,
+	cred_type: string,
+	status: string,
+};
+
 /**  Node struktur untuk tampilan bagan. */
 export type DivisionNode = {
 	id: number,
@@ -1515,6 +1587,57 @@ export type FileUpload = {
 	name: string,
 	mime: string,
 	bytes: number[],
+};
+
+export type FingerDevice = {
+	id: number,
+	name: string,
+	brand: string,
+	model: string | null,
+	serial: string | null,
+	protocol: string,
+	driver: string,
+	endpoint: string | null,
+	location_id: number | null,
+	active: boolean,
+};
+
+export type FingerDeviceInput = {
+	name: string,
+	brand: string,
+	model: string | null,
+	serial: string | null,
+	protocol: string,
+	driver: string | null,
+	endpoint: string | null,
+	location_id: number | null,
+	active: boolean,
+};
+
+export type FingerEnroll = {
+	id: number,
+	device_id: number,
+	employee_id: number,
+	device_pin: string,
+	employee_name: string,
+};
+
+export type FingerLog = {
+	id: number,
+	device_id: number,
+	device_name: string,
+	device_pin: string,
+	event_time: string,
+	verify_mode: string | null,
+	employee_id: number | null,
+	processed: boolean,
+};
+
+export type FpCredential = {
+	id: number,
+	employee_id: number,
+	employee_name: string,
+	cred_type: string,
 };
 
 export type Goal = {
@@ -2577,6 +2700,25 @@ export type VacancyInput = {
 	status: string,
 	posted_date: string | null,
 	closing_date: string | null,
+};
+
+export type WebhookInput = {
+	name: string,
+	url: string,
+	secret: string | null,
+	events: string,
+	is_active: boolean,
+	timeout_secs: number,
+};
+
+export type WebhookRow = {
+	id: number,
+	name: string,
+	url: string,
+	has_secret: boolean,
+	events: string,
+	is_active: boolean,
+	timeout_secs: number,
 };
 
 export type WhatIfResult = {

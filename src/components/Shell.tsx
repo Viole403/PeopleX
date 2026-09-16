@@ -59,6 +59,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Kehadiran",
     items: [
       { to: "/attendance", label: "Absensi", icon: Clock },
+      { to: "/devices", label: "Perangkat", icon: Database01, perm: "attendance.view" },
       { to: "/leave", label: "Cuti & Izin", icon: CalendarCheck01 },
       { to: "/schedules", label: "Shift & Jadwal", icon: CalendarDate, perm: "attendance.view" },
     ],
