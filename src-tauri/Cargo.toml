@@ -27,6 +27,7 @@ bcrypt = "0.19"
 chrono = "0.4"
 printpdf = "0.12"
 rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 sha2 = "0.10"
 specta = { version = "2.0.0-rc.25", features = ["derive"] }
 specta-typescript = "0.0.12"
