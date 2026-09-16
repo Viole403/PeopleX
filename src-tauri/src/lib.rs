@@ -1330,7 +1330,7 @@ async fn api_token_issue(
     user_id: i32,
     name: String,
     scopes: String,
-    ttl_days: Option<i64>,
+    ttl_days: Option<i32>,
 ) -> Result<services::api::ApiTokenIssued, String> {
     let (uid, _) = require(&state, &["system.manage"]).await?;
     let (id, plain) =
