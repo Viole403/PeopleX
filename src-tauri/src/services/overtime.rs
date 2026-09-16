@@ -96,14 +96,15 @@ pub async fn pending_for_sea(
     rows.iter().map(|r| map_overtime_sea(r)).collect()
 }
 
-pub async fn all_requests_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<Overtime>, String> {
-    let rows = q_all(
-        db,
-        "SELECT ot.id, ot.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), e.employee_number, ot.date, ot.start_time, ot.end_time, ot.duration_minutes, ot.reason, ot.status, ot.current_step, ot.created_at FROM overtime_requests ot INNER JOIN employees e ON e.id = ot.employee_id ORDER BY CASE ot.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, ot.created_at DESC".to_string(),
-        vec![],
-        12,
-        "overtime.all",
-    )
+pub async fn all_requests_sea(db: &sea_orm::DatabaseConnection, department_id: Option<i64>) -> Result<Vec<Overtime>, String> {
+    let mut sql = "SELECT ot.id, ot.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), e.employee_number, ot.date, ot.start_time, ot.end_time, ot.duration_minutes, ot.reason, ot.status, ot.current_step, ot.created_at FROM overtime_requests ot INNER JOIN employees e ON e.id = ot.employee_id WHERE 1 = 1".to_string();
+    let mut vals = Vec::new();
+    if let Some(did) = department_id {
+        sql.push_str(" AND e.department_id = ?1");
+        vals.push(Value::Int(did));
+    }
+    sql.push_str(" ORDER BY CASE ot.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, ot.created_at DESC");
+    let rows = q_all(db, sql, vals, 12, "overtime.all")
     .await
     .map_err(|e| format!("gagal membaca daftar: {e}"))?;
     rows.iter().map(|r| map_overtime_sea(r)).collect()
@@ -663,7 +664,7 @@ mod tests {
             .expect_err("proses ulang");
         assert!(e.contains("sudah diproses"));
         // daftar semua: pending -> approved -> rejected; saat ini tidak ada pending
-        let all = all_requests_sea(db).await.expect("all");
+        let all = all_requests_sea(db, None).await.expect("all");
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].id as i64, id);
         assert_eq!(all[0].status, "approved");

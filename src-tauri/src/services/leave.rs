@@ -322,19 +322,20 @@ pub async fn pending_for_sea(
     rows.iter().map(|r| map_request_sea(r)).collect()
 }
 
-pub async fn all_requests_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<LeaveRequest>, String> {
-    let rows = q_all(
-        db,
-        "SELECT lr.id, lr.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), e.employee_number, lr.leave_type_id, lt.name, lr.start_date, lr.end_date, lr.total_days, lr.reason, lr.status, lr.current_step, lr.created_at
+pub async fn all_requests_sea(db: &sea_orm::DatabaseConnection, department_id: Option<i64>) -> Result<Vec<LeaveRequest>, String> {
+    let mut sql = "SELECT lr.id, lr.employee_id, e.first_name || ' ' || COALESCE(e.last_name, ''), e.employee_number, lr.leave_type_id, lt.name, lr.start_date, lr.end_date, lr.total_days, lr.reason, lr.status, lr.current_step, lr.created_at
                 FROM leave_requests lr
                 INNER JOIN leave_types lt ON lt.id = lr.leave_type_id
                 INNER JOIN employees e ON e.id = lr.employee_id
-                ORDER BY CASE lr.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 WHEN 'rejected' THEN 2 ELSE 3 END, lr.created_at DESC"
-            .to_string(),
-        vec![],
-        13,
-        "leave.all",
-    )
+                WHERE 1 = 1"
+        .to_string();
+    let mut vals = Vec::new();
+    if let Some(did) = department_id {
+        sql.push_str(" AND e.department_id = ?1");
+        vals.push(Value::Int(did));
+    }
+    sql.push_str(" ORDER BY CASE lr.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 WHEN 'rejected' THEN 2 ELSE 3 END, lr.created_at DESC");
+    let rows = q_all(db, sql, vals, 13, "leave.all")
     .await
     .map_err(|e| format!("gagal membaca daftar: {e}"))?;
     rows.iter().map(|r| map_request_sea(r)).collect()
@@ -1397,7 +1398,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, "approved");
-        let all = all_requests_sea(db).await.expect("all");
+        let all = all_requests_sea(db, None).await.expect("all");
         assert!(all.iter().any(|r| r.id as i64 == rid && r.status == "approved"));
         let bals = balances_sea(db, eid, 2026).await.expect("bals");
         let al = bals.iter().find(|b| b.leave_type_id == tid as i32).expect("AL");

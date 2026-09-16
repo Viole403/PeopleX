@@ -141,14 +141,16 @@ pub async fn pending_for_sea(
 
 pub async fn all_requests_sea(
     db: &sea_orm::DatabaseConnection,
+    department_id: Option<i64>,
 ) -> Result<Vec<PermissionRequest>, String> {
-    let rows = q_all(
-        db,
-        format!("{SELECT_SEA} ORDER BY CASE pr.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, pr.created_at DESC"),
-        vec![],
-        12,
-        "perm.all",
-    )
+    let mut sql = format!("{SELECT_SEA} WHERE 1 = 1");
+    let mut vals = Vec::new();
+    if let Some(did) = department_id {
+        sql.push_str(" AND e.department_id = ?1");
+        vals.push(Value::Int(did));
+    }
+    sql.push_str(" ORDER BY CASE pr.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, pr.created_at DESC");
+    let rows = q_all(db, sql, vals, 12, "perm.all")
     .await
     .map_err(|e| format!("gagal membaca daftar: {e}"))?;
     rows.iter().map(|r| map_perm_sea(r)).collect()
@@ -478,7 +480,7 @@ mod tests {
         assert!(decide_sea(db, sup_uid, Some(sup_eid), false, pid, "approved")
             .await
             .is_err());
-        assert_eq!(all_requests_sea(db).await.expect("all").len(), 1);
+        assert_eq!(all_requests_sea(db, None).await.expect("all").len(), 1);
         let _ = (sup_uid, uid);
     }
 

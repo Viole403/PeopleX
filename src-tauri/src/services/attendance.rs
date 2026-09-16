@@ -1041,7 +1041,7 @@ pub async fn history_sea(
     Ok(out)
 }
 
-pub async fn recap_sea(db: &sea_orm::DatabaseConnection, date: &str, search: &str) -> Result<Vec<RecapRow>, String> {
+pub async fn recap_sea(db: &sea_orm::DatabaseConnection, date: &str, search: &str, department_id: Option<i64>) -> Result<Vec<RecapRow>, String> {
     NaiveDate::parse_from_str(date, "%Y-%m-%d")
         .map_err(|_| "Tanggal harus valid (YYYY-MM-DD).".to_string())?;
     let search = search.trim();
@@ -1053,16 +1053,20 @@ pub async fn recap_sea(db: &sea_orm::DatabaseConnection, date: &str, search: &st
                 LEFT JOIN departments d ON d.id = e.department_id
                 LEFT JOIN attendances a ON a.employee_id = e.id AND a.date = ?1
                 WHERE e.deleted_at IS NULL";
-    let sql = if has_search {
-        format!("{base} AND (e.first_name LIKE ?2 OR e.last_name LIKE ?2 OR e.employee_number LIKE ?2) ORDER BY e.first_name ASC")
-    } else {
-        format!("{base} ORDER BY e.first_name ASC")
-    };
+    let mut sql = base.to_string();
     let like = format!("%{search}%");
     let mut vals = vec![sea_text_val(date)];
+    let mut idx = 2;
+    if let Some(did) = department_id {
+        sql.push_str(&format!(" AND e.department_id = ?{idx}"));
+        vals.push(Value::Int(did));
+        idx += 1;
+    }
     if has_search {
+        sql.push_str(&format!(" AND (e.first_name LIKE ?{idx} OR e.last_name LIKE ?{idx} OR e.employee_number LIKE ?{idx})"));
         vals.push(sea_text_val(&like));
     }
+    sql.push_str(" ORDER BY e.first_name ASC");
     let rows = q_all(db, sql, vals, 9, "attendance.recap").await.map_err(|e| format!("gagal membaca rekap: {e}"))?;
     let mut out = Vec::new();
     for r in &rows {
@@ -1868,9 +1872,9 @@ mod tests {
         assert_eq!(hist.len(), 1);
         assert_eq!(hist[0].clock_in.as_deref(), Some("2026-03-02 08:00"));
         assert!(history_sea(db, emp, "bulan-salah").await.is_err());
-        let semua = recap_sea(db, "2026-03-02", "").await.expect("rekap");
+        let semua = recap_sea(db, "2026-03-02", "", None).await.expect("rekap");
         assert!(semua.iter().any(|r| r.employee_id as i64 == emp));
-        let cari = recap_sea(db, "2026-03-02", "zzz-tidak-ada")
+        let cari = recap_sea(db, "2026-03-02", "zzz-tidak-ada", None)
             .await
             .expect("cari");
         assert!(cari.is_empty());
