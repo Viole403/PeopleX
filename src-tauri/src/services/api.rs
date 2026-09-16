@@ -80,7 +80,7 @@ pub async fn api_token_issue_sea(
     user_id: i64,
     name: &str,
     scopes: &str,
-    ttl_days: Option<i64>,
+    ttl_days: Option<i32>,
 ) -> Result<(i32, String), String> {
     let nm = name.trim();
     if nm.is_empty() || nm.len() > 120 {
@@ -101,7 +101,7 @@ pub async fn api_token_issue_sea(
     let prefix = plain.chars().take(8).collect::<String>();
     let exp = match ttl_days {
         Some(d) if d > 0 => Some(
-            (chrono::Local::now() + chrono::Duration::days(d))
+            (chrono::Local::now() + chrono::Duration::days(d as i64))
                 .format("%Y-%m-%d %H:%M:%S")
                 .to_string(),
         ),
