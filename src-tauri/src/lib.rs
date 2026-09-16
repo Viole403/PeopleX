@@ -1261,8 +1261,9 @@ async fn fingerprint_enrolls(
     state: tauri::State<'_, AppState>,
     device_id: i32,
 ) -> Result<Vec<services::fingerprint::FingerEnroll>, String> {
-    require(&state, &["attendance.view", "system.manage"]).await?;
-    services::fingerprint::enroll_list_sea(&state.sea, device_id as i64).await
+    let (_, user) = require(&state, &["attendance.view", "system.manage"]).await?;
+    let dept = scoped_department(&state, &user).await?;
+    services::fingerprint::enroll_list_sea(&state.sea, device_id as i64, dept).await
 }
 
 #[tauri::command]
@@ -1273,8 +1274,9 @@ async fn fingerprint_enroll(
     employee_id: i32,
     device_pin: String,
 ) -> Result<i32, String> {
-    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
-    services::fingerprint::enroll_save_sea(&state.sea, uid, device_id as i64, employee_id as i64, &device_pin).await
+    let (uid, user) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    let dept = scoped_department(&state, &user).await?;
+    services::fingerprint::enroll_save_sea(&state.sea, uid, device_id as i64, employee_id as i64, &device_pin, dept).await
 }
 
 #[tauri::command]
@@ -1298,8 +1300,9 @@ async fn fingerprint_logs(
     only_pending: bool,
     limit: i32,
 ) -> Result<Vec<services::fingerprint::FingerLog>, String> {
-    require(&state, &["attendance.view", "system.manage"]).await?;
-    services::fingerprint::log_list_sea(&state.sea, device_id.map(|v| v as i64), only_pending, limit as i64).await
+    let (_, user) = require(&state, &["attendance.view", "system.manage"]).await?;
+    let dept = scoped_department(&state, &user).await?;
+    services::fingerprint::log_list_sea(&state.sea, device_id.map(|v| v as i64), only_pending, limit as i64, dept).await
 }
 
 #[tauri::command]
@@ -1319,8 +1322,9 @@ async fn fingerprint_process(
     device_id: Option<i32>,
     limit: i32,
 ) -> Result<i32, String> {
-    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
-    services::fingerprint::process_queue_sea(&state.sea, uid, device_id.map(|v| v as i64), limit as i64).await
+    let (uid, user) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    let dept = scoped_department(&state, &user).await?;
+    services::fingerprint::process_queue_sea(&state.sea, uid, device_id.map(|v| v as i64), limit as i64, dept).await
 }
 
 #[tauri::command]
