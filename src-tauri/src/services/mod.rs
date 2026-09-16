@@ -1,4 +1,5 @@
 pub mod announcements;
+pub mod api;
 pub mod approval;
 pub mod assets;
 pub mod attendance;
