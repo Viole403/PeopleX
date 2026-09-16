@@ -1325,6 +1325,108 @@ async fn fingerprint_process(
 
 #[tauri::command]
 #[specta::specta]
+async fn api_token_issue(
+    state: tauri::State<'_, AppState>,
+    user_id: i32,
+    name: String,
+    scopes: String,
+    ttl_days: Option<i64>,
+) -> Result<services::api::ApiTokenIssued, String> {
+    let (uid, _) = require(&state, &["system.manage"]).await?;
+    let (id, plain) =
+        services::api::api_token_issue_sea(&state.sea, uid, user_id as i64, &name, &scopes, ttl_days).await?;
+    Ok(services::api::ApiTokenIssued { id, token: plain })
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn api_token_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::api::ApiTokenRow>, String> {
+    require(&state, &["system.manage"]).await?;
+    services::api::api_token_list_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn api_token_revoke(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["system.manage"]).await?;
+    services::api::api_token_revoke_sea(&state.sea, uid, id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn api_token_auth(
+    state: tauri::State<'_, AppState>,
+    token: String,
+) -> Result<Option<services::api::ApiTokenAuthed>, String> {
+    require(&state, &["system.manage"]).await?;
+    let r = services::api::api_auth_sea(&state.sea, &token).await?;
+    Ok(r.map(|(user_id, scopes)| services::api::ApiTokenAuthed {
+        user_id: to_dto_int(user_id, "api.auth.user").unwrap_or(0),
+        scopes,
+    }))
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn webhook_save(
+    state: tauri::State<'_, AppState>,
+    id: Option<i32>,
+    input: services::api::WebhookInput,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["system.manage"]).await?;
+    services::api::webhook_save_sea(&state.sea, uid, id.map(|v| v as i64), &input).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn webhook_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::api::WebhookRow>, String> {
+    require(&state, &["system.manage"]).await?;
+    services::api::webhook_list_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn webhook_delete(
+    state: tauri::State<'_, AppState>,
+    id: i32,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["system.manage"]).await?;
+    services::api::webhook_delete_sea(&state.sea, uid, id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn webhook_emit(
+    state: tauri::State<'_, AppState>,
+    event: String,
+    payload_json: String,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["system.manage"]).await?;
+    let _ = uid;
+    services::api::webhook_emit_sea(&state.sea, &event, &payload_json).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn webhook_dispatch(
+    state: tauri::State<'_, AppState>,
+    max: i32,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["system.manage"]).await?;
+    let _ = uid;
+    let n = services::api::webhook_dispatch_sea(&state.sea, max as i64).await?;
+    to_dto_int(n, "wh.dispatch.n")
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn attendance_clock_out(
     state: tauri::State<'_, AppState>,
     lat: Option<f64>,
@@ -1359,8 +1461,8 @@ async fn attendance_recap(
     date: String,
     search: String,
 ) -> Result<Vec<services::attendance::RecapRow>, String> {
-    require(&state, &["attendance.view", "system.manage"]).await?;
-    services::attendance::recap_sea(&state.sea, &date, &search).await
+    let (_, user) = require(&state, &["attendance.view", "system.manage"]).await?;
+    services::attendance::recap_sea(&state.sea, &date, &search, scoped_department(&state, &user).await?).await
 }
 
 #[tauri::command]
@@ -1538,8 +1640,8 @@ async fn leave_pending(
 #[tauri::command]
 #[specta::specta]
 async fn leave_all(state: tauri::State<'_, AppState>) -> Result<Vec<services::leave::LeaveRequest>, String> {
-    require(&state, &["leave.view", "system.manage"]).await?;
-    services::leave::all_requests_sea(&state.sea).await
+    let (_, user) = require(&state, &["leave.view", "system.manage"]).await?;
+    services::leave::all_requests_sea(&state.sea, scoped_department(&state, &user).await?).await
 }
 
 #[tauri::command]
@@ -1602,8 +1704,8 @@ async fn overtime_pending(
 async fn overtime_all(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::overtime::Overtime>, String> {
-    require(&state, &["overtime.view", "system.manage"]).await?;
-    services::overtime::all_requests_sea(&state.sea).await
+    let (_, user) = require(&state, &["overtime.view", "system.manage"]).await?;
+    services::overtime::all_requests_sea(&state.sea, scoped_department(&state, &user).await?).await
 }
 
 #[tauri::command]
@@ -1661,8 +1763,8 @@ async fn permission_pending(
 async fn permission_all(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<services::permission::PermissionRequest>, String> {
-    require(&state, &["permission.view", "system.manage"]).await?;
-    services::permission::all_requests_sea(&state.sea).await
+    let (_, user) = require(&state, &["permission.view", "system.manage"]).await?;
+    services::permission::all_requests_sea(&state.sea, scoped_department(&state, &user).await?).await
 }
 
 #[tauri::command]
@@ -4748,7 +4850,16 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         fingerprint_ingest,
         fingerprint_logs,
         fingerprint_probe,
-        fingerprint_process
+        fingerprint_process,
+        api_token_issue,
+        api_token_list,
+        api_token_revoke,
+        api_token_auth,
+        webhook_save,
+        webhook_list,
+        webhook_delete,
+        webhook_emit,
+        webhook_dispatch
     ])
 }
 
@@ -4814,7 +4925,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &134);
+                assert_eq!(t, &137);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),
