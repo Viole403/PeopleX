@@ -11,6 +11,21 @@ use crate::to_dto_int;
 
 const PROTOCOLS: &[&str] = &["adms", "zk_pull", "usb", "cloud", "agent"];
 
+/// Merek umum untuk pemilih di FE; protokol bebas tetap diizinkan.
+pub const BRANDS: &[&str] = &[
+    "ZKTeco", "Solution", "Fingerspot", "Revo", "Deli", "Krisbow", "eSSL",
+    "Hikvision", "Dahua", "Anviz", "Suprema", "Matrix", "Nitgen", "Lainnya",
+];
+
+/// Driver default per protokol bila kolom driver kosong.
+pub fn default_driver(protocol: &str) -> &'static str {
+    match protocol {
+        "adms" | "zk_pull" | "usb" => "universal",
+        "cloud" => "cloud-webhook",
+        _ => "agent",
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct FingerDevice {
     pub id: i32,
@@ -19,6 +34,7 @@ pub struct FingerDevice {
     pub model: Option<String>,
     pub serial: Option<String>,
     pub protocol: String,
+    pub driver: String,
     pub endpoint: Option<String>,
     pub location_id: Option<i32>,
     pub active: bool,
@@ -31,6 +47,7 @@ pub struct FingerDeviceInput {
     pub model: Option<String>,
     pub serial: Option<String>,
     pub protocol: String,
+    pub driver: Option<String>,
     pub endpoint: Option<String>,
     pub location_id: Option<i32>,
     pub active: bool,
@@ -79,13 +96,16 @@ fn opt_dto(v: &Value, f: &str) -> Result<Option<i32>, String> {
 }
 
 fn map_device(r: &[Value]) -> Result<FingerDevice, String> {
+    let protocol = value_to_string(&r[5]);
+    let driver = opt_text(&r[9]).unwrap_or_else(|| default_driver(&protocol).to_string());
     Ok(FingerDevice {
         id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "fp.dev.id")?,
         name: value_to_string(&r[1]),
         brand: value_to_string(&r[2]),
         model: opt_text(&r[3]),
         serial: opt_text(&r[4]),
-        protocol: value_to_string(&r[5]),
+        protocol: protocol.clone(),
+        driver,
         endpoint: opt_text(&r[6]),
         location_id: opt_dto(&r[7], "fp.dev.loc")?,
         active: value_i64(&r[8]).unwrap_or(0) != 0,
@@ -95,9 +115,9 @@ fn map_device(r: &[Value]) -> Result<FingerDevice, String> {
 pub async fn device_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<FingerDevice>, String> {
     let rows = q_all(
         db,
-        "SELECT id, name, brand, model, serial, protocol, endpoint, location_id, is_active FROM fingerprint_devices WHERE deleted_at IS NULL ORDER BY id".to_string(),
+        "SELECT id, name, brand, model, serial, protocol, endpoint, location_id, is_active, driver FROM fingerprint_devices WHERE deleted_at IS NULL ORDER BY id".to_string(),
         vec![],
-        9,
+        10,
         "fp.dev.list",
     )
     .await?;
@@ -123,17 +143,19 @@ pub async fn device_save_sea(
     }
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let loc = input.location_id.map(|v| Value::Int(v as i64)).unwrap_or(Value::Null);
+    let driver = input.driver.clone().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| default_driver(&input.protocol).to_string());
     let new_id = match id {
         Some(x) => {
             let n = exec(
                 db,
-                "UPDATE fingerprint_devices SET name = ?1, brand = ?2, model = ?3, serial = ?4, protocol = ?5, endpoint = ?6, location_id = ?7, is_active = ?8, updated_at = ?9 WHERE id = ?10 AND deleted_at IS NULL".to_string(),
+                "UPDATE fingerprint_devices SET name = ?1, brand = ?2, model = ?3, serial = ?4, protocol = ?5, driver = ?6, endpoint = ?7, location_id = ?8, is_active = ?9, updated_at = ?10 WHERE id = ?11 AND deleted_at IS NULL".to_string(),
                 vec![
                     Value::Text(name.to_string()),
                     Value::Text(brand.to_string()),
                     input.model.clone().map(|s| Value::Text(s)).unwrap_or(Value::Null),
                     input.serial.clone().map(|s| Value::Text(s)).unwrap_or(Value::Null),
                     Value::Text(input.protocol.clone()),
+                    Value::Text(driver.clone()),
                     input.endpoint.clone().map(|s| Value::Text(s)).unwrap_or(Value::Null),
                     loc,
                     Value::Int(if input.active { 1 } else { 0 }),
@@ -151,13 +173,14 @@ pub async fn device_save_sea(
         None => {
             exec_insert(
                 db,
-                "INSERT INTO fingerprint_devices (name, brand, model, serial, protocol, endpoint, location_id, is_active, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)".to_string(),
+                "INSERT INTO fingerprint_devices (name, brand, model, serial, protocol, driver, endpoint, location_id, is_active, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)".to_string(),
                 vec![
                     Value::Text(name.to_string()),
                     Value::Text(brand.to_string()),
                     input.model.clone().map(|s| Value::Text(s)).unwrap_or(Value::Null),
                     input.serial.clone().map(|s| Value::Text(s)).unwrap_or(Value::Null),
                     Value::Text(input.protocol.clone()),
+                    Value::Text(driver.clone()),
                     input.endpoint.clone().map(|s| Value::Text(s)).unwrap_or(Value::Null),
                     loc,
                     Value::Int(if input.active { 1 } else { 0 }),
@@ -534,6 +557,309 @@ pub fn parse_adms_rows(body: &str) -> Vec<(String, String, Option<String>)> {
     out
 }
 
+const CRED_TYPES: &[&str] = &["pin", "card"];
+const CMD_OPS: &[&str] = &["enroll_pin", "enroll_card", "delete_pin", "delete_card", "sync_time", "reboot", "clear_logs"];
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct FpCredential {
+    pub id: i32,
+    pub employee_id: i32,
+    pub employee_name: String,
+    pub cred_type: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct DeviceCommand {
+    pub id: i32,
+    pub device_id: i32,
+    pub op: String,
+    pub payload: String,
+    pub status: String,
+    pub attempts: i32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct DeviceRosterRow {
+    pub device_id: i32,
+    pub device_name: String,
+    pub employee_id: i32,
+    pub employee_name: String,
+    pub cred_type: String,
+    pub status: String,
+}
+
+fn cred_row(r: &[Value]) -> Result<FpCredential, String> {
+    Ok(FpCredential {
+        id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "fp.cred.id")?,
+        employee_id: to_dto_int(value_i64(&r[1]).unwrap_or(0), "fp.cred.emp")?,
+        employee_name: value_to_string(&r[2]),
+        cred_type: value_to_string(&r[3]),
+    })
+}
+
+/// Kredensial sentral: satu PIN/kartu per karyawan, didorong ke semua device aktif.
+pub async fn cred_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    employee_id: i64,
+    cred_type: &str,
+    cred_value: &str,
+) -> Result<i32, String> {
+    let kind = cred_type.trim();
+    if !CRED_TYPES.contains(&kind) {
+        return Err("Tipe kredensial harus pin atau card.".to_string());
+    }
+    let val = cred_value.trim();
+    if val.is_empty() || val.len() > 64 {
+        return Err("Nilai kredensial wajib diisi sampai 64 karakter.".to_string());
+    }
+    let emp = q_one(
+        db,
+        "SELECT id FROM employees WHERE id = ?1 AND deleted_at IS NULL".to_string(),
+        vec![Value::Int(employee_id)],
+        1,
+        "fp.cred.emp",
+    )
+    .await?;
+    if emp.is_none() {
+        return Err("Karyawan tidak ditemukan.".to_string());
+    }
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let ada = q_one(
+        db,
+        "SELECT id FROM fp_credentials WHERE employee_id = ?1 AND cred_type = ?2".to_string(),
+        vec![Value::Int(employee_id), Value::Text(kind.to_string())],
+        1,
+        "fp.cred.cek",
+    )
+    .await?;
+    let rid = match ada {
+        Some(r) => {
+            let x = value_i64(&r[0]).unwrap_or(0);
+            exec(
+                db,
+                "UPDATE fp_credentials SET cred_value = ?1, updated_at = ?2 WHERE id = ?3".to_string(),
+                vec![Value::Text(val.to_string()), Value::Text(now.clone()), Value::Int(x)],
+                "fp.cred.upd",
+            )
+            .await?;
+            super::audit::log_sea(db, Some(actor_id), "UPDATE", "attendance.fingerprint.cred", Some(&x.to_string()), None, None, None).await?;
+            x
+        }
+        None => {
+            let x = exec_insert(
+                db,
+                "INSERT INTO fp_credentials (employee_id, cred_type, cred_value, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)".to_string(),
+                vec![Value::Int(employee_id), Value::Text(kind.to_string()), Value::Text(val.to_string()), Value::Text(now.clone()), Value::Text(now.clone())],
+                "fp.cred.ins",
+            )
+            .await?;
+            super::audit::log_sea(db, Some(actor_id), "CREATE", "attendance.fingerprint.cred", Some(&x.to_string()), None, None, None).await?;
+            x
+        }
+    };
+    let op = if kind == "pin" { "enroll_pin" } else { "enroll_card" };
+    let devs = q_all(
+        db,
+        "SELECT id FROM fingerprint_devices WHERE deleted_at IS NULL AND is_active = 1".to_string(),
+        vec![],
+        1,
+        "fp.cred.devs",
+    )
+    .await?;
+    for d in devs {
+        let did = value_i64(&d[0]).unwrap_or(0);
+        exec(
+            db,
+            format!("INSERT INTO device_commands (device_id, op, payload, status, created_at, updated_at) VALUES (?1, '{op}', ?2, 'pending', ?3, ?3)"),
+            vec![
+                Value::Int(did),
+                Value::Text(format!("{{\"employee_id\":{employee_id},\"value\":\"{val}\"}}")),
+                Value::Text(now.clone()),
+            ],
+            "fp.cred.push",
+        )
+        .await?;
+        exec(
+            db,
+            "INSERT OR IGNORE INTO device_roster (device_id, employee_id, cred_type, status) VALUES (?1, ?2, ?3, 'pending')".to_string(),
+            vec![Value::Int(did), Value::Int(employee_id), Value::Text(kind.to_string())],
+            "fp.cred.roster",
+        )
+        .await?;
+    }
+    to_dto_int(rid, "fp.cred.id")
+}
+
+pub async fn cred_list_sea(
+    db: &sea_orm::DatabaseConnection,
+    employee_id: Option<i64>,
+) -> Result<Vec<FpCredential>, String> {
+    let mut sql = "SELECT c.id, c.employee_id, TRIM(e.first_name || ' ' || COALESCE(e.last_name, '')), c.cred_type FROM fp_credentials c JOIN employees e ON e.id = c.employee_id WHERE 1 = 1".to_string();
+    let mut vals = Vec::new();
+    if let Some(e) = employee_id {
+        sql.push_str(" AND c.employee_id = ?1");
+        vals.push(Value::Int(e));
+    }
+    sql.push_str(" ORDER BY c.id");
+    let rows = q_all(db, sql, vals, 4, "fp.cred.list").await?;
+    rows.iter().map(|r| cred_row(r)).collect()
+}
+
+/// Antrekan perintah keluar manual (sync_time/reboot/clear_logs/hapus).
+pub async fn cmd_enqueue_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    device_id: i64,
+    op: &str,
+    payload_json: &str,
+) -> Result<i32, String> {
+    let o = op.trim();
+    if !CMD_OPS.contains(&o) {
+        return Err("Operasi perintah tidak dikenal.".to_string());
+    }
+    let p = payload_json.trim();
+    if p.len() > 2000 {
+        return Err("Payload maksimal 2000 karakter.".to_string());
+    }
+    let dev = q_one(
+        db,
+        "SELECT id FROM fingerprint_devices WHERE id = ?1 AND deleted_at IS NULL AND is_active = 1".to_string(),
+        vec![Value::Int(device_id)],
+        1,
+        "fp.cmd.dev",
+    )
+    .await?;
+    if dev.is_none() {
+        return Err("Perangkat tidak aktif.".to_string());
+    }
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let rid = exec_insert(
+        db,
+        "INSERT INTO device_commands (device_id, op, payload, status, created_at, updated_at) VALUES (?1, ?2, ?3, 'pending', ?4, ?4)".to_string(),
+        vec![Value::Int(device_id), Value::Text(o.to_string()), Value::Text(p.to_string()), Value::Text(now)],
+        "fp.cmd.ins",
+    )
+    .await?;
+    super::audit::log_sea(db, Some(actor_id), "CREATE", "attendance.fingerprint.cmd", Some(&rid.to_string()), None, None, None).await?;
+    to_dto_int(rid, "fp.cmd.id")
+}
+
+/// Tarikan agent: perintah pending per device.
+pub async fn cmd_pending_sea(
+    db: &sea_orm::DatabaseConnection,
+    device_id: i64,
+    limit: i64,
+) -> Result<Vec<DeviceCommand>, String> {
+    let lim = limit.clamp(1, 100);
+    let rows = q_all(
+        db,
+        "SELECT id, device_id, op, payload, status, attempts FROM device_commands WHERE device_id = ?1 AND status = 'pending' ORDER BY id ASC LIMIT ?2".to_string(),
+        vec![Value::Int(device_id), Value::Int(lim)],
+        6,
+        "fp.cmd.pend",
+    )
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in &rows {
+        out.push(DeviceCommand {
+            id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "fp.cmd.id")?,
+            device_id: to_dto_int(value_i64(&r[1]).unwrap_or(0), "fp.cmd.dev")?,
+            op: value_to_string(&r[2]),
+            payload: value_to_string(&r[3]),
+            status: value_to_string(&r[4]),
+            attempts: value_i64(&r[5]).unwrap_or(0) as i32,
+        });
+    }
+    Ok(out)
+}
+
+/// Konfirmasi agent: tandai acked/failed; enroll yang acked menandai roster synced.
+pub async fn cmd_ack_sea(
+    db: &sea_orm::DatabaseConnection,
+    device_id: i64,
+    cmd_id: i64,
+    ok: bool,
+    error: Option<&str>,
+) -> Result<(), String> {
+    let row = q_one(
+        db,
+        "SELECT op, payload FROM device_commands WHERE id = ?1 AND device_id = ?2 AND status = 'pending'".to_string(),
+        vec![Value::Int(cmd_id), Value::Int(device_id)],
+        2,
+        "fp.cmd.get",
+    )
+    .await?
+    .ok_or_else(|| "Perintah pending tidak ditemukan.".to_string())?;
+    let op = value_to_string(&row[0]);
+    let payload = value_to_string(&row[1]);
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let status = if ok { "acked" } else { "failed" };
+    exec(
+        db,
+        "UPDATE device_commands SET status = ?1, attempts = attempts + 1, last_error = ?2, updated_at = ?3 WHERE id = ?4".to_string(),
+        vec![
+            Value::Text(status.to_string()),
+            error.filter(|s| !s.trim().is_empty()).map(|s| Value::Text(s.to_string())).unwrap_or(Value::Null),
+            Value::Text(now.clone()),
+            Value::Int(cmd_id),
+        ],
+        "fp.cmd.ack",
+    )
+    .await?;
+    if ok && (op == "enroll_pin" || op == "enroll_card") {
+        let kind = if op == "enroll_pin" { "pin" } else { "card" };
+        if let Some(eid) = employee_of_payload(&payload) {
+            exec(
+                db,
+                "UPDATE device_roster SET status = 'synced', pushed_at = ?1, updated_at = ?1 WHERE device_id = ?2 AND employee_id = ?3 AND cred_type = ?4".to_string(),
+                vec![Value::Text(now), Value::Int(device_id), Value::Int(eid), Value::Text(kind.to_string())],
+                "fp.cmd.roster",
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+fn employee_of_payload(payload: &str) -> Option<i64> {
+    let key = "\"employee_id\":";
+    payload.find(key).and_then(|i| {
+        payload[i + key.len()..]
+            .trim_start()
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
+            .and_then(|n| n.parse::<i64>().ok())
+    })
+}
+
+/// Cermin status pendaftaran per device.
+pub async fn roster_sea(
+    db: &sea_orm::DatabaseConnection,
+    device_id: Option<i64>,
+) -> Result<Vec<DeviceRosterRow>, String> {
+    let mut sql = "SELECT r.device_id, d.name, r.employee_id, TRIM(e.first_name || ' ' || COALESCE(e.last_name, '')), r.cred_type, r.status FROM device_roster r JOIN fingerprint_devices d ON d.id = r.device_id JOIN employees e ON e.id = r.employee_id WHERE 1 = 1".to_string();
+    let mut vals = Vec::new();
+    if let Some(d) = device_id {
+        sql.push_str(" AND r.device_id = ?1");
+        vals.push(Value::Int(d));
+    }
+    sql.push_str(" ORDER BY r.device_id, r.employee_id");
+    let rows = q_all(db, sql, vals, 6, "fp.roster.list").await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in &rows {
+        out.push(DeviceRosterRow {
+            device_id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "fp.ros.dev")?,
+            device_name: value_to_string(&r[1]),
+            employee_id: to_dto_int(value_i64(&r[2]).unwrap_or(0), "fp.ros.emp")?,
+            employee_name: value_to_string(&r[3]),
+            cred_type: value_to_string(&r[4]),
+            status: value_to_string(&r[5]),
+        });
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,6 +893,7 @@ mod tests {
             model: Some("M1".to_string()),
             serial: Some("SN001".to_string()),
             protocol: "adms".to_string(),
+            driver: None,
             endpoint: None,
             location_id: None,
             active: true,
@@ -663,5 +990,45 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].2.as_deref(), Some("15"));
         assert!(rows[1].2.is_none());
+    }
+
+    #[tokio::test]
+    async fn kredensial_dorong_outbox_dan_ack_sinkron_roster() {
+        let (_d, db) = state().await;
+        let a = actor(&db).await;
+        let e = emp(&db).await;
+        let d = device_save_sea(&db, a, None, &dev_input()).await.expect("dev") as i64;
+        let rid = cred_save_sea(&db, a, e, "pin", " 1234 ").await.expect("cred");
+        assert!(rid > 0);
+        assert!(cred_save_sea(&db, a, e, "sidik", "x").await.is_err());
+        let creds = cred_list_sea(&db, Some(e)).await.expect("list");
+        assert_eq!(creds.len(), 1);
+        assert_eq!(creds[0].cred_type, "pin");
+        let pend = cmd_pending_sea(&db, d, 10).await.expect("pend");
+        assert_eq!(pend.len(), 1);
+        assert_eq!(pend[0].op, "enroll_pin");
+        let ros = roster_sea(&db, Some(d)).await.expect("roster");
+        assert_eq!(ros.len(), 1);
+        assert_eq!(ros[0].status, "pending");
+        let cid = pend[0].id as i64;
+        cmd_ack_sea(&db, d, cid, true, None).await.expect("ack");
+        assert!(cmd_pending_sea(&db, d, 10).await.expect("pend2").is_empty());
+        let ros2 = roster_sea(&db, Some(d)).await.expect("roster2");
+        assert_eq!(ros2[0].status, "synced");
+    }
+
+    #[tokio::test]
+    async fn perintah_manual_dan_ack_gagal() {
+        let (_d, db) = state().await;
+        let a = actor(&db).await;
+        let d = device_save_sea(&db, a, None, &dev_input()).await.expect("dev") as i64;
+        assert!(cmd_enqueue_sea(&db, a, d, "hapus-semua", "{}").await.is_err());
+        let cid = cmd_enqueue_sea(&db, a, d, "sync_time", "{}").await.expect("cmd") as i64;
+        cmd_ack_sea(&db, d, cid, false, Some("jam sibuk")).await.expect("nack");
+        let row = q_one(&db, "SELECT status, attempts FROM device_commands WHERE id = ?1".to_string(), vec![Value::Int(cid)], 2, "t.cmd")
+            .await.expect("cmd").expect("ada");
+        assert_eq!(value_to_string(&row[0]), "failed");
+        assert_eq!(value_i64(&row[1]), Some(1));
+        assert!(cmd_ack_sea(&db, d, cid, true, None).await.is_err());
     }
 }
