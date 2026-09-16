@@ -209,6 +209,7 @@ pub async fn enroll_save_sea(
     device_id: i64,
     employee_id: i64,
     device_pin: &str,
+    department_id: Option<i64>,
 ) -> Result<i32, String> {
     let pin = device_pin.trim();
     if pin.is_empty() || pin.len() > 32 {
@@ -225,6 +226,19 @@ pub async fn enroll_save_sea(
         .await?;
         if row.is_none() {
             return Err(format!("{label} tidak ditemukan."));
+        }
+    }
+    if let Some(did) = department_id {
+        let dep = q_one(
+            db,
+            "SELECT department_id FROM employees WHERE id = ?1 AND deleted_at IS NULL".to_string(),
+            vec![Value::Int(employee_id)],
+            1,
+            "fp.enroll.scope",
+        )
+        .await?;
+        if dep.and_then(|r| value_i64(&r[0])) != Some(did) {
+            return Err("Karyawan di luar departemen Anda.".to_string());
         }
     }
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -249,15 +263,16 @@ pub async fn enroll_save_sea(
 pub async fn enroll_list_sea(
     db: &sea_orm::DatabaseConnection,
     device_id: i64,
+    department_id: Option<i64>,
 ) -> Result<Vec<FingerEnroll>, String> {
-    let rows = q_all(
-        db,
-        "SELECT e.id, e.device_id, e.employee_id, e.device_pin, TRIM(emp.first_name || ' ' || COALESCE(emp.last_name, '')) FROM fingerprint_enrollments e JOIN employees emp ON emp.id = e.employee_id WHERE e.device_id = ?1 ORDER BY e.id".to_string(),
-        vec![Value::Int(device_id)],
-        5,
-        "fp.enroll.list",
-    )
-    .await?;
+    let mut sql = "SELECT e.id, e.device_id, e.employee_id, e.device_pin, TRIM(emp.first_name || ' ' || COALESCE(emp.last_name, '')) FROM fingerprint_enrollments e JOIN employees emp ON emp.id = e.employee_id WHERE e.device_id = ?1".to_string();
+    let mut vals = vec![Value::Int(device_id)];
+    if let Some(did) = department_id {
+        sql.push_str(" AND emp.department_id = ?2");
+        vals.push(Value::Int(did));
+    }
+    sql.push_str(" ORDER BY e.id");
+    let rows = q_all(db, sql, vals, 5, "fp.enroll.list").await?;
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
         out.push(FingerEnroll {
@@ -331,9 +346,10 @@ pub async fn log_list_sea(
     device_id: Option<i64>,
     only_pending: bool,
     limit: i64,
+    department_id: Option<i64>,
 ) -> Result<Vec<FingerLog>, String> {
     let lim = limit.clamp(1, 500);
-    let mut sql = "SELECT l.id, l.device_id, l.device_pin, l.event_time, l.verify_mode, l.processed, l.employee_id, d.name FROM fingerprint_logs l JOIN fingerprint_devices d ON d.id = l.device_id WHERE 1 = 1".to_string();
+    let mut sql = "SELECT l.id, l.device_id, l.device_pin, l.event_time, l.verify_mode, l.processed, l.employee_id, d.name FROM fingerprint_logs l JOIN fingerprint_devices d ON d.id = l.device_id LEFT JOIN employees emp ON emp.id = l.employee_id WHERE 1 = 1".to_string();
     let mut vals = Vec::new();
     let mut n = 0u32;
     if let Some(d) = device_id {
@@ -343,6 +359,11 @@ pub async fn log_list_sea(
     }
     if only_pending {
         sql.push_str(" AND l.processed = 0");
+    }
+    if let Some(did) = department_id {
+        n += 1;
+        sql.push_str(&format!(" AND (l.employee_id IS NULL OR emp.department_id = ?{n})"));
+        vals.push(Value::Int(did));
     }
     n += 1;
     sql.push_str(&format!(" ORDER BY l.id DESC LIMIT ?{n}"));
@@ -385,6 +406,7 @@ pub async fn process_queue_sea(
     actor_id: i64,
     device_id: Option<i64>,
     limit: i64,
+    department_id: Option<i64>,
 ) -> Result<i32, String> {
     let lim = limit.clamp(1, 500);
     let mut sql = "SELECT l.id, l.device_id, l.device_pin, l.event_time FROM fingerprint_logs l WHERE l.processed = 0".to_string();
@@ -424,6 +446,19 @@ pub async fn process_queue_sea(
             .await?;
             done += 1;
             continue;
+        };
+        if let Some(did) = department_id {
+            let dep = q_one(
+                db,
+                "SELECT department_id FROM employees WHERE id = ?1 AND deleted_at IS NULL".to_string(),
+                vec![Value::Int(eid)],
+                1,
+                "fp.q.scope",
+            )
+            .await?;
+            if dep.and_then(|r| value_i64(&r[0])) != Some(did) {
+                continue;
+            }
         };
         let day = when.get(..10).unwrap_or("").to_string();
         let ada = q_one(
@@ -556,16 +591,16 @@ mod tests {
         let a = actor(&db).await;
         let e = emp(&db).await;
         let d = device_save_sea(&db, a, None, &dev_input()).await.expect("dev") as i64;
-        enroll_save_sea(&db, a, d, e, "  7 ").await.expect("enroll");
-        assert!(enroll_save_sea(&db, a, d, e, "7").await.is_err());
+        enroll_save_sea(&db, a, d, e, "  7 ", None).await.expect("enroll");
+        assert!(enroll_save_sea(&db, a, d, e, "7", None).await.is_err());
         ingest_sea(&db, d, "7", "2026-09-10 08:01:00", Some("fp")).await.expect("in");
         ingest_sea(&db, d, "7", "2026-09-10 17:02:00", None).await.expect("out");
-        assert_eq!(process_queue_sea(&db, a, Some(d), 100).await.expect("proses"), 2);
+        assert_eq!(process_queue_sea(&db, a, Some(d), 100, None).await.expect("proses"), 2);
         let row = q_one(&db, "SELECT clock_in, clock_out FROM attendances WHERE employee_id = ?1 AND date = '2026-09-10'".to_string(), vec![Value::Int(e)], 2, "t.att").await.expect("att").expect("ada");
         assert_eq!(value_to_string(&row[0]), "2026-09-10 08:01:00");
         assert_eq!(value_to_string(&row[1]), "2026-09-10 17:02:00");
-        assert_eq!(process_queue_sea(&db, a, Some(d), 100).await.expect("proses2"), 0);
-        assert_eq!(log_list_sea(&db, Some(d), false, 10).await.expect("logs").len(), 2);
+        assert_eq!(process_queue_sea(&db, a, Some(d), 100, None).await.expect("proses2"), 0);
+        assert_eq!(log_list_sea(&db, Some(d), false, 10, None).await.expect("logs").len(), 2);
     }
 
     #[tokio::test]
@@ -576,10 +611,47 @@ mod tests {
         assert!(ingest_sea(&db, d, "9", "waktu-salah", None).await.is_err());
         assert!(ingest_sea(&db, 999999, "9", "2026-09-10 08:00:00", None).await.is_err());
         ingest_sea(&db, d, "99", "2026-09-10 08:00:00", None).await.expect("antre");
-        assert_eq!(process_queue_sea(&db, a, Some(d), 100).await.expect("proses"), 1);
-        let logs = log_list_sea(&db, Some(d), false, 10).await.expect("logs");
+        assert_eq!(process_queue_sea(&db, a, Some(d), 100, None).await.expect("proses"), 1);
+        let logs = log_list_sea(&db, Some(d), false, 10, None).await.expect("logs");
         assert_eq!(logs.len(), 1);
         assert!(logs[0].processed);
+    }
+
+    #[tokio::test]
+    async fn scoping_dept_filter_dan_tolak_lintas_dept() {
+        let (_d, db) = state().await;
+        let a = actor(&db).await;
+        let d = device_save_sea(&db, a, None, &dev_input()).await.expect("dev") as i64;
+        let hr = q_one(&db, "SELECT id FROM departments WHERE code = 'HRD'".to_string(), vec![], 1, "t.hrd")
+            .await.expect("hrd").expect("ada");
+        let hr = value_i64(&hr[0]).expect("id");
+        let it = q_one(&db, "SELECT id FROM departments WHERE code = 'IT'".to_string(), vec![], 1, "t.it")
+            .await.expect("it").expect("ada");
+        let it = value_i64(&it[0]).expect("id");
+        exec(&db, format!("UPDATE employees SET department_id = {hr} WHERE employee_number = 'EMP-0001'"), vec![], "t.dep")
+            .await.expect("dep");
+        exec(&db, format!("INSERT INTO employees (employee_number, first_name, company_id, department_id, join_date, employment_status, employment_type) VALUES ('EMP-FP2', 'Fp2', 1, {it}, '2026-01-05', 'active', 'permanent')").to_string(), vec![], "t.emp2")
+            .await.expect("emp2");
+        let e2 = q_one(&db, "SELECT last_insert_rowid()".to_string(), vec![], 1, "t.rid2")
+            .await.expect("rid2").expect("ada");
+        let e2 = value_i64(&e2[0]).expect("id2");
+        let e1 = q_one(&db, "SELECT id FROM employees WHERE employee_number = 'EMP-0001'".to_string(), vec![], 1, "t.e1")
+            .await.expect("e1").expect("ada");
+        let e1 = value_i64(&e1[0]).expect("id1");
+        enroll_save_sea(&db, a, d, e1, "11", None).await.expect("enroll1");
+        enroll_save_sea(&db, a, d, e2, "22", None).await.expect("enroll2");
+        assert_eq!(enroll_list_sea(&db, d, Some(hr)).await.expect("l1").len(), 1);
+        assert_eq!(enroll_list_sea(&db, d, Some(it)).await.expect("l2").len(), 1);
+        assert_eq!(enroll_list_sea(&db, d, None).await.expect("l3").len(), 2);
+        let e = enroll_save_sea(&db, a, d, e2, "33", Some(hr)).await.expect_err("tolak");
+        assert!(e.contains("luar departemen"));
+        ingest_sea(&db, d, "11", "2026-09-11 08:00:00", None).await.expect("in1");
+        ingest_sea(&db, d, "22", "2026-09-11 08:01:00", None).await.expect("in2");
+        assert_eq!(process_queue_sea(&db, a, Some(d), 100, Some(hr)).await.expect("p1"), 1);
+        assert_eq!(process_queue_sea(&db, a, Some(d), 100, Some(it)).await.expect("p2"), 1);
+        assert_eq!(process_queue_sea(&db, a, Some(d), 100, None).await.expect("p3"), 0);
+        assert_eq!(log_list_sea(&db, Some(d), false, 10, Some(hr)).await.expect("g1").len(), 1);
+        assert_eq!(log_list_sea(&db, Some(d), false, 10, None).await.expect("g2").len(), 2);
     }
 
     #[tokio::test]
