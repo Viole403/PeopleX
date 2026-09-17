@@ -615,6 +615,9 @@ export const commands = {
 	fingerprintResolveDevices: (roleId: number) => typedError<number[], string>(__TAURI_INVOKE("fingerprint_resolve_devices", { roleId })),
 	fingerprintEnrollBulk: (roleId: number) => typedError<number, string>(__TAURI_INVOKE("fingerprint_enroll_bulk", { roleId })),
 	fingerprintEnrollRevoke: (deviceId: number, employeeId: number) => typedError<null, string>(__TAURI_INVOKE("fingerprint_enroll_revoke", { deviceId, employeeId })),
+	fingerprintDoorIngest: (deviceId: number, employeeId: number | null, method: string, granted: boolean, eventTime: string) => typedError<number, string>(__TAURI_INVOKE("fingerprint_door_ingest", { deviceId, employeeId, method, granted, eventTime })),
+	fingerprintDoorEvents: (deviceId: number | null, employeeId: number | null, limit: number) => typedError<DoorEvent[], string>(__TAURI_INVOKE("fingerprint_door_events", { deviceId, employeeId, limit })),
+	fingerprintDoorOpen: (deviceId: number, reason: string) => typedError<number, string>(__TAURI_INVOKE("fingerprint_door_open", { deviceId, reason })),
 	apiTokenIssue: (userId: number, name: string, scopes: string, ttlDays: number | null) => typedError<ApiTokenIssued, string>(__TAURI_INVOKE("api_token_issue", { userId, name, scopes, ttlDays })),
 	apiTokenList: () => typedError<ApiTokenRow[], string>(__TAURI_INVOKE("api_token_list")),
 	apiTokenRevoke: (id: number) => typedError<null, string>(__TAURI_INVOKE("api_token_revoke", { id })),
@@ -1334,6 +1337,17 @@ export type DocumentBytes = {
 	mime: string,
 	name: string,
 	bytes: number[],
+};
+
+export type DoorEvent = {
+	id: number,
+	device_id: number,
+	device_name: string,
+	employee_id: number | null,
+	employee_name: string | null,
+	method: string,
+	granted: boolean,
+	event_time: string,
 };
 
 export type DrillNode = {
