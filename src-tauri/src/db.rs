@@ -48,6 +48,7 @@ static MIGRATIONS: &[&str] = &[
     include_str!("migrations/m28_api_webhook.sql"),
     include_str!("migrations/m29_fp_outbox.sql"),
     include_str!("migrations/m30_role_device_rules.sql"),
+    include_str!("migrations/m31_door_events.sql"),
 ];
 
 /// Bangun koneksi SeaORM sesuai driver pada config (`sqlite`/`postgres`/`mysql`).
