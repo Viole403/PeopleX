@@ -1397,6 +1397,62 @@ async fn fingerprint_roster(
 
 #[tauri::command]
 #[specta::specta]
+async fn fingerprint_card_issue(
+    state: tauri::State<'_, AppState>,
+    employee_id: i32,
+    card_number: String,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint::card_issue_sea(&state.sea, uid, employee_id as i64, &card_number).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_card_block(
+    state: tauri::State<'_, AppState>,
+    card_number: String,
+    reason: Option<String>,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint::card_block_sea(&state.sea, uid, &card_number, reason.as_deref()).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_card_unblock(
+    state: tauri::State<'_, AppState>,
+    card_number: String,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint::card_unblock_sea(&state.sea, uid, &card_number).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_card_blocklist(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::fingerprint::BlockedCard>, String> {
+    require(&state, &["attendance.view", "system.manage"]).await?;
+    services::fingerprint::card_blocklist_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_verify_modes(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::fingerprint::VerifyModeRow>, String> {
+    require(&state, &["attendance.view", "system.manage"]).await?;
+    Ok(services::fingerprint::VERIFY_MODES
+        .iter()
+        .map(|(c, l)| services::fingerprint::VerifyModeRow {
+            code: c.to_string(),
+            label: l.to_string(),
+        })
+        .collect())
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn fingerprint_rule_save(
     state: tauri::State<'_, AppState>,
     role_id: i32,
@@ -5029,6 +5085,11 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         fingerprint_cmd_pending,
         fingerprint_cmd_ack,
         fingerprint_roster,
+        fingerprint_card_issue,
+        fingerprint_card_block,
+        fingerprint_card_unblock,
+        fingerprint_card_blocklist,
+        fingerprint_verify_modes,
         fingerprint_rule_save,
         fingerprint_rules,
         fingerprint_rule_delete,
@@ -5112,7 +5173,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &142);
+                assert_eq!(t, &143);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),
