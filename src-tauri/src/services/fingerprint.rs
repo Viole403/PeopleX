@@ -450,7 +450,18 @@ pub async fn process_queue_sea(
         let dev = value_i64(&r[1]).unwrap_or(0);
         let pin = value_to_string(&r[2]);
         let when = value_to_string(&r[3]);
-        let emp = q_one(
+        if card_terblokir(db, &pin).await? {
+            exec(
+                db,
+                "UPDATE fingerprint_logs SET processed = 2 WHERE id = ?1".to_string(),
+                vec![Value::Int(lid)],
+                "fp.q.blokir",
+            )
+            .await?;
+            done += 1;
+            continue;
+        }
+        let mut emp = q_one(
             db,
             "SELECT employee_id FROM fingerprint_enrollments WHERE device_id = ?1 AND device_pin = ?2".to_string(),
             vec![Value::Int(dev), Value::Text(pin.clone())],
@@ -459,6 +470,17 @@ pub async fn process_queue_sea(
         )
         .await?
         .and_then(|x| value_i64(&x[0]));
+        if emp.is_none() {
+            emp = q_one(
+                db,
+                "SELECT employee_id FROM fp_credentials WHERE cred_type = 'card' AND cred_value = ?1".to_string(),
+                vec![Value::Text(pin.clone())],
+                1,
+                "fp.q.kartu",
+            )
+            .await?
+            .and_then(|x| value_i64(&x[0]));
+        }
         let Some(eid) = emp else {
             exec(
                 db,
@@ -858,6 +880,192 @@ pub async fn roster_sea(
         });
     }
     Ok(out)
+}
+
+/// T7: label mode verifikasi ATTLOG (ADMS + socket legacy + firmware kombinasi).
+pub const VERIFY_MODES: &[(&str, &str)] = &[
+    ("0", "kata sandi"),
+    ("1", "sidik jari"),
+    ("2", "kartu (legacy)"),
+    ("4", "kartu"),
+    ("5", "sidik jari + kartu"),
+    ("7", "kartu + kata sandi"),
+    ("15", "wajah"),
+    ("25", "telapak"),
+];
+
+pub fn verify_mode_label(code: &str) -> String {
+    let c = code.trim();
+    for (k, v) in VERIFY_MODES {
+        if *k == c {
+            return v.to_string();
+        }
+    }
+    if c.len() == 3 {
+        if let Ok(n) = c.parse::<i64>() {
+            if (128..=150).contains(&n) {
+                return "kombinasi (firmware)".to_string();
+            }
+        }
+    }
+    "tidak dikenal".to_string()
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct VerifyModeRow {
+    pub code: String,
+    pub label: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct BlockedCard {
+    pub id: i32,
+    pub card_number: String,
+    pub reason: Option<String>,
+    pub blocked_at: String,
+}
+
+/// T7: terbitkan kartu ke karyawan (cek dup lintas karyawan + blocklist), lalu dorong via cred_save.
+pub async fn card_issue_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    employee_id: i64,
+    card_number: &str,
+) -> Result<i32, String> {
+    let no = card_number.trim();
+    if no.is_empty() || no.len() > 64 {
+        return Err("Nomor kartu wajib diisi sampai 64 karakter.".to_string());
+    }
+    let blok = q_one(
+        db,
+        "SELECT id FROM card_blocklist WHERE card_number = ?1".to_string(),
+        vec![Value::Text(no.to_string())],
+        1,
+        "fp.card.blokir",
+    )
+    .await?;
+    if blok.is_some() {
+        return Err("Nomor kartu masuk daftar blokir.".to_string());
+    }
+    let dup = q_one(
+        db,
+        "SELECT employee_id FROM fp_credentials WHERE cred_type = 'card' AND cred_value = ?1".to_string(),
+        vec![Value::Text(no.to_string())],
+        1,
+        "fp.card.dup",
+    )
+    .await?;
+    if let Some(r) = dup {
+        if value_i64(&r[0]).unwrap_or(0) != employee_id {
+            return Err("Nomor kartu sudah dipakai karyawan lain.".to_string());
+        }
+    }
+    cred_save_sea(db, actor_id, employee_id, "card", no).await
+}
+
+/// T7: blokir kartu hilang (masuk blocklist + antre delete_card ke semua device aktif).
+pub async fn card_block_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    card_number: &str,
+    reason: Option<&str>,
+) -> Result<i32, String> {
+    let no = card_number.trim();
+    if no.is_empty() || no.len() > 64 {
+        return Err("Nomor kartu wajib diisi sampai 64 karakter.".to_string());
+    }
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let ada = q_one(
+        db,
+        "SELECT id FROM card_blocklist WHERE card_number = ?1".to_string(),
+        vec![Value::Text(no.to_string())],
+        1,
+        "fp.bl.cek",
+    )
+    .await?;
+    let rid = match ada {
+        Some(r) => value_i64(&r[0]).unwrap_or(0),
+        None => exec_insert(
+            db,
+            "INSERT INTO card_blocklist (card_number, reason, blocked_by, blocked_at) VALUES (?1, ?2, ?3, ?4)".to_string(),
+            vec![
+                Value::Text(no.to_string()),
+                reason.map(|s| Value::Text(s.to_string())).unwrap_or(Value::Null),
+                Value::Int(actor_id),
+                Value::Text(now.clone()),
+            ],
+            "fp.bl.ins",
+        )
+        .await?,
+    };
+    let devs = q_all(
+        db,
+        "SELECT id FROM fingerprint_devices WHERE deleted_at IS NULL AND is_active = 1".to_string(),
+        vec![],
+        1,
+        "fp.bl.devs",
+    )
+    .await?;
+    for d in devs {
+        let did = value_i64(&d[0]).unwrap_or(0);
+        let _ = cmd_enqueue_sea(db, actor_id, did, "delete_card", &format!("{{\"card\":\"{no}\"}}")).await;
+    }
+    super::audit::log_sea(db, Some(actor_id), "CREATE", "attendance.fingerprint.blocklist", Some(&rid.to_string()), None, None, None).await?;
+    to_dto_int(rid, "fp.bl.id")
+}
+
+pub async fn card_unblock_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    card_number: &str,
+) -> Result<(), String> {
+    let no = card_number.trim();
+    let n = exec(
+        db,
+        "DELETE FROM card_blocklist WHERE card_number = ?1".to_string(),
+        vec![Value::Text(no.to_string())],
+        "fp.bl.hapus",
+    )
+    .await?;
+    if n == 0 {
+        return Err("Nomor kartu tidak ada di daftar blokir.".to_string());
+    }
+    super::audit::log_sea(db, Some(actor_id), "DELETE", "attendance.fingerprint.blocklist", Some(no), None, None, None).await?;
+    Ok(())
+}
+
+pub async fn card_blocklist_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<BlockedCard>, String> {
+    let rows = q_all(
+        db,
+        "SELECT id, card_number, reason, blocked_at FROM card_blocklist ORDER BY id DESC".to_string(),
+        vec![],
+        4,
+        "fp.bl.list",
+    )
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in &rows {
+        out.push(BlockedCard {
+            id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "fp.bl.id")?,
+            card_number: value_to_string(&r[1]),
+            reason: opt_text(&r[2]),
+            blocked_at: value_to_string(&r[3]),
+        });
+    }
+    Ok(out)
+}
+
+/// T7: tap kartu yang diblokir ditolak saat proses antrean.
+pub async fn card_terblokir(db: &sea_orm::DatabaseConnection, card_number: &str) -> Result<bool, String> {
+    let r = q_one(
+        db,
+        "SELECT id FROM card_blocklist WHERE card_number = ?1".to_string(),
+        vec![Value::Text(card_number.trim().to_string())],
+        1,
+        "fp.bl.cek2",
+    )
+    .await?;
+    Ok(r.is_some())
 }
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
@@ -1519,5 +1727,46 @@ mod tests {
         let cid = door_open_sea(&db, a, d, "tamu VIP").await.expect("buka") as i64;
         let pend = cmd_pending_sea(&db, d, 10).await.expect("pend");
         assert!(pend.iter().any(|c| c.op == "open_door" && c.id as i64 == cid));
+    }
+
+    #[tokio::test]
+    async fn label_verify_dan_issuance_blocklist_kartu() {
+        assert_eq!(verify_mode_label("4"), "kartu");
+        assert_eq!(verify_mode_label("1"), "sidik jari");
+        assert_eq!(verify_mode_label("15"), "wajah");
+        assert_eq!(verify_mode_label("128"), "kombinasi (firmware)");
+        assert_eq!(verify_mode_label("zzz"), "tidak dikenal");
+        let (_d, db) = state().await;
+        let a = actor(&db).await;
+        let e = emp(&db).await;
+        let d = device_save_sea(&db, a, None, &dev_input()).await.expect("dev") as i64;
+        let e2 = {
+            exec(&db, "INSERT INTO employees (employee_number, first_name, company_id, join_date, employment_status, employment_type) VALUES ('EMP-FP2', 'Fp2', 1, '2026-01-05', 'active', 'permanent')".to_string(), vec![], "t.emp2")
+                .await.expect("emp2");
+            q_one(&db, "SELECT last_insert_rowid()".to_string(), vec![], 1, "t.rid2")
+                .await.expect("rid2").expect("ada")
+                .first().and_then(value_i64).expect("id2")
+        };
+        card_issue_sea(&db, a, e, "C100").await.expect("terbit");
+        assert!(card_issue_sea(&db, a, e2, "C100").await.is_err());
+        assert!(card_issue_sea(&db, a, e, "   ").await.is_err());
+        ingest_sea(&db, d, "C100", "2026-09-21 08:00:00", Some("4")).await.expect("tap");
+        assert_eq!(process_queue_sea(&db, a, Some(d), 100, None).await.expect("p1"), 1);
+        let row = q_one(&db, "SELECT clock_in FROM attendances WHERE employee_id = ?1 AND date = '2026-09-21'".to_string(), vec![Value::Int(e)], 1, "t.tap")
+            .await.expect("tap2").expect("ada");
+        assert_eq!(value_to_string(&row[0]), "2026-09-21 08:00:00");
+        card_block_sea(&db, a, "C100", Some("hilang")).await.expect("blokir");
+        let daftar = card_blocklist_sea(&db).await.expect("daftar");
+        assert_eq!(daftar.len(), 1);
+        assert_eq!(daftar[0].card_number, "C100");
+        assert!(card_issue_sea(&db, a, e2, "C100").await.is_err());
+        ingest_sea(&db, d, "C100", "2026-09-21 18:00:00", Some("4")).await.expect("tap2");
+        assert_eq!(process_queue_sea(&db, a, Some(d), 100, None).await.expect("p2"), 1);
+        let skip = q_one(&db, "SELECT processed FROM fingerprint_logs WHERE device_pin = 'C100' ORDER BY id DESC LIMIT 1".to_string(), vec![], 1, "t.skip")
+            .await.expect("skip").expect("ada");
+        assert_eq!(value_i64(&skip[0]), Some(2));
+        card_unblock_sea(&db, a, "C100").await.expect("buka");
+        assert!(card_blocklist_sea(&db).await.expect("daftar2").is_empty());
+        assert!(card_unblock_sea(&db, a, "C100").await.is_err());
     }
 }
