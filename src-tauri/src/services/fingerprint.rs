@@ -558,7 +558,7 @@ pub fn parse_adms_rows(body: &str) -> Vec<(String, String, Option<String>)> {
 }
 
 const CRED_TYPES: &[&str] = &["pin", "card"];
-const CMD_OPS: &[&str] = &["enroll_pin", "enroll_card", "delete_pin", "delete_card", "sync_time", "reboot", "clear_logs"];
+const CMD_OPS: &[&str] = &["enroll_pin", "enroll_card", "delete_pin", "delete_card", "sync_time", "reboot", "clear_logs", "open_door"];
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct FpCredential {
@@ -1132,6 +1132,150 @@ pub async fn enroll_revoke_sea(
     Ok(())
 }
 
+const DOOR_METHODS: &[&str] = &["card", "finger", "face", "palm", "password", "combo", "remote", "unknown"];
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct DoorEvent {
+    pub id: i32,
+    pub device_id: i32,
+    pub device_name: String,
+    pub employee_id: Option<i32>,
+    pub employee_name: Option<String>,
+    pub method: String,
+    pub granted: bool,
+    pub event_time: String,
+}
+
+fn door_row(r: &[Value]) -> Result<DoorEvent, String> {
+    Ok(DoorEvent {
+        id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "fp.door.id")?,
+        device_id: to_dto_int(value_i64(&r[1]).unwrap_or(0), "fp.door.dev")?,
+        device_name: value_to_string(&r[2]),
+        employee_id: match &r[3] {
+            Value::Null => None,
+            v => Some(to_dto_int(value_i64(v).unwrap_or(0), "fp.door.emp")?),
+        },
+        employee_name: match &r[4] {
+            Value::Null => None,
+            v => {
+                let s = value_to_string(v);
+                if s.trim().is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
+            }
+        },
+        method: value_to_string(&r[5]),
+        granted: value_i64(&r[6]).unwrap_or(0) != 0,
+        event_time: value_to_string(&r[7]),
+    })
+}
+
+/// Catat event pintu dari device (granted = relay dibuka, denied = ditolak).
+pub async fn door_event_ingest_sea(
+    db: &sea_orm::DatabaseConnection,
+    device_id: i64,
+    employee_id: Option<i64>,
+    method: &str,
+    granted: bool,
+    event_time: &str,
+) -> Result<i32, String> {
+    let m = method.trim().to_lowercase();
+    if !DOOR_METHODS.contains(&m.as_str()) {
+        return Err("Metode event pintu tidak dikenal.".to_string());
+    }
+    let t = event_time.trim();
+    if t.is_empty() || t.len() > 32 {
+        return Err("Waktu event tidak valid.".to_string());
+    }
+    let dev = q_one(
+        db,
+        "SELECT id FROM fingerprint_devices WHERE id = ?1 AND deleted_at IS NULL AND is_active = 1".to_string(),
+        vec![Value::Int(device_id)],
+        1,
+        "fp.door.dev",
+    )
+    .await?;
+    if dev.is_none() {
+        return Err("Perangkat tidak aktif.".to_string());
+    }
+    if let Some(e) = employee_id {
+        let ada = q_one(
+            db,
+            "SELECT id FROM employees WHERE id = ?1 AND deleted_at IS NULL".to_string(),
+            vec![Value::Int(e)],
+            1,
+            "fp.door.emp",
+        )
+        .await?;
+        if ada.is_none() {
+            return Err("Karyawan tidak ditemukan.".to_string());
+        }
+    }
+    let rid = exec_insert(
+        db,
+        "INSERT INTO door_events (device_id, employee_id, method, granted, event_time, raw_line) VALUES (?1, ?2, ?3, ?4, ?5, NULL)".to_string(),
+        vec![
+            Value::Int(device_id),
+            match employee_id {
+                Some(e) => Value::Int(e),
+                None => Value::Null,
+            },
+            Value::Text(m),
+            Value::Int(if granted { 1 } else { 0 }),
+            Value::Text(t.to_string()),
+        ],
+        "fp.door.ins",
+    )
+    .await?;
+    to_dto_int(rid, "fp.door.id")
+}
+
+/// Daftar event pintu, opsional filter device/karyawan.
+pub async fn door_events_sea(
+    db: &sea_orm::DatabaseConnection,
+    device_id: Option<i64>,
+    employee_id: Option<i64>,
+    limit: i64,
+) -> Result<Vec<DoorEvent>, String> {
+    let lim = limit.clamp(1, 200);
+    let mut sql = "SELECT v.id, v.device_id, d.name, v.employee_id, TRIM(e.first_name || ' ' || COALESCE(e.last_name, '')), v.method, v.granted, v.event_time FROM door_events v JOIN fingerprint_devices d ON d.id = v.device_id LEFT JOIN employees e ON e.id = v.employee_id WHERE 1 = 1".to_string();
+    let mut vals = Vec::new();
+    let mut n = 0i64;
+    if let Some(x) = device_id {
+        n += 1;
+        sql.push_str(&format!(" AND v.device_id = ?{n}"));
+        vals.push(Value::Int(x));
+    }
+    if let Some(x) = employee_id {
+        n += 1;
+        sql.push_str(&format!(" AND v.employee_id = ?{n}"));
+        vals.push(Value::Int(x));
+    }
+    n += 1;
+    sql.push_str(&format!(" ORDER BY v.id DESC LIMIT ?{n}"));
+    vals.push(Value::Int(lim));
+    let rows = q_all(db, sql, vals, 8, "fp.door.list").await?;
+    rows.iter().map(|r| door_row(r)).collect()
+}
+
+/// Buka pintu jarak jauh: antre perintah open_door ke device via outbox.
+pub async fn door_open_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    device_id: i64,
+    reason: &str,
+) -> Result<i32, String> {
+    let r = reason.trim();
+    if r.is_empty() || r.len() > 200 {
+        return Err("Alasan buka pintu wajib diisi sampai 200 karakter.".to_string());
+    }
+    let rid = cmd_enqueue_sea(db, actor_id, device_id, "open_door", &format!("{{\"reason\":\"{}\"}}", r.replace('\\', "\\\\").replace('"', "\\\""))).await?;
+    super::audit::log_sea(db, Some(actor_id), "CREATE", "attendance.fingerprint.door", Some(&rid.to_string()), None, None, None).await?;
+    Ok(rid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1346,5 +1490,34 @@ mod tests {
         assert!(rule_delete_sea(&db, a, role, d).await.is_err());
         assert!(rule_list_sea(&db).await.expect("list2").is_empty());
         assert!(resolve_devices_sea(&db, role).await.expect("devs2").is_empty());
+    }
+
+    #[tokio::test]
+    async fn event_pintu_dan_open_door() {
+        let (_d, db) = state().await;
+        let a = actor(&db).await;
+        let e = emp(&db).await;
+        let d = device_save_sea(&db, a, None, &dev_input()).await.expect("dev") as i64;
+        assert!(door_event_ingest_sea(&db, d, Some(e), "sidik", true, "2026-09-20 08:00:00").await.is_err());
+        assert!(door_event_ingest_sea(&db, 999999, None, "card", true, "2026-09-20 08:00:00").await.is_err());
+        let id1 = door_event_ingest_sea(&db, d, Some(e), "card", true, "2026-09-20 08:00:00").await.expect("tap");
+        assert!(id1 > 0);
+        let id2 = door_event_ingest_sea(&db, d, None, "finger", false, "2026-09-20 08:01:00").await.expect("tolak");
+        assert!(id2 > 0);
+        let semua = door_events_sea(&db, None, None, 50).await.expect("list");
+        assert_eq!(semua.len(), 2);
+        assert!(!semua[0].granted);
+        assert_eq!(semua[0].method, "finger");
+        let per_dev = door_events_sea(&db, Some(d), None, 50).await.expect("dev");
+        assert_eq!(per_dev.len(), 2);
+        let per_emp = door_events_sea(&db, None, Some(e), 50).await.expect("emp");
+        assert_eq!(per_emp.len(), 1);
+        assert_eq!(per_emp[0].method, "card");
+        assert!(per_emp[0].granted);
+        assert!(door_open_sea(&db, a, d, "  ").await.is_err());
+        assert!(door_open_sea(&db, a, 999999, "tamu VIP").await.is_err());
+        let cid = door_open_sea(&db, a, d, "tamu VIP").await.expect("buka") as i64;
+        let pend = cmd_pending_sea(&db, d, 10).await.expect("pend");
+        assert!(pend.iter().any(|c| c.op == "open_door" && c.id as i64 == cid));
     }
 }
