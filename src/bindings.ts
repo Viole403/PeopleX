@@ -609,6 +609,12 @@ export const commands = {
 	fingerprintCmdPending: (deviceId: number, limit: number) => typedError<DeviceCommand[], string>(__TAURI_INVOKE("fingerprint_cmd_pending", { deviceId, limit })),
 	fingerprintCmdAck: (deviceId: number, cmdId: number, ok: boolean, error: string | null) => typedError<null, string>(__TAURI_INVOKE("fingerprint_cmd_ack", { deviceId, cmdId, ok, error })),
 	fingerprintRoster: (deviceId: number | null) => typedError<DeviceRosterRow[], string>(__TAURI_INVOKE("fingerprint_roster", { deviceId })),
+	fingerprintRuleSave: (roleId: number, deviceId: number) => typedError<number, string>(__TAURI_INVOKE("fingerprint_rule_save", { roleId, deviceId })),
+	fingerprintRules: () => typedError<RoleDeviceRule[], string>(__TAURI_INVOKE("fingerprint_rules")),
+	fingerprintRuleDelete: (roleId: number, deviceId: number) => typedError<null, string>(__TAURI_INVOKE("fingerprint_rule_delete", { roleId, deviceId })),
+	fingerprintResolveDevices: (roleId: number) => typedError<number[], string>(__TAURI_INVOKE("fingerprint_resolve_devices", { roleId })),
+	fingerprintEnrollBulk: (roleId: number) => typedError<number, string>(__TAURI_INVOKE("fingerprint_enroll_bulk", { roleId })),
+	fingerprintEnrollRevoke: (deviceId: number, employeeId: number) => typedError<null, string>(__TAURI_INVOKE("fingerprint_enroll_revoke", { deviceId, employeeId })),
 	apiTokenIssue: (userId: number, name: string, scopes: string, ttlDays: number | null) => typedError<ApiTokenIssued, string>(__TAURI_INVOKE("api_token_issue", { userId, name, scopes, ttlDays })),
 	apiTokenList: () => typedError<ApiTokenRow[], string>(__TAURI_INVOKE("api_token_list")),
 	apiTokenRevoke: (id: number) => typedError<null, string>(__TAURI_INVOKE("api_token_revoke", { id })),
@@ -2430,6 +2436,15 @@ export type Role = {
 	description: string | null,
 	is_system: boolean,
 	user_count: number,
+};
+
+export type RoleDeviceRule = {
+	id: number,
+	role_id: number,
+	role_slug: string,
+	role_name: string,
+	device_id: number,
+	device_name: string,
 };
 
 /**  Komponen gaji terpasang + katalog. */
