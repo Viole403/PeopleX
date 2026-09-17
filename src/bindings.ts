@@ -609,6 +609,11 @@ export const commands = {
 	fingerprintCmdPending: (deviceId: number, limit: number) => typedError<DeviceCommand[], string>(__TAURI_INVOKE("fingerprint_cmd_pending", { deviceId, limit })),
 	fingerprintCmdAck: (deviceId: number, cmdId: number, ok: boolean, error: string | null) => typedError<null, string>(__TAURI_INVOKE("fingerprint_cmd_ack", { deviceId, cmdId, ok, error })),
 	fingerprintRoster: (deviceId: number | null) => typedError<DeviceRosterRow[], string>(__TAURI_INVOKE("fingerprint_roster", { deviceId })),
+	fingerprintCardIssue: (employeeId: number, cardNumber: string) => typedError<number, string>(__TAURI_INVOKE("fingerprint_card_issue", { employeeId, cardNumber })),
+	fingerprintCardBlock: (cardNumber: string, reason: string | null) => typedError<number, string>(__TAURI_INVOKE("fingerprint_card_block", { cardNumber, reason })),
+	fingerprintCardUnblock: (cardNumber: string) => typedError<null, string>(__TAURI_INVOKE("fingerprint_card_unblock", { cardNumber })),
+	fingerprintCardBlocklist: () => typedError<BlockedCard[], string>(__TAURI_INVOKE("fingerprint_card_blocklist")),
+	fingerprintVerifyModes: () => typedError<VerifyModeRow[], string>(__TAURI_INVOKE("fingerprint_verify_modes")),
 	fingerprintRuleSave: (roleId: number, deviceId: number) => typedError<number, string>(__TAURI_INVOKE("fingerprint_rule_save", { roleId, deviceId })),
 	fingerprintRules: () => typedError<RoleDeviceRule[], string>(__TAURI_INVOKE("fingerprint_rules")),
 	fingerprintRuleDelete: (roleId: number, deviceId: number) => typedError<null, string>(__TAURI_INVOKE("fingerprint_rule_delete", { roleId, deviceId })),
@@ -898,6 +903,13 @@ export type Birthday = {
 	name: string,
 	employee_number: string,
 	birth_date: string | null,
+};
+
+export type BlockedCard = {
+	id: number,
+	card_number: string,
+	reason: string | null,
+	blocked_at: string,
 };
 
 export type BonusInput = {
@@ -2729,6 +2741,11 @@ export type VacancyInput = {
 	status: string,
 	posted_date: string | null,
 	closing_date: string | null,
+};
+
+export type VerifyModeRow = {
+	code: string,
+	label: string,
 };
 
 export type WebhookInput = {
