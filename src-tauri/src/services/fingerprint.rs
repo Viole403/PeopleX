@@ -860,6 +860,278 @@ pub async fn roster_sea(
     Ok(out)
 }
 
+#[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
+pub struct RoleDeviceRule {
+    pub id: i32,
+    pub role_id: i32,
+    pub role_slug: String,
+    pub role_name: String,
+    pub device_id: i32,
+    pub device_name: String,
+}
+
+/// T3: tambah aturan role boleh memakai device (idempoten).
+pub async fn rule_save_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    role_id: i64,
+    device_id: i64,
+) -> Result<i32, String> {
+    for (tbl, col, val, label) in [
+        ("roles", "id", role_id, "Peran"),
+        ("fingerprint_devices", "id", device_id, "Perangkat"),
+    ] {
+        let row = q_one(
+            db,
+            format!("SELECT id FROM {tbl} WHERE {col} = ?1"),
+            vec![Value::Int(val)],
+            1,
+            "fp.rule.cek",
+        )
+        .await?;
+        if row.is_none() {
+            return Err(format!("{label} tidak ditemukan."));
+        }
+    }
+    let ada = q_one(
+        db,
+        "SELECT id FROM role_device_rules WHERE role_id = ?1 AND device_id = ?2".to_string(),
+        vec![Value::Int(role_id), Value::Int(device_id)],
+        1,
+        "fp.rule.ada",
+    )
+    .await?;
+    if let Some(r) = ada {
+        return to_dto_int(value_i64(&r[0]).unwrap_or(0), "fp.rule.id");
+    }
+    let rid = exec_insert(
+        db,
+        "INSERT INTO role_device_rules (role_id, device_id) VALUES (?1, ?2)".to_string(),
+        vec![Value::Int(role_id), Value::Int(device_id)],
+        "fp.rule.ins",
+    )
+    .await?;
+    super::audit::log_sea(db, Some(actor_id), "CREATE", "attendance.fingerprint.rule", Some(&rid.to_string()), None, None, None).await?;
+    to_dto_int(rid, "fp.rule.id")
+}
+
+pub async fn rule_list_sea(db: &sea_orm::DatabaseConnection) -> Result<Vec<RoleDeviceRule>, String> {
+    let rows = q_all(
+        db,
+        "SELECT r.id, r.role_id, ro.slug, ro.name, r.device_id, d.name FROM role_device_rules r JOIN roles ro ON ro.id = r.role_id JOIN fingerprint_devices d ON d.id = r.device_id ORDER BY r.id".to_string(),
+        vec![],
+        6,
+        "fp.rule.list",
+    )
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in &rows {
+        out.push(RoleDeviceRule {
+            id: to_dto_int(value_i64(&r[0]).unwrap_or(0), "fp.rule.id")?,
+            role_id: to_dto_int(value_i64(&r[1]).unwrap_or(0), "fp.rule.role")?,
+            role_slug: value_to_string(&r[2]),
+            role_name: value_to_string(&r[3]),
+            device_id: to_dto_int(value_i64(&r[4]).unwrap_or(0), "fp.rule.dev")?,
+            device_name: value_to_string(&r[5]),
+        });
+    }
+    Ok(out)
+}
+
+pub async fn rule_delete_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    role_id: i64,
+    device_id: i64,
+) -> Result<(), String> {
+    let n = exec(
+        db,
+        "DELETE FROM role_device_rules WHERE role_id = ?1 AND device_id = ?2".to_string(),
+        vec![Value::Int(role_id), Value::Int(device_id)],
+        "fp.rule.del",
+    )
+    .await?;
+    if n == 0 {
+        return Err("Aturan tidak ditemukan.".to_string());
+    }
+    super::audit::log_sea(db, Some(actor_id), "DELETE", "attendance.fingerprint.rule", Some(&format!("{role_id}:{device_id}")), None, None, None).await?;
+    Ok(())
+}
+
+/// T3 resolver: device aktif yang boleh dipakai satu role.
+pub async fn resolve_devices_sea(
+    db: &sea_orm::DatabaseConnection,
+    role_id: i64,
+) -> Result<Vec<i64>, String> {
+    let rows = q_all(
+        db,
+        "SELECT r.device_id FROM role_device_rules r JOIN fingerprint_devices d ON d.id = r.device_id WHERE r.role_id = ?1 AND d.deleted_at IS NULL AND d.is_active = 1 ORDER BY r.device_id".to_string(),
+        vec![Value::Int(role_id)],
+        1,
+        "fp.rule.devs",
+    )
+    .await?;
+    Ok(rows.iter().filter_map(|r| value_i64(&r[0])).collect())
+}
+
+/// T3 resolver: karyawan anggota satu role (via user_roles + users).
+pub async fn resolve_members_sea(
+    db: &sea_orm::DatabaseConnection,
+    role_id: i64,
+) -> Result<Vec<i64>, String> {
+    let rows = q_all(
+        db,
+        "SELECT u.employee_id FROM user_roles ur JOIN users u ON u.id = ur.user_id JOIN employees e ON e.id = u.employee_id WHERE ur.role_id = ?1 AND u.employee_id IS NOT NULL AND e.deleted_at IS NULL ORDER BY u.employee_id".to_string(),
+        vec![Value::Int(role_id)],
+        1,
+        "fp.rule.members",
+    )
+    .await?;
+    Ok(rows.iter().filter_map(|r| value_i64(&r[0])).collect())
+}
+
+fn dept_of(db_emp_dept: Option<i64>, scoped: Option<i64>) -> bool {
+    match scoped {
+        None => true,
+        Some(d) => db_emp_dept == Some(d),
+    }
+}
+
+/// T3: daftarkan seluruh anggota role ke seluruh device role itu.
+/// Memakai PIN sentral tiap anggota; anggota tanpa PIN dilewati.
+/// Idempoten: pasangan terdaftar dilewati. Kembalikan jumlah pasangan baru.
+pub async fn enroll_bulk_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    role_id: i64,
+    department_id: Option<i64>,
+) -> Result<i32, String> {
+    let devs = resolve_devices_sea(db, role_id).await?;
+    if devs.is_empty() {
+        return Err("Role ini belum punya device.".to_string());
+    }
+    let members = resolve_members_sea(db, role_id).await?;
+    if members.is_empty() {
+        return Err("Role ini belum punya anggota karyawan.".to_string());
+    }
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut baru = 0i64;
+    for did in devs {
+        for eid in &members {
+            let dep = q_one(
+                db,
+                "SELECT department_id FROM employees WHERE id = ?1 AND deleted_at IS NULL".to_string(),
+                vec![Value::Int(*eid)],
+                1,
+                "fp.bulk.scope",
+            )
+            .await?
+            .and_then(|r| value_i64(&r[0]));
+            if !dept_of(dep, department_id) {
+                continue;
+            }
+            let pin = q_one(
+                db,
+                "SELECT cred_value FROM fp_credentials WHERE employee_id = ?1 AND cred_type = 'pin'".to_string(),
+                vec![Value::Int(*eid)],
+                1,
+                "fp.bulk.pin",
+            )
+            .await?
+            .map(|r| value_to_string(&r[0]));
+            let Some(pin) = pin.filter(|p| !p.trim().is_empty()) else {
+                continue;
+            };
+            let sudah = q_one(
+                db,
+                "SELECT id FROM fingerprint_enrollments WHERE device_id = ?1 AND employee_id = ?2".to_string(),
+                vec![Value::Int(did), Value::Int(*eid)],
+                1,
+                "fp.bulk.cek",
+            )
+            .await?;
+            if sudah.is_some() {
+                continue;
+            }
+            exec_insert(
+                db,
+                "INSERT INTO fingerprint_enrollments (device_id, employee_id, device_pin, created_at) VALUES (?1, ?2, ?3, ?4)".to_string(),
+                vec![Value::Int(did), Value::Int(*eid), Value::Text(pin.clone()), Value::Text(now.clone())],
+                "fp.bulk.ins",
+            )
+            .await
+            .map_err(|e| {
+                if e.contains("UNIQUE") {
+                    "PIN sudah terdaftar di perangkat ini.".to_string()
+                } else {
+                    e
+                }
+            })?;
+            exec(
+                db,
+                "INSERT INTO device_commands (device_id, op, payload, status, created_at, updated_at) VALUES (?1, 'enroll_pin', ?2, 'pending', ?3, ?3)".to_string(),
+                vec![
+                    Value::Int(did),
+                    Value::Text(format!("{{\"employee_id\":{eid},\"value\":\"{pin}\"}}")),
+                    Value::Text(now.clone()),
+                ],
+                "fp.bulk.push",
+            )
+            .await?;
+            exec(
+                db,
+                "INSERT OR IGNORE INTO device_roster (device_id, employee_id, cred_type, status) VALUES (?1, ?2, 'pin', 'pending')".to_string(),
+                vec![Value::Int(did), Value::Int(*eid)],
+                "fp.bulk.roster",
+            )
+            .await?;
+            baru += 1;
+        }
+    }
+    super::audit::log_sea(db, Some(actor_id), "CREATE", "attendance.fingerprint.bulk", Some(&role_id.to_string()), None, None, Some(&format!("{baru} pasangan baru"))).await?;
+    to_dto_int(baru, "fp.bulk.n")
+}
+
+/// T3: cabut satu pasangan device-karyawan (hapus enroll + antre delete_pin + hapus roster).
+pub async fn enroll_revoke_sea(
+    db: &sea_orm::DatabaseConnection,
+    actor_id: i64,
+    device_id: i64,
+    employee_id: i64,
+) -> Result<(), String> {
+    let n = exec(
+        db,
+        "DELETE FROM fingerprint_enrollments WHERE device_id = ?1 AND employee_id = ?2".to_string(),
+        vec![Value::Int(device_id), Value::Int(employee_id)],
+        "fp.revoke.del",
+    )
+    .await?;
+    if n == 0 {
+        return Err("Pendaftaran tidak ditemukan.".to_string());
+    }
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    exec(
+        db,
+        "INSERT INTO device_commands (device_id, op, payload, status, created_at, updated_at) VALUES (?1, 'delete_pin', ?2, 'pending', ?3, ?3)".to_string(),
+        vec![
+            Value::Int(device_id),
+            Value::Text(format!("{{\"employee_id\":{employee_id}}}")),
+            Value::Text(now),
+        ],
+        "fp.revoke.push",
+    )
+    .await?;
+    exec(
+        db,
+        "DELETE FROM device_roster WHERE device_id = ?1 AND employee_id = ?2".to_string(),
+        vec![Value::Int(device_id), Value::Int(employee_id)],
+        "fp.revoke.roster",
+    )
+    .await?;
+    super::audit::log_sea(db, Some(actor_id), "DELETE", "attendance.fingerprint.revoke", Some(&format!("{device_id}:{employee_id}")), None, None, None).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1030,5 +1302,49 @@ mod tests {
         assert_eq!(value_to_string(&row[0]), "failed");
         assert_eq!(value_i64(&row[1]), Some(1));
         assert!(cmd_ack_sea(&db, d, cid, true, None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn aturan_role_device_resolver_bulk_dan_revoke() {
+        let (_d, db) = state().await;
+        let a = actor(&db).await;
+        let e = emp(&db).await;
+        let d = device_save_sea(&db, a, None, &dev_input()).await.expect("dev") as i64;
+        let role = q_one(&db, "SELECT id FROM roles WHERE slug = 'employee'".to_string(), vec![], 1, "t.role")
+            .await.expect("role").expect("ada");
+        let role = value_i64(&role[0]).expect("rid");
+        assert!(rule_save_sea(&db, a, 999999, d).await.is_err());
+        assert!(resolve_devices_sea(&db, role).await.expect("devs0").is_empty());
+        assert!(enroll_bulk_sea(&db, a, role, None).await.is_err());
+        let rid = rule_save_sea(&db, a, role, d).await.expect("rule");
+        assert!(rid > 0);
+        assert_eq!(rule_save_sea(&db, a, role, d).await.expect("idem"), rid);
+        let rules = rule_list_sea(&db).await.expect("list");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].role_slug, "employee");
+        assert_eq!(resolve_devices_sea(&db, role).await.expect("devs").len(), 1);
+        assert!(enroll_bulk_sea(&db, a, role, None).await.is_err());
+        cred_save_sea(&db, a, e, "pin", "5555").await.expect("cred");
+        exec(&db, format!("INSERT INTO users (employee_id, username, email, password, status, must_change_password) VALUES ({e}, 'fpbulk1', 'fpbulk1@x.test', 'x', 'active', 0)"), vec![], "t.u1")
+            .await.expect("u1");
+        let u1 = q_one(&db, "SELECT id FROM users WHERE username = 'fpbulk1'".to_string(), vec![], 1, "t.u1id")
+            .await.expect("u1id").expect("ada");
+        let u1 = value_i64(&u1[0]).expect("uid1");
+        exec(&db, format!("INSERT INTO user_roles (user_id, role_id) VALUES ({u1}, {role})"), vec![], "t.ur1")
+            .await.expect("ur1");
+        assert_eq!(resolve_members_sea(&db, role).await.expect("mem").len(), 1);
+        assert_eq!(enroll_bulk_sea(&db, a, role, None).await.expect("bulk"), 1);
+        assert_eq!(enroll_bulk_sea(&db, a, role, None).await.expect("bulk2"), 0);
+        let pend = cmd_pending_sea(&db, d, 10).await.expect("pend");
+        assert!(pend.iter().any(|c| c.op == "enroll_pin"));
+        enroll_revoke_sea(&db, a, d, e).await.expect("revoke");
+        assert!(enroll_revoke_sea(&db, a, d, e).await.is_err());
+        let pend2 = cmd_pending_sea(&db, d, 10).await.expect("pend2");
+        assert!(pend2.iter().any(|c| c.op == "delete_pin"));
+        assert!(roster_sea(&db, Some(d)).await.expect("ros").is_empty());
+        rule_delete_sea(&db, a, role, d).await.expect("del");
+        assert!(rule_delete_sea(&db, a, role, d).await.is_err());
+        assert!(rule_list_sea(&db).await.expect("list2").is_empty());
+        assert!(resolve_devices_sea(&db, role).await.expect("devs2").is_empty());
     }
 }
