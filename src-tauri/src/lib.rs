@@ -1397,6 +1397,69 @@ async fn fingerprint_roster(
 
 #[tauri::command]
 #[specta::specta]
+async fn fingerprint_rule_save(
+    state: tauri::State<'_, AppState>,
+    role_id: i32,
+    device_id: i32,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint::rule_save_sea(&state.sea, uid, role_id as i64, device_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_rules(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<services::fingerprint::RoleDeviceRule>, String> {
+    require(&state, &["attendance.view", "system.manage"]).await?;
+    services::fingerprint::rule_list_sea(&state.sea).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_rule_delete(
+    state: tauri::State<'_, AppState>,
+    role_id: i32,
+    device_id: i32,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint::rule_delete_sea(&state.sea, uid, role_id as i64, device_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_resolve_devices(
+    state: tauri::State<'_, AppState>,
+    role_id: i32,
+) -> Result<Vec<i32>, String> {
+    require(&state, &["attendance.view", "system.manage"]).await?;
+    let devs = services::fingerprint::resolve_devices_sea(&state.sea, role_id as i64).await?;
+    Ok(devs.iter().map(|v| *v as i32).collect())
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_enroll_bulk(
+    state: tauri::State<'_, AppState>,
+    role_id: i32,
+) -> Result<i32, String> {
+    let (uid, user) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint::enroll_bulk_sea(&state.sea, uid, role_id as i64, scoped_department(&state, &user).await?).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_enroll_revoke(
+    state: tauri::State<'_, AppState>,
+    device_id: i32,
+    employee_id: i32,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint::enroll_revoke_sea(&state.sea, uid, device_id as i64, employee_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn api_token_issue(
     state: tauri::State<'_, AppState>,
     user_id: i32,
@@ -4929,6 +4992,12 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         fingerprint_cmd_pending,
         fingerprint_cmd_ack,
         fingerprint_roster,
+        fingerprint_rule_save,
+        fingerprint_rules,
+        fingerprint_rule_delete,
+        fingerprint_resolve_devices,
+        fingerprint_enroll_bulk,
+        fingerprint_enroll_revoke,
         api_token_issue,
         api_token_list,
         api_token_revoke,
@@ -5003,7 +5072,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &140);
+                assert_eq!(t, &141);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),
