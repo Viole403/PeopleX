@@ -1460,6 +1460,43 @@ async fn fingerprint_enroll_revoke(
 
 #[tauri::command]
 #[specta::specta]
+async fn fingerprint_door_ingest(
+    state: tauri::State<'_, AppState>,
+    device_id: i32,
+    employee_id: Option<i32>,
+    method: String,
+    granted: bool,
+    event_time: String,
+) -> Result<i32, String> {
+    let _ = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint::door_event_ingest_sea(&state.sea, device_id as i64, employee_id.map(|v| v as i64), &method, granted, &event_time).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_door_events(
+    state: tauri::State<'_, AppState>,
+    device_id: Option<i32>,
+    employee_id: Option<i32>,
+    limit: i32,
+) -> Result<Vec<services::fingerprint::DoorEvent>, String> {
+    require(&state, &["attendance.view", "system.manage"]).await?;
+    services::fingerprint::door_events_sea(&state.sea, device_id.map(|v| v as i64), employee_id.map(|v| v as i64), limit as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_door_open(
+    state: tauri::State<'_, AppState>,
+    device_id: i32,
+    reason: String,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint::door_open_sea(&state.sea, uid, device_id as i64, &reason).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn api_token_issue(
     state: tauri::State<'_, AppState>,
     user_id: i32,
@@ -4998,6 +5035,9 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         fingerprint_resolve_devices,
         fingerprint_enroll_bulk,
         fingerprint_enroll_revoke,
+        fingerprint_door_ingest,
+        fingerprint_door_events,
+        fingerprint_door_open,
         api_token_issue,
         api_token_list,
         api_token_revoke,
@@ -5072,7 +5112,7 @@ mod tests {
         .expect("baris");
         match (&tables[0], &admin[0]) {
             (Value::Int(t), Value::Int(a)) => {
-                assert_eq!(t, &141);
+                assert_eq!(t, &142);
                 assert_eq!(a, &1);
             }
             other => panic!("tipe tak terduga: {other:?}"),
