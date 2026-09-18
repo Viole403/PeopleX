@@ -940,7 +940,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = crate::init_state(dir.path().to_path_buf()).expect("state");
         let db = state.sea.clone();
-        let emp = q_one(
+        let _emp = q_one(
             &db,
             "SELECT id FROM employees WHERE employee_number = 'EMP-0001'".to_string(),
             vec![],
