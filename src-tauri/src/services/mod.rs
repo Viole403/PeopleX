@@ -11,6 +11,7 @@ pub mod dashboard;
 pub mod engagement;
 pub mod employees;
 pub mod fingerprint;
+pub mod fingerprint_easylink;
 pub mod fingerprint_proto;
 pub mod leave;
 pub mod notifications;

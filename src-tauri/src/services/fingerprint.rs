@@ -9,7 +9,7 @@
 use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 use crate::to_dto_int;
 
-const PROTOCOLS: &[&str] = &["adms", "zk_pull", "usb", "cloud", "agent"];
+const PROTOCOLS: &[&str] = &["adms", "zk_pull", "usb", "cloud", "agent", "easylink"];
 
 /// Merek umum untuk pemilih di FE; protokol bebas tetap diizinkan.
 pub const BRANDS: &[&str] = &[
@@ -22,6 +22,7 @@ pub fn default_driver(protocol: &str) -> &'static str {
     match protocol {
         "adms" | "zk_pull" | "usb" => "universal",
         "cloud" => "cloud-webhook",
+        "easylink" => "easylink",
         _ => "agent",
     }
 }

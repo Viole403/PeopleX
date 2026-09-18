@@ -50,6 +50,7 @@ static MIGRATIONS: &[&str] = &[
     include_str!("migrations/m30_role_device_rules.sql"),
     include_str!("migrations/m31_door_events.sql"),
     include_str!("migrations/m32_card_blocklist.sql"),
+    include_str!("migrations/m33_fp_easylink_check.sql"),
 ];
 
 /// Bangun koneksi SeaORM sesuai driver pada config (`sqlite`/`postgres`/`mysql`).
@@ -127,47 +128,50 @@ pub fn migration_scripts() -> &'static [&'static str] {
 }
 
 /// Benar bila potongan naskah hanya berisi komentar atau baris kosong.
-fn hanya_komentar(s: &str) -> bool {
-    let mut dalam_blok = false;
-    for baris in s.lines() {
-        let mut t = baris.trim().to_string();
-        if dalam_blok {
-            match t.find("*/") {
-                Some(pos) => {
-                    t = t[pos + 2..].trim().to_string();
-                    dalam_blok = false;
-                }
-                None => continue,
+fn nama_backend(backend: sea_orm::DbBackend) -> &'static str {
+    match backend {
+        sea_orm::DbBackend::Postgres => "postgres",
+        sea_orm::DbBackend::MySql => "mysql",
+        _ => "sqlite",
+    }
+}
+
+/// Saring satu potongan migrasi: buang baris komentar `--`, baca direktif
+/// `-- only: sqlite,postgres` (berlaku untuk SQL dalam potongan yang sama),
+/// kembalikan None bila backend tidak tercantum atau sisa SQL kosong.
+fn saring_direktif(potongan: &str, backend: &str) -> Option<String> {
+    let mut hanya: Option<Vec<String>> = None;
+    let mut sql = String::new();
+    for baris in potongan.lines() {
+        let t = baris.trim();
+        if t.starts_with("--") {
+            let isi = t[2..].trim();
+            if let Some(daftar) = isi.strip_prefix("only:") {
+                hanya = Some(
+                    daftar
+                        .split(',')
+                        .map(|s| s.trim().to_lowercase())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                );
             }
-        }
-        loop {
-            let mulai = match t.find("/*") {
-                Some(m) => m,
-                None => break,
-            };
-            match t[mulai + 2..].find("*/") {
-                Some(rel) => {
-                    let cut = mulai + 2 + rel + 2;
-                    let mut g = String::with_capacity(t.len());
-                    g.push_str(&t[..mulai]);
-                    g.push_str(&t[cut..]);
-                    t = g;
-                }
-                None => {
-                    t = t[..mulai].trim().to_string();
-                    dalam_blok = true;
-                    break;
-                }
-            }
-        }
-        let t = t.trim();
-        if t.is_empty() || t.starts_with("--") {
             continue;
         }
-        return false;
+        sql.push_str(baris);
+        sql.push('\n');
     }
-    true
+    let sql = sql.trim().to_string();
+    if sql.is_empty() {
+        return None;
+    }
+    if let Some(daftar) = hanya {
+        if !daftar.iter().any(|b| b == backend) {
+            return None;
+        }
+    }
+    Some(sql)
 }
+
 
 /// Jalankan migrasi DDL yang belum tercatat di tabel `sea_migrations`.
 ///
@@ -219,12 +223,13 @@ pub async fn migrate_sea(db: &DatabaseConnection) -> Result<(), String> {
             continue;
         }
         // Eksekusi tiap pernyataan DDL satu per satu (SQLite menolak multi-statement).
+        // Potongan boleh membawa direktif `-- only: sqlite,postgres` per backend.
+        let nama = nama_backend(backend);
         for part in script.split(';') {
-            let stmt = part.trim();
-            if stmt.is_empty() || hanya_komentar(stmt) {
+            let Some(stmt) = saring_direktif(part, nama) else {
                 continue;
-            }
-            let stmt = schema_sql::transpile(backend, stmt, &indexed);
+            };
+            let stmt = schema_sql::transpile(backend, &stmt, &indexed);
             exec(db, stmt, vec![], &format!("migrasi M{version:02} gagal")).await?;
         }
         exec(
@@ -259,6 +264,32 @@ mod tests {
             .expect("connect");
         migrate_sea(&db).await.expect("migrate");
         (dir, db)
+    }
+
+    #[test]
+    fn saring_direktif_backend() {
+        assert_eq!(
+            saring_direktif("-- komentar biasa\nSELECT 1", "sqlite"),
+            Some("SELECT 1".to_string())
+        );
+        assert_eq!(saring_direktif("-- hanya komentar", "sqlite"), None);
+        assert_eq!(saring_direktif("   ", "sqlite"), None);
+        assert_eq!(
+            saring_direktif("-- only: sqlite\nPRAGMA foreign_keys=OFF", "sqlite"),
+            Some("PRAGMA foreign_keys=OFF".to_string())
+        );
+        assert_eq!(
+            saring_direktif("-- only: sqlite\nPRAGMA foreign_keys=OFF", "postgres"),
+            None
+        );
+        assert_eq!(
+            saring_direktif("-- only: postgres,mysql\nALTER TABLE t ADD CHECK (a IN (1,2))", "mysql"),
+            Some("ALTER TABLE t ADD CHECK (a IN (1,2))".to_string())
+        );
+        assert_eq!(
+            saring_direktif("-- only: postgres,mysql\nALTER TABLE t ADD CHECK (a IN (1,2))", "sqlite"),
+            None
+        );
     }
 
     #[tokio::test]
