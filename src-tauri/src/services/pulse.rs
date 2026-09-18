@@ -511,7 +511,6 @@ pub async fn close(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sea_orm::ColumnTrait as _;
 
     #[tokio::test]
     async fn alur_pulse_dari_draf_sampai_tutup() {
