@@ -603,6 +603,14 @@ export const commands = {
 	fingerprintLogs: (deviceId: number | null, onlyPending: boolean, limit: number) => typedError<FingerLog[], string>(__TAURI_INVOKE("fingerprint_logs", { deviceId, onlyPending, limit })),
 	fingerprintProbe: (host: string) => typedError<DeviceProbe, string>(__TAURI_INVOKE("fingerprint_probe", { host })),
 	fingerprintProcess: (deviceId: number | null, limit: number) => typedError<number, string>(__TAURI_INVOKE("fingerprint_process", { deviceId, limit })),
+	fingerprintPull: (deviceId: number) => typedError<number, string>(__TAURI_INVOKE("fingerprint_pull", { deviceId })),
+	fingerprintAdmsStart: (port: number) => typedError<string, string>(__TAURI_INVOKE("fingerprint_adms_start", { port })),
+	fingerprintAdmsStatus: (port: number) => typedError<boolean, string>(__TAURI_INVOKE("fingerprint_adms_status", { port })),
+	fingerprintEasylinkInfo: (deviceId: number) => typedError<EasyLinkDeviceInfo, string>(__TAURI_INVOKE("fingerprint_easylink_info", { deviceId })),
+	fingerprintEasylinkPull: (deviceId: number, onlyNew: boolean) => typedError<number, string>(__TAURI_INVOKE("fingerprint_easylink_pull", { deviceId, onlyNew })),
+	fingerprintEasylinkSync: (deviceId: number, limit: number | null) => typedError<number, string>(__TAURI_INVOKE("fingerprint_easylink_sync", { deviceId, limit })),
+	fingerprintEasylinkPush: (deviceId: number, devicePin: string, name: string, card: string | null) => typedError<null, string>(__TAURI_INVOKE("fingerprint_easylink_push", { deviceId, devicePin, name, card })),
+	fingerprintEasylinkSettime: (deviceId: number) => typedError<null, string>(__TAURI_INVOKE("fingerprint_easylink_settime", { deviceId })),
 	fingerprintCredSave: (employeeId: number, credType: string, credValue: string) => typedError<number, string>(__TAURI_INVOKE("fingerprint_cred_save", { employeeId, credType, credValue })),
 	fingerprintCreds: (employeeId: number | null) => typedError<FpCredential[], string>(__TAURI_INVOKE("fingerprint_creds", { employeeId })),
 	fingerprintCmdEnqueue: (deviceId: number, op: string, payload: string) => typedError<number, string>(__TAURI_INVOKE("fingerprint_cmd_enqueue", { deviceId, op, payload })),
@@ -1381,6 +1389,23 @@ export type Dropdowns = {
 	work_locations: NamedOpt[],
 	cost_centers: NamedOpt[],
 	employees: NamedOpt[],
+};
+
+/**
+ *  Ringkasan DEVINFO EasyLink: `{Jam, Admin, User, FP, CARD, PWD,
+ *  'All Operasional', 'All Presensi', 'New Operasional', 'New Presensi'}`.
+ */
+export type EasyLinkDeviceInfo = {
+	jam: string,
+	admin: number,
+	user: number,
+	fp: number,
+	card: number,
+	pwd: number,
+	all_operasional: number,
+	all_presensi: number,
+	new_operasional: number,
+	new_presensi: number,
 };
 
 /**  Detail penuh + label relasi. */
