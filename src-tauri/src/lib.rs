@@ -1359,6 +1359,61 @@ async fn fingerprint_adms_status(
 
 #[tauri::command]
 #[specta::specta]
+async fn fingerprint_easylink_info(
+    state: tauri::State<'_, AppState>,
+    device_id: i32,
+) -> Result<services::fingerprint_easylink::EasyLinkDeviceInfo, String> {
+    let _ = require(&state, &["attendance.view", "system.manage"]).await?;
+    services::fingerprint_easylink::easylink_info_sea(&state.sea, device_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_easylink_pull(
+    state: tauri::State<'_, AppState>,
+    device_id: i32,
+    only_new: bool,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint_easylink::easylink_pull_sea(&state.sea, uid, device_id as i64, only_new).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_easylink_sync(
+    state: tauri::State<'_, AppState>,
+    device_id: i32,
+    limit: Option<i32>,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint_easylink::easylink_sync_outbox_sea(&state.sea, uid, device_id as i64, limit.unwrap_or(50) as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_easylink_push(
+    state: tauri::State<'_, AppState>,
+    device_id: i32,
+    device_pin: String,
+    name: String,
+    card: Option<String>,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint_easylink::easylink_push_user_sea(&state.sea, uid, device_id as i64, &device_pin, &name, card.as_deref()).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_easylink_settime(
+    state: tauri::State<'_, AppState>,
+    device_id: i32,
+) -> Result<(), String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint_easylink::easylink_settime_sea(&state.sea, uid, device_id as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn fingerprint_cred_save(
     state: tauri::State<'_, AppState>,
     employee_id: i32,
@@ -5103,6 +5158,11 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         fingerprint_pull,
         fingerprint_adms_start,
         fingerprint_adms_status,
+        fingerprint_easylink_info,
+        fingerprint_easylink_pull,
+        fingerprint_easylink_sync,
+        fingerprint_easylink_push,
+        fingerprint_easylink_settime,
         fingerprint_cred_save,
         fingerprint_creds,
         fingerprint_cmd_enqueue,
