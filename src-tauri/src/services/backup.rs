@@ -171,7 +171,7 @@ mod tests {
 
     #[tokio::test]
     async fn backup_sea_lalu_restore_sea() {
-        use crate::services::sea_raw::{exec, q_one, value_i64, Value};
+        use crate::services::sea_raw::{exec, q_one, value_i64};
         let dir = tempfile::tempdir().expect("dir");
         let backups = tempfile::tempdir().expect("backups");
         let db_path = dir.path().join("peoplex.db");
