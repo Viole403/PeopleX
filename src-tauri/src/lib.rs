@@ -5234,7 +5234,6 @@ mod tests {
         assert!(dir.path().join("peoplex.db").exists());
         assert_eq!(state.data_dir, dir.path());
         assert!(state.session.lock().unwrap().is_none());
-        use sea_orm::ConnectionTrait as _;
         let tables = q_one(
             &state.sea,
             schema_sql::count_tables_sql(state.sea.get_database_backend()),
