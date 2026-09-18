@@ -1,0 +1,70 @@
+name: Bersihkan cache lama
+
+on:
+  schedule:
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    name: Prune cache Actions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hapus cache lama, sisakan terbaru per prefix
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP_PER_PREFIX: '2'
+        run: |
+          set -euo pipefail
+          echo "Daftar cache sebelum bersih-bersih:"
+          gh cache list --limit 100 || true
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from collections import defaultdict
+
+          keep = int(os.environ.get("KEEP_PER_PREFIX", "2"))
+
+          out = subprocess.run(
+              ["gh", "cache", "list", "--limit", "100", "--json", "id,key,createdAt,sizeInBytes"],
+              capture_output=True,
+              text=True,
+              check=False,
+          )
+          if out.returncode != 0:
+              print(out.stderr)
+              raise SystemExit("gagal membaca daftar cache")
+          caches = json.loads(out.stdout or "[]")
+          print(f"total cache: {len(caches)}")
+
+          def prefix(key: str) -> str:
+              parts = key.split("-")
+              return "-".join(parts[:3]) if len(parts) >= 3 else key
+
+          groups: dict[str, list] = defaultdict(list)
+          for c in caches:
+              groups[prefix(c["key"])].append(c)
+
+          # Skema lama v0-rust-* dihapus total karena sudah diganti v1-rust-*.
+          doomed: list = []
+          for pfx, items in sorted(groups.items()):
+              items.sort(key=lambda c: c["createdAt"], reverse=True)
+              if pfx.startswith("v0-rust"):
+                  doomed.extend(items)
+                  print(f"{pfx}: hapus semua {len(items)} (skema lama)")
+              else:
+                  victims = items[keep:]
+                  print(f"{pfx}: simpan {len(items) - len(victims)}, hapus {len(victims)}")
+                  doomed.extend(victims)
+
+          for c in doomed:
+              print(f"hapus {c['key']} ({c['id']})")
+              subprocess.run(["gh", "cache", "delete", str(c["id"])], check=False)
+          PY
+          echo "Daftar cache sesudah bersih-bersih:"
+          gh cache list --limit 100 || true

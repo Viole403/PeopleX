@@ -57,6 +57,9 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
+          prefix-key: 'v1-rust'
+          shared-key: 'peoplex-linux'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Uji backend
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
@@ -117,6 +120,9 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
+          prefix-key: 'v1-rust'
+          shared-key: 'peoplex-linux'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Uji migrasi dua backend
         env:

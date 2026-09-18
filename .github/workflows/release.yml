@@ -79,6 +79,9 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
+          prefix-key: 'v1-rust'
+          shared-key: 'peoplex'
+          save-if: ${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Instal dependensi frontend
         run: bun install --frozen-lockfile
@@ -129,6 +132,9 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
+          prefix-key: 'v1-rust'
+          shared-key: 'peoplex'
+          save-if: ${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Instal dependensi frontend
         run: bun install --frozen-lockfile
