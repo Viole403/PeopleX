@@ -527,7 +527,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("dir");
         let state = init_state(dir.path().to_path_buf()).expect("state");
         let db = &state.sea;
-        let actor = admin_id(db).await;
+        let _actor = admin_id(db).await;
         let other = make_user(db, "siti").await;
         let e = admin_reset_password(db, other, "pendek")
             .await
@@ -547,7 +547,6 @@ mod tests {
 
     #[tokio::test]
     async fn audit_mencatat_aksi_rbac() {
-        use crate::entities::audit_log;
         let dir = tempfile::tempdir().expect("dir");
         let state = init_state(dir.path().to_path_buf()).expect("state");
         let db = &state.sea;
