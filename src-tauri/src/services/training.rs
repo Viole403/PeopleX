@@ -86,7 +86,6 @@ pub struct Material {
 const TRAINING_STATUS: &[&str] = &["scheduled", "ongoing", "completed", "cancelled"];
 const PARTICIPANT_STATUS: &[&str] = &["registered", "attended", "absent", "completed"];
 
-// ---------------- Varian SeaORM ----------------
 
 use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 

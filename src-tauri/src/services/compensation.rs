@@ -1280,7 +1280,6 @@ mod tests {
     }
 }
 
-// ---------------- ESOP vesting + kepemilikan ----------------
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct EsopGrant {

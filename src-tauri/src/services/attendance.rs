@@ -8,7 +8,6 @@ use super::employees::FileUpload;
 use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 use crate::to_dto_int;
 
-// ---------------- DTO ----------------
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct Shift {
@@ -197,7 +196,6 @@ fn valid_time(s: &str) -> bool {
         && chrono::NaiveTime::parse_from_str(s, "%H:%M:%S").is_ok()
 }
 
-// ---------------- Resolusi shift ----------------
 
 struct ResolvedShift {
     id: i64,
@@ -211,7 +209,6 @@ fn parse_hm(date: NaiveDate, hm: &str) -> Result<NaiveDateTime, String> {
     Ok(date.and_time(t))
 }
 
-// ---------------- Clock in/out ----------------
 
 /// Hasil clock in/out: status + pesan.
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
@@ -232,7 +229,6 @@ const MANUAL_STATUSES: &[&str] = &[
     "early_checkout",
 ];
 
-// ---------------- Koreksi ----------------
 
 fn correction_row(
     id: i64,
@@ -273,7 +269,6 @@ fn with_date(date: &str, time: Option<&String>) -> Result<Option<String>, String
     }
 }
 
-// ---------------- Varian SeaORM (master data) ----------------
 
 fn sea_text(row: &[Value], i: usize) -> String {
     value_to_string(&row[i])
@@ -685,7 +680,6 @@ pub async fn holidays_autofill_sea(
     to_dto_int(added, "jumlah libur")
 }
 
-// ---------------- Varian SeaORM (transaksi) ----------------
 
 fn sea_opt_float(v: Option<f64>) -> Value {
     match v {

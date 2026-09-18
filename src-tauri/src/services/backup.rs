@@ -58,7 +58,6 @@ fn week_ago() -> String {
         .to_string()
 }
 
-// ---------------- Varian SeaORM ----------------
 
 use super::sea_raw::{exec, q_one, value_to_string, Value};
 

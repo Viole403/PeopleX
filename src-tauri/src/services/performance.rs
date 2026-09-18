@@ -91,7 +91,6 @@ pub struct ReviewDetail {
 const PERIOD_TYPES: &[&str] = &["monthly", "quarterly", "semester", "annual"];
 const REVIEW_ROLES: &[&str] = &["self", "supervisor", "manager", "hr"];
 
-// ---------------- Varian SeaORM ----------------
 
 use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 
@@ -905,7 +904,6 @@ async fn recompute_sea(
     Ok(())
 }
 
-// ---------------- OKR cascading, 360, kalibrasi, succession ----------------
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct Goal {

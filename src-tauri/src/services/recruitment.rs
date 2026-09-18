@@ -196,7 +196,6 @@ pub struct HireInput {
     pub join_date: Option<String>,
 }
 
-// ---------------- Kandidat ----------------
 
 const CV_MIMES: &[&str] = &[
     "application/pdf",
@@ -236,7 +235,6 @@ fn store_cv(files: &Path, file: &employees::FileUpload) -> Result<String, String
     Ok(rel)
 }
 
-// ---------------- Varian SeaORM ----------------
 
 use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 

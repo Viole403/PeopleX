@@ -187,7 +187,6 @@ fn to_pdf(t: &ReportTable, when: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-// ---------------- Varian SeaORM ----------------
 
 use super::sea_raw::{q_all, q_one, value_i64, value_to_string, Value};
 

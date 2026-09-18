@@ -11,7 +11,6 @@ pub struct ChainStep {
     pub role: String,
 }
 
-// ---------------- Varian SeaORM ----------------
 
 pub async fn user_of_employee_sea(
     db: &sea_orm::DatabaseConnection,

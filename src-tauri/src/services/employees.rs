@@ -10,7 +10,6 @@ use super::security::{pii_decrypt, pii_encrypt};
 use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 use crate::to_dto_int;
 
-// ---------------- DTO ----------------
 
 /// Baris daftar karyawan.
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
@@ -245,7 +244,6 @@ pub struct SalaryComponentRow {
     pub amount: Option<f64>,
 }
 
-// ---------------- Konfigurasi child ----------------
 
 struct ChildFieldDef {
     name: &'static str,
@@ -823,7 +821,6 @@ pub fn child_types() -> Vec<ChildMeta> {
         .collect()
 }
 
-// ---------------- Validasi ----------------
 
 fn req_str(v: Option<&String>, label: &str, max: usize) -> Result<Option<String>, String> {
     match v.map(|s| s.trim()).filter(|s| !s.is_empty()) {
@@ -859,7 +856,6 @@ fn in_check(v: &str, allowed: &[&str], label: &str) -> Result<(), String> {
     Ok(())
 }
 
-// ---------------- Berkas ----------------
 
 const PHOTO_MIMES: &[&str] = &["image/jpeg", "image/png", "image/webp"];
 const DOC_MIMES: &[&str] = &[
@@ -919,7 +915,6 @@ fn remove_file(base: &Path, rel: &str) {
     }
 }
 
-// ---------------- Buat, ubah, hapus ----------------
 
 /// Kolom profil yang dapat ditulis (tanpa employee_number/foto/timestamp).
 const PROFILE_COLS: &[&str] = &[
@@ -1004,7 +999,6 @@ fn input_id(input: &EmployeeInput, col: &str) -> Option<i64> {
     }
 }
 
-// ---------------- Varian SeaORM (profil) ----------------
 
 fn opt_text(v: &Value) -> Option<String> {
     match v {
@@ -1633,7 +1627,6 @@ pub async fn delete_sea(
     Ok(())
 }
 
-// ---------------- Child generik (SeaORM) ----------------
 
 async fn employee_exists_sea(db: &sea_orm::DatabaseConnection, id: i64) -> Result<(), String> {
     let found = q_one(
@@ -1915,7 +1908,6 @@ pub async fn child_delete_sea(
     Ok(())
 }
 
-// ---------------- Alamat (SeaORM) ----------------
 
 async fn read_address_sea(
     db: &sea_orm::DatabaseConnection,
@@ -2034,7 +2026,6 @@ pub async fn save_address_sea(
     Ok(())
 }
 
-// ---------------- Dokumen (SeaORM) ----------------
 
 pub async fn documents_sea(
     db: &sea_orm::DatabaseConnection,
@@ -2193,7 +2184,6 @@ pub async fn delete_document_sea(
     Ok(())
 }
 
-// ---------------- Child generik ----------------
 
 fn child_where(def: &ChildDef) -> &'static str {
     if def.soft_delete {
@@ -2203,7 +2193,6 @@ fn child_where(def: &ChildDef) -> &'static str {
     }
 }
 
-// ---------------- Dokumen ----------------
 
 const DOC_CATEGORIES: &[&str] = &[
     "ktp",
@@ -2678,7 +2667,6 @@ pub async fn transfer_entity_sea(
     Ok(())
 }
 
-// ---------------- Skor risiko attrition (heuristik transparan) ----------------
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct AttritionScore {

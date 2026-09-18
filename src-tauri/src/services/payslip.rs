@@ -46,7 +46,6 @@ fn blank(ops: &mut Vec<Op>) {
     ops.push(Op::AddLineBreak);
 }
 
-// ---------------- Varian SeaORM ----------------
 
 use super::sea_raw::{exec, q_one, value_i64, value_to_string, Value};
 

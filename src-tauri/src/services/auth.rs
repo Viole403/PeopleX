@@ -637,7 +637,6 @@ pub async fn change_password(
     Ok(())
 }
 
-// ---------------- SSO/LDAP + scoping departemen ----------------
 
 use super::sea_raw::{q_one as raw_q_one, Value as RawValue};
 

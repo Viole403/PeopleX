@@ -40,7 +40,6 @@ fn parse_time(date: &str, time: &str) -> Result<NaiveDateTime, String> {
         .map_err(|_| "Jam harus format JJ:MM.".to_string())
 }
 
-// ---------------- Varian SeaORM ----------------
 
 use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 

@@ -11,7 +11,6 @@ use crate::to_dto_int;
 const RECEIPT_MIMES: &[&str] = &["image/jpeg", "image/png", "application/pdf"];
 const MAX_RECEIPT_BYTES: usize = 3 * 1024 * 1024;
 
-// ---------------- Dinas ----------------
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct Trip {
@@ -90,7 +89,6 @@ fn store_receipt(files: &Path, subdir: &str, file: &FileUpload) -> Result<String
     Ok(rel)
 }
 
-// ---------------- Reimburse ----------------
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct ReimburseCategory {
@@ -127,7 +125,6 @@ pub struct ReimburseInput {
 
 const REIMBURSE_STAGES: &[&str] = &["pending", "manager_approved", "finance_verified", "paid"];
 
-// ---------------- Varian SeaORM ----------------
 
 use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 

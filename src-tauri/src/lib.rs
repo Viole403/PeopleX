@@ -1329,6 +1329,36 @@ async fn fingerprint_process(
 
 #[tauri::command]
 #[specta::specta]
+async fn fingerprint_pull(
+    state: tauri::State<'_, AppState>,
+    device_id: i32,
+) -> Result<i32, String> {
+    let (uid, _) = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint_proto::fp_pull_sea(&state.sea, uid, device_id as i64, 8000).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_adms_start(
+    state: tauri::State<'_, AppState>,
+    port: i32,
+) -> Result<String, String> {
+    let _ = require(&state, &["attendance.approve", "system.manage"]).await?;
+    services::fingerprint_proto::adms_serve(state.sea.clone(), port as i64).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fingerprint_adms_status(
+    state: tauri::State<'_, AppState>,
+    port: i32,
+) -> Result<bool, String> {
+    let _ = require(&state, &["attendance.view", "system.manage"]).await?;
+    Ok(services::fingerprint_proto::adms_alive(port as i64, 1000).await)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn fingerprint_cred_save(
     state: tauri::State<'_, AppState>,
     employee_id: i32,
@@ -3721,7 +3751,6 @@ async fn reimburse_decide(
     services::travel::reimburse_decide_sea(&state.sea, uid, actor_emp, privileged, id as i64, &action).await
 }
 
-// ---------------- Dasbor ----------------
 
 #[tauri::command]
 #[specta::specta]
@@ -3782,7 +3811,6 @@ async fn organization_drilldown(
     services::dashboard::drilldown_sea(&state.sea).await
 }
 
-// ---------------- Notifikasi ----------------
 
 #[tauri::command]
 #[specta::specta]
@@ -3823,7 +3851,6 @@ async fn notification_mark_all(state: tauri::State<'_, AppState>) -> Result<(), 
     services::notifications::mark_all(&state.sea, uid).await
 }
 
-// ---------------- Pengumuman ----------------
 
 #[tauri::command]
 #[specta::specta]
@@ -3894,7 +3921,6 @@ async fn announcement_delete(state: tauri::State<'_, AppState>, id: i32) -> Resu
     Ok(())
 }
 
-// ---------------- Survei denyut ----------------
 
 #[tauri::command]
 #[specta::specta]
@@ -4006,7 +4032,6 @@ async fn pulse_enps(
     services::pulse::enps_by_department(&state.sea, id).await
 }
 
-// ---------------- Cuti lanjutan dan delegasi ----------------
 
 #[tauri::command]
 #[specta::specta]
@@ -4067,7 +4092,6 @@ async fn approval_revoke(state: tauri::State<'_, AppState>, id: i32) -> Result<(
     services::approval::delegation_revoke_sea(&state.sea, uid, id as i64).await
 }
 
-// ---------------- Kompensasi lanjutan ----------------
 
 #[tauri::command]
 #[specta::specta]
@@ -4271,7 +4295,6 @@ async fn onboarding_preboarding_status(
     services::onboarding::preboarding_status_sea(&state.sea, employee_id as i64).await
 }
 
-// ---------------- Keterlibatan karyawan ----------------
 
 #[tauri::command]
 #[specta::specta]
@@ -4485,7 +4508,6 @@ async fn consent_list(
     services::engagement::consent_list_sea(&state.sea, emp).await
 }
 
-// ---------------- Analitik SDM ----------------
 
 #[tauri::command]
 #[specta::specta]
@@ -4505,7 +4527,6 @@ async fn recruitment_pipeline(
     services::recruitment::pipeline_sea(&state.sea).await
 }
 
-// ---------------- Laporan ----------------
 
 #[tauri::command]
 #[specta::specta]
@@ -5079,6 +5100,9 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         fingerprint_logs,
         fingerprint_probe,
         fingerprint_process,
+        fingerprint_pull,
+        fingerprint_adms_start,
+        fingerprint_adms_status,
         fingerprint_cred_save,
         fingerprint_creds,
         fingerprint_cmd_enqueue,

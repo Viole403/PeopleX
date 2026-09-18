@@ -160,7 +160,6 @@ mod tests {
     }
 }
 
-// ---------------- Varian SeaORM ----------------
 
 use super::sea_raw::{q_all, q_one, value_i64, value_to_string, Value};
 
@@ -457,7 +456,6 @@ pub async fn mine_sea(
     })
 }
 
-// ---------------- Workforce planning + drill-down ----------------
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct DeptPlan {

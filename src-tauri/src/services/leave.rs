@@ -6,7 +6,6 @@ use super::approval;
 use super::audit;
 use crate::to_dto_int;
 
-// ---------------- DTO ----------------
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct Balance {
@@ -76,7 +75,6 @@ pub struct CalendarDay {
     pub kind: String,
 }
 
-// ---------------- Varian SeaORM ----------------
 
 use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 

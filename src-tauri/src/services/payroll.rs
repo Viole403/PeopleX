@@ -7,7 +7,6 @@ use super::approval;
 use super::audit;
 use crate::to_dto_int;
 
-// ---------------- PTKP ----------------
 
 fn ptkp(status: &str) -> f64 {
     match status {
@@ -51,7 +50,6 @@ pub fn pph21_monthly(monthly_taxable_gross: f64, ptkp_status: &str) -> f64 {
     (tax / 12.0).round()
 }
 
-// ---------------- DTO ----------------
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct Component {
@@ -169,7 +167,6 @@ pub struct PayslipInfo {
     pub pdf_ready: bool,
 }
 
-// ---------------- Varian SeaORM ----------------
 
 use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 
@@ -1529,7 +1526,6 @@ pub async fn deduction_delete_sea(
     Ok(())
 }
 
-// ---------------- EWA ----------------
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct EwaWithdrawal {
@@ -2235,7 +2231,6 @@ pub async fn bpjs_dependent_delete_sea(
     Ok(())
 }
 
-// ---------------- Global: kurs, kontraktor, pembayaran, FAQ regulasi ----------------
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct CurrencyRate {

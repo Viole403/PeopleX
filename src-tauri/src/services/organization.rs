@@ -642,7 +642,6 @@ pub async fn get(
     Ok(Some(row))
 }
 
-// ---------------- Struktur organisasi ----------------
 
 /// Node struktur untuk tampilan bagan.
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]

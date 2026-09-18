@@ -104,7 +104,6 @@ pub struct MyAsset {
     pub assigned_date: String,
 }
 
-// ---------------- Varian SeaORM ----------------
 
 use super::sea_raw::{exec, exec_insert, q_all, q_one, value_i64, value_to_string, Value};
 
@@ -1054,7 +1053,6 @@ pub async fn asset_book_sea(
     Ok(out)
 }
 
-// ---------------- Lisensi software + provisioning ----------------
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct License {

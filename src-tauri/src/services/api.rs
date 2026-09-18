@@ -53,7 +53,6 @@ fn scopes_bersih(scopes: &str) -> String {
         .join(",")
 }
 
-// ---------------- Token ----------------
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct ApiTokenRow {
@@ -241,7 +240,6 @@ pub async fn api_auth_sea(
     Ok(Some((uid, value_to_string(&r[1]))))
 }
 
-// ---------------- Webhook ----------------
 
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Clone, Debug)]
 pub struct WebhookRow {
