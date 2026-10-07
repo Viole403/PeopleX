@@ -104,17 +104,17 @@ function DevicesPage() {
         )}
       </div>
       {devices.isError && <p className="text-sm text-text-error">Gagal memuat perangkat.</p>}
-      <div className="overflow-x-auto rounded-xl border border-border-secondary">
-        <table className="w-full text-sm">
+      <div className="overflow-x-auto rounded-xl border border-border-secondary bg-bg-primary">
+        <table className="w-full text-left text-sm">
           <thead>
-            <tr className="bg-bg-secondary text-left">
-              <th className="px-3 py-2">Nama</th>
-              <th className="px-3 py-2">Merek</th>
-              <th className="px-3 py-2">Model</th>
-              <th className="px-3 py-2">Protokol</th>
-              <th className="px-3 py-2">Driver</th>
-              <th className="px-3 py-2">Endpoint</th>
-              {editable && <th className="px-3 py-2">Aksi</th>}
+            <tr className="border-b border-border-secondary text-xs text-text-tertiary">
+              <th className="px-3 py-2 font-medium">Nama</th>
+              <th className="px-3 py-2 font-medium">Merek</th>
+              <th className="px-3 py-2 font-medium">Model</th>
+              <th className="px-3 py-2 font-medium">Protokol</th>
+              <th className="px-3 py-2 font-medium">Driver</th>
+              <th className="px-3 py-2 font-medium">Endpoint</th>
+              {editable && <th className="px-3 py-2 font-medium">Aksi</th>}
             </tr>
           </thead>
           <tbody>
