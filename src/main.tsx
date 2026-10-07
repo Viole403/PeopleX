@@ -4,7 +4,6 @@ import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { Toaster } from "sonner";
 import "./theme.css";
-import { Palette } from "./components/Palette";
 import { queryClient } from "./lib/query";
 import { useTheme } from "./lib/theme";
 import { routeTree } from "./routeTree.gen";
@@ -41,7 +40,6 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <QueryClientProvider client={queryClient}>
       <Bootstrap>
         <RouterProvider router={router} />
-        <Palette />
         <Toaster position="bottom-right" richColors closeButton />
       </Bootstrap>
     </QueryClientProvider>
