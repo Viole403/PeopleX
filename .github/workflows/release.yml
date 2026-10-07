@@ -75,11 +75,6 @@ jobs:
       - name: Setup Rust stabil
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Rust
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: './src-tauri -> target'
-
       - name: Instal dependensi frontend
         run: bun install --frozen-lockfile
 
@@ -124,11 +119,6 @@ jobs:
 
       - name: Setup Rust stabil
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: './src-tauri -> target'
 
       - name: Instal dependensi frontend
         run: bun install --frozen-lockfile

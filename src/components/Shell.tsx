@@ -6,7 +6,9 @@ import {
   BankNote01,
   BarChartSquare01,
   Bell01,
+  BookOpen01,
   Briefcase02,
+  Building01,
   CalendarCheck01,
   CalendarDate,
   ChevronDown,
@@ -14,6 +16,7 @@ import {
   ClipboardCheck,
   Clock,
   Command,
+  CpuChip01,
   Database01,
   FileCheck01,
   Globe01,
@@ -23,18 +26,22 @@ import {
   List,
   LogOut01,
   Menu01,
+  Monitor01,
   Moon01,
   Package,
   SearchSm,
   Settings01,
   Shield01,
   Sun,
+  Target01,
   Truck01,
   Users01,
+  Users02,
   Wallet01,
 } from "@untitledui/icons";
 import { useEffect, useState } from "react";
 import { can, useLogout, useSession } from "../lib/session";
+import { Palette } from "./Palette";
 import { unwrap } from "../lib/query";
 import { commands } from "../bindings";
 import { useTheme } from "../lib/theme";
@@ -59,7 +66,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Kehadiran",
     items: [
       { to: "/attendance", label: "Absensi", icon: Clock },
-      { to: "/devices", label: "Perangkat", icon: Database01, perm: "attendance.view" },
+      { to: "/devices", label: "Perangkat", icon: Monitor01, perm: "attendance.view" },
       { to: "/leave", label: "Cuti & Izin", icon: CalendarCheck01 },
       { to: "/schedules", label: "Shift & Jadwal", icon: CalendarDate, perm: "attendance.view" },
     ],
@@ -73,7 +80,7 @@ const NAV_SECTIONS: NavSection[] = [
       { to: "/onboarding", label: "Onboarding", icon: ClipboardCheck },
       { to: "/offboarding", label: "Offboarding", icon: FileCheck01 },
       { to: "/performance", label: "Kinerja", icon: Award01 },
-      { to: "/goals", label: "OKR & 360", icon: BarChartSquare01 },
+      { to: "/goals", label: "OKR & 360", icon: Target01 },
       { to: "/training", label: "Training", icon: GraduationHat01 },
     ],
   },
@@ -84,7 +91,7 @@ const NAV_SECTIONS: NavSection[] = [
       { to: "/payroll", label: "Penggajian", icon: BankNote01 },
       { to: "/travel", label: "Dinas & Reimburse", icon: Truck01 },
       { to: "/assets", label: "Aset", icon: Package },
-      { to: "/global", label: "Global & FAQ", icon: Globe01 },
+      { to: "/global", label: "Global & FAQ", icon: BookOpen01 },
       { to: "/payroll-settings", label: "Pengaturan Gaji", icon: Wallet01, perm: "system.manage" },
     ],
   },
@@ -92,12 +99,12 @@ const NAV_SECTIONS: NavSection[] = [
     id: "admin",
     title: "Administrasi",
     items: [
-      { to: "/organization", label: "Organisasi", icon: Globe01, perm: "organization.view" },
+      { to: "/organization", label: "Organisasi", icon: Building01, perm: "organization.view" },
       { to: "/users", label: "Pengguna", icon: Key01, perm: "rbac.manage" },
       { to: "/roles", label: "Peran", icon: Shield01, perm: "rbac.manage" },
       { to: "/settings", label: "Pengaturan", icon: Settings01, perm: "settings.manage" },
-      { to: "/workforce", label: "Workforce", icon: Users01, perm: "organization.view" },
-      { to: "/it", label: "IT & ESOP", icon: Shield01, perm: "asset.view" },
+      { to: "/workforce", label: "Workforce", icon: Users02, perm: "organization.view" },
+      { to: "/it", label: "IT & ESOP", icon: CpuChip01, perm: "asset.view" },
       { to: "/audit", label: "Audit Log", icon: List, perm: "audit.view" },
       { to: "/status", label: "Status Basis Data", icon: Database01 },
     ],
@@ -151,6 +158,7 @@ export function Shell() {
     staleTime: 30_000,
   });
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const [navOpen, setNavOpen] = useState<Record<string, boolean>>(loadNavOpen);
 
   const bare = pathname === "/login" || pathname === "/change-password";
 
@@ -174,8 +182,6 @@ export function Shell() {
   if (bare || !session) {
     return <Outlet />;
   }
-
-  const [navOpen, setNavOpen] = useState<Record<string, boolean>>(loadNavOpen);
 
   const toggleSection = (id: string) => {
     setNavOpen((prev) => {
@@ -222,7 +228,8 @@ export function Shell() {
   };
 
   return (
-    <div className="flex h-screen overflow-hidden bg-bg-secondary text-text-primary">
+    <>
+      <div className="flex h-screen overflow-hidden bg-bg-secondary text-text-primary">
       <aside
         className={`flex shrink-0 flex-col border-r border-border-secondary bg-bg-primary transition-all ${
           sidebarOpen ? "w-60" : "w-16"
@@ -327,8 +334,10 @@ export function Shell() {
             <Outlet />
           </div>
         </main>
+        </div>
       </div>
-    </div>
+      <Palette />
+    </>
   );
 }
 

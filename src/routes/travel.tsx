@@ -77,15 +77,15 @@ function MyTrips() {
           Ajukan dinas
         </button>
       </div>
-      <div className="overflow-x-auto rounded-xl border border-border-primary">
+      <div className="overflow-x-auto rounded-xl border border-border-secondary bg-bg-primary">
         <table className="w-full text-left text-sm">
-          <thead className="bg-bg-secondary text-text-secondary">
-            <tr>
-              <th className="px-4 py-2">Tujuan</th>
-              <th className="px-4 py-2">Tanggal</th>
-              <th className="px-4 py-2">Anggaran</th>
-              <th className="px-4 py-2">Terpakai</th>
-              <th className="px-4 py-2">Status</th>
+          <thead>
+            <tr className="border-b border-border-secondary text-xs text-text-tertiary">
+              <th className="px-4 py-2.5 font-medium">Tujuan</th>
+              <th className="px-4 py-2.5 font-medium">Tanggal</th>
+              <th className="px-4 py-2.5 font-medium">Anggaran</th>
+              <th className="px-4 py-2.5 font-medium">Terpakai</th>
+              <th className="px-4 py-2.5 font-medium">Status</th>
             </tr>
           </thead>
           <tbody>
@@ -223,10 +223,10 @@ function TripDetail({ trip, onClose }: { trip: Trip; onClose: () => void }) {
         </div>
         <div>
           <h3 className="mb-2 text-sm font-semibold">Rincian biaya</h3>
-          <div className="overflow-x-auto rounded-xl border border-border-primary">
+          <div className="overflow-x-auto rounded-xl border border-border-secondary bg-bg-primary">
             <table className="w-full text-left text-sm">
-              <thead className="bg-bg-secondary text-text-secondary">
-                <tr><th className="px-3 py-2">Kategori</th><th className="px-3 py-2">Nominal</th></tr>
+              <thead>
+                <tr className="border-b border-border-secondary text-xs text-text-tertiary"><th className="px-3 py-2 font-medium">Kategori</th><th className="px-3 py-2 font-medium">Nominal</th></tr>
               </thead>
               <tbody>
                 {(expenses.data ?? []).map((x) => (
@@ -277,10 +277,10 @@ function PendingTrips() {
     onError: (e: Error) => toast.error(e.message),
   });
   return (
-    <div className="overflow-x-auto rounded-xl border border-border-primary">
+    <div className="overflow-x-auto rounded-xl border border-border-secondary bg-bg-primary">
       <table className="w-full text-left text-sm">
-        <thead className="bg-bg-secondary text-text-secondary">
-          <tr><th className="px-4 py-2">Karyawan</th><th className="px-4 py-2">Tujuan</th><th className="px-4 py-2">Tanggal</th><th className="px-4 py-2">Tahap</th><th className="px-4 py-2">Aksi</th></tr>
+        <thead>
+          <tr className="border-b border-border-secondary text-xs text-text-tertiary"><th className="px-4 py-2.5 font-medium">Karyawan</th><th className="px-4 py-2.5 font-medium">Tujuan</th><th className="px-4 py-2.5 font-medium">Tanggal</th><th className="px-4 py-2.5 font-medium">Tahap</th><th className="px-4 py-2.5 font-medium">Aksi</th></tr>
         </thead>
         <tbody>
           {(list.data ?? []).map((t) => (
@@ -317,10 +317,10 @@ function MyReimburse() {
           Ajukan reimburse
         </button>
       </div>
-      <div className="overflow-x-auto rounded-xl border border-border-primary">
+      <div className="overflow-x-auto rounded-xl border border-border-secondary bg-bg-primary">
         <table className="w-full text-left text-sm">
-          <thead className="bg-bg-secondary text-text-secondary">
-            <tr><th className="px-4 py-2">Kategori</th><th className="px-4 py-2">Nominal</th><th className="px-4 py-2">Keterangan</th><th className="px-4 py-2">Status</th></tr>
+          <thead>
+            <tr className="border-b border-border-secondary text-xs text-text-tertiary"><th className="px-4 py-2.5 font-medium">Kategori</th><th className="px-4 py-2.5 font-medium">Nominal</th><th className="px-4 py-2.5 font-medium">Keterangan</th><th className="px-4 py-2.5 font-medium">Status</th></tr>
           </thead>
           <tbody>
             {(list.data ?? []).map((r) => (
@@ -415,10 +415,10 @@ function PendingReimburse() {
   });
   const pending = (list.data ?? []).filter((r: Reimburse) => r.status === "pending");
   return (
-    <div className="overflow-x-auto rounded-xl border border-border-primary">
+    <div className="overflow-x-auto rounded-xl border border-border-secondary bg-bg-primary">
       <table className="w-full text-left text-sm">
-        <thead className="bg-bg-secondary text-text-secondary">
-          <tr><th className="px-4 py-2">Karyawan</th><th className="px-4 py-2">Kategori</th><th className="px-4 py-2">Nominal</th><th className="px-4 py-2">Tahap</th><th className="px-4 py-2">Aksi</th></tr>
+        <thead>
+          <tr className="border-b border-border-secondary text-xs text-text-tertiary"><th className="px-4 py-2.5 font-medium">Karyawan</th><th className="px-4 py-2.5 font-medium">Kategori</th><th className="px-4 py-2.5 font-medium">Nominal</th><th className="px-4 py-2.5 font-medium">Tahap</th><th className="px-4 py-2.5 font-medium">Aksi</th></tr>
         </thead>
         <tbody>
           {pending.map((r) => (
@@ -461,10 +461,10 @@ function CategoryList() {
           Tambah kategori
         </button>
       </div>
-      <div className="overflow-x-auto rounded-xl border border-border-primary">
+      <div className="overflow-x-auto rounded-xl border border-border-secondary bg-bg-primary">
         <table className="w-full text-left text-sm">
-          <thead className="bg-bg-secondary text-text-secondary">
-            <tr><th className="px-4 py-2">Kode</th><th className="px-4 py-2">Nama</th><th className="px-4 py-2">Batas</th><th className="px-4 py-2">Aksi</th></tr>
+          <thead>
+            <tr className="border-b border-border-secondary text-xs text-text-tertiary"><th className="px-4 py-2.5 font-medium">Kode</th><th className="px-4 py-2.5 font-medium">Nama</th><th className="px-4 py-2.5 font-medium">Batas</th><th className="px-4 py-2.5 font-medium">Aksi</th></tr>
           </thead>
           <tbody>
             {(list.data ?? []).map((c) => (
